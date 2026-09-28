@@ -2,7 +2,7 @@
 
 const $ = (selector, element = document) => element.querySelector(selector);
 const IS_EXTENSION = ["chrome-extension:", "moz-extension:"].includes(location.protocol);
-const DEFAULT_BACKEND = "https://medhunt-fyxr.onrender.com";
+const DEFAULT_BACKEND = "https://medhunt1.onrender.com";
 const HOSTED_AUTH_REQUIRED = IS_EXTENSION && DEFAULT_BACKEND.startsWith("https://");
 const LOCAL_API_TOKEN = "__MEDHUNT_LOCAL_API_TOKEN__";
 const BACKEND_STORAGE_KEY = "medhuntBenchmarkABackendUrl";

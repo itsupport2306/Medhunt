@@ -4046,7 +4046,7 @@ def test_frontend_is_manifest_v3_compatible():
     assert "medhunt" in index.casefold()
     assert "medhunt-mark" in app_script
     assert "radixsol scout" not in app_script.casefold()
-    assert 'const DEFAULT_BACKEND = "https://medhunt-fyxr.onrender.com";' in app_script
+    assert 'const DEFAULT_BACKEND = "https://medhunt1.onrender.com";' in app_script
     assert 'const BACKEND_STORAGE_KEY = "medhuntBenchmarkABackendUrl";' in app_script
     assert 'if (DEFAULT_BACKEND.startsWith("https://"))' in app_script
     assert "DEFAULT_PORT = 8091" in launcher

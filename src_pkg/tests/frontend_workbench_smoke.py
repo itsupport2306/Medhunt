@@ -27,7 +27,7 @@ def _load_panel(page: Page) -> None:
         ".includes(location.protocol);"
     )
     assert extension_check in source
-    if 'const DEFAULT_BACKEND = "https://medhunt-fyxr.onrender.com";' in source:
+    if 'const DEFAULT_BACKEND = "https://medhunt1.onrender.com";' in source:
         # Packaged UI geometry tests model a valid persisted sign-in. The
         # separate hosted-auth test below deliberately starts without one.
         page.evaluate(
@@ -56,7 +56,7 @@ def _run_hosted_auth_gate(browser_type, executable: Path) -> dict:
         ".includes(location.protocol);"
     )
     local_backend = 'const DEFAULT_BACKEND = "http://127.0.0.1:8091";'
-    hosted_backend = 'const DEFAULT_BACKEND = "https://medhunt-fyxr.onrender.com";'
+    hosted_backend = 'const DEFAULT_BACKEND = "https://medhunt1.onrender.com";'
     assert extension_check in source
     source = source.replace(extension_check, "const IS_EXTENSION = true;", 1)
     if local_backend in source:
