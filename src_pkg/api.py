@@ -1859,6 +1859,8 @@ def send_sms(body: SmsSendIn, request: Request):
     message_text = body.message.strip()
     if not message_text:
         raise HTTPException(400, 'Write a message before sending.')
+    if len(message_text.split()) > 29:
+        raise HTTPException(422, 'SMS messages are limited to 29 words.')
     if store.is_dnc(phone) or store.candidate_sms_opted_out(body.candidate_id):
         raise HTTPException(409, 'This candidate opted out and cannot be messaged.')
     if store.sms_candidate_contacted(body.candidate_id, phone):

@@ -4145,7 +4145,7 @@ async function showSmsComposer(candidateId, candidateName, phone) {
       </select>
       <label class="field-label mt" for="smsMessage">Message</label>
       <textarea id="smsMessage" rows="7" maxlength="1600" placeholder="Write a message for this candidate"></textarea>
-      <p class="muted small">Write the message you want to send. Maximum 1,600 characters.</p>
+      <p id="smsWordCount" class="muted small" aria-live="polite">0 / 29 words</p>
       ${notices.map((item) => `<div class="notice mt">${escapeHtml(item)}</div>`).join("")}
       <div class="row modal-actions">
         <button type="button" class="btn ghost" data-action="close-modal">Cancel</button>
@@ -4153,10 +4153,19 @@ async function showSmsComposer(candidateId, candidateName, phone) {
       </div>
     </section>
   </div>`;
+  const messageInput = $("#smsMessage");
+  const sendButton = $('[data-action="send-sms"]');
+  const updateWordCount = () => {
+    const words = messageInput?.value.trim().split(/\s+/u).filter(Boolean).length || 0;
+    const counter = $("#smsWordCount");
+    if (counter) counter.textContent = `${words} / 29 words`;
+    if (sendButton) sendButton.disabled = blocked || words === 0 || words > 29;
+  };
+  if (messageInput) messageInput.addEventListener("input", updateWordCount);
+  updateWordCount();
   const providerSelect = $("#smsProvider");
   if (providerSelect) providerSelect.onchange = () => {
     activeSmsContext.provider = providerSelect.value;
-    const sendButton = $('[data-action="send-sms"]');
     if (sendButton) sendButton.textContent = `Send with ${providerSelect.value === "zoom" ? "Zoom Phone" : "Twilio"}`;
   };
 }
@@ -4173,6 +4182,9 @@ async function sendCandidateSms() {
   if (!activeSmsContext) throw new Error("Candidate message context expired.");
   const message = $("#smsMessage")?.value?.trim() || "";
   if (!message) throw new Error("Write a message before sending.");
+  if (message.split(/\s+/u).filter(Boolean).length > 29) {
+    throw new Error("SMS messages are limited to 29 words.");
+  }
   if (message.length > 1600) throw new Error("SMS messages can contain up to 1,600 characters.");
   const provider = activeSmsContext.provider;
   const sentCandidateId = activeSmsContext.candidateId;
