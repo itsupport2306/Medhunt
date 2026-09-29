@@ -21,11 +21,9 @@ class ZoomSmsError(RuntimeError):
 
 
 def enabled() -> bool:
-    return bool(
-        config.ZOOM_SMS_ENABLED
-        and config.ZOOM_SMS_SENDER_USER_ID
-        and config.ZOOM_SMS_SENDER_NUMBER
-    )
+    # Sender numbers and Zoom Phone user IDs are assigned per recruiter in
+    # Halo, so the shared Medhunt environment only needs the Zoom account API.
+    return bool(config.ZOOM_SMS_ENABLED)
 
 
 def _access_token() -> str:
@@ -59,18 +57,23 @@ def _access_token() -> str:
         return _TOKEN
 
 
-def send_sms(to_number: str, message: str) -> dict:
+def send_sms(to_number: str, message: str, *, sender_number: str = "",
+             sender_user_id: str = "") -> dict:
     if not enabled():
         raise ZoomSmsError("Zoom Phone SMS is not configured.")
+    sender_number = str(sender_number or config.ZOOM_SMS_SENDER_NUMBER).strip()
+    sender_user_id = str(sender_user_id or config.ZOOM_SMS_SENDER_USER_ID).strip()
+    if not sender_number or not sender_user_id:
+        raise ZoomSmsError("A Zoom Phone sender number has not been assigned to this user.")
     payload = {
         "message": str(message),
         "to_members": [{"phone_number": str(to_number)}],
-        "sender": {"phone_number": config.ZOOM_SMS_SENDER_NUMBER},
+        "sender": {"phone_number": sender_number},
     }
     try:
         response = httpx.post(
             f"{config.ZOOM_API_BASE_URL}/phone/sms/messages",
-            params={"user_id": config.ZOOM_SMS_SENDER_USER_ID},
+            params={"user_id": sender_user_id},
             json=payload,
             headers={"Authorization": f"Bearer {_access_token()}"},
             timeout=config.ZOOM_SMS_TIMEOUT,

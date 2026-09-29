@@ -51,7 +51,9 @@ def test_zoom_send_and_cross_provider_duplicate_protection(monkeypatch):
     sent_messages = []
     monkeypatch.setattr(
         api_module.zoom_sms, "send_sms",
-        lambda phone, message: sent_messages.append(message) or {"message_id": "zoom-message-1"},
+        lambda phone, message, **sender: sent_messages.append(
+            (message, sender.get("sender_number"), sender.get("sender_user_id"))
+        ) or {"message_id": "zoom-message-1"},
     )
     monkeypatch.setattr(config, "ZOOM_SMS_SENDER_NUMBER", "+14045550199")
     monkeypatch.setattr(config, "ZOOM_SMS_SENDER_USER_ID", "zoom-user-1")
@@ -81,7 +83,9 @@ def test_zoom_send_and_cross_provider_duplicate_protection(monkeypatch):
             sent = await client.post("/messaging/sms", json=payload)
             assert sent.status_code == 200
             assert sent.json()["provider"] == "zoom"
-            assert sent_messages == ["Custom recruiter message for Jane."]
+            assert sent_messages == [(
+                "Custom recruiter message for Jane.", "+14045550199", "zoom-user-1",
+            )]
             assert sent.json()["message"]["body"] == "Custom recruiter message for Jane."
             duplicate = await client.post(
                 "/messaging/sms",

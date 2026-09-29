@@ -60,7 +60,7 @@ async def lifespan(_app: FastAPI):
         nexus_delivery.stop()
 
 
-APP_VERSION = "3.26.24"
+APP_VERSION = "3.26.27"
 
 app = FastAPI(
     title="Medhunt Sourcing Assistant",
@@ -730,6 +730,22 @@ class HaloDeviceActionIn(HaloScopeIn):
     actor_user_id: str = Field(min_length=1, max_length=80)
 
 
+class HaloConversationAssignmentIn(HaloScopeIn):
+    actor_user_id: str = Field(min_length=1, max_length=80)
+    recruiter_user_id: str = Field(min_length=1, max_length=80)
+    recruiter_email: str = Field(default='', max_length=320)
+    recruiter_name: str = Field(default='', max_length=320)
+
+
+class HaloConversationReplyIn(HaloScopeIn):
+    actor_user_id: str = Field(min_length=1, max_length=80)
+    actor_name: str = Field(default='', max_length=320)
+    message: str = Field(min_length=1, max_length=500)
+    sender_number: str = Field(min_length=7, max_length=40)
+    zoom_user_id: str = Field(min_length=1, max_length=80)
+    request_id: str = Field(default='', max_length=120)
+
+
 def _halo_scoped(record: dict, scope: HaloScopeIn) -> bool:
     return scope.all_users or str(record.get("user_id") or "") in set(scope.user_ids)
 
@@ -763,6 +779,132 @@ def halo_approve_device(device_id: int, body: HaloDeviceActionIn):
         )}
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
+
+
+def _halo_conversation_in_scope(conversation: dict, scope: HaloScopeIn) -> bool:
+    if scope.all_users:
+        return True
+    users = {str(value) for value in scope.user_ids}
+    return bool(users & {
+        str(conversation.get('initiated_by') or ''),
+        str(conversation.get('assigned_recruiter_id') or ''),
+    })
+
+
+def _halo_conversation_public(conversation: dict, *, include_messages=False) -> dict:
+    if not conversation:
+        return {}
+    fields = (
+        'id', 'candidate_id', 'nexus_candidate_id', 'candidate_name',
+        'candidate_phone', 'initiated_by', 'assigned_recruiter_id',
+        'assigned_recruiter_email', 'assigned_recruiter_name', 'status',
+        'created', 'updated', 'last_message_at', 'has_reply', 'last_reply_at',
+        'last_outbound_at', 'last_outbound_user_id',
+    )
+    result = {key: conversation.get(key) for key in fields if key in conversation}
+    if include_messages:
+        result['messages'] = [{
+            key: message.get(key) for key in (
+                'id', 'direction', 'body', 'status', 'sender_user_id',
+                'sender_name', 'sender_number', 'created', 'updated',
+            ) if key in message
+        } for message in conversation.get('messages') or []]
+    return result
+
+
+@app.post('/internal/halo/conversations')
+def halo_conversations(scope: HaloScopeIn):
+    items = store.list_sms_conversations(
+        user_ids=scope.user_ids,
+        include_all=scope.all_users,
+    )
+    return {'items': [_halo_conversation_public(item) for item in items]}
+
+
+@app.post('/internal/halo/conversations/{conversation_id}')
+def halo_conversation(conversation_id: int, scope: HaloScopeIn):
+    conversation = store.get_sms_conversation(conversation_id)
+    if not conversation:
+        raise HTTPException(404, 'SMS conversation not found.')
+    if not _halo_conversation_in_scope(conversation, scope):
+        raise HTTPException(403, 'Conversation is outside the requested organization scope.')
+    return _halo_conversation_public(conversation, include_messages=True)
+
+
+@app.post('/internal/halo/conversations/{conversation_id}/assign')
+def halo_assign_conversation(conversation_id: int, body: HaloConversationAssignmentIn):
+    conversation = store.get_sms_conversation(conversation_id)
+    if not conversation:
+        raise HTTPException(404, 'SMS conversation not found.')
+    if not _halo_conversation_in_scope(conversation, body):
+        raise HTTPException(403, 'Conversation is outside the requested organization scope.')
+    if conversation.get('status') == 'opted_out':
+        raise HTTPException(409, 'An opted-out candidate cannot be reassigned for outreach.')
+    messages = conversation.get('messages') or []
+    last_reply = max((float(message.get('created') or 0) for message in messages
+                      if message.get('direction') == 'inbound'), default=0)
+    last_outbound = max((float(message.get('created') or 0) for message in messages
+                         if message.get('direction') == 'outbound'
+                         and message.get('status') in {'accepted', 'sent', 'delivered'}),
+                        default=0)
+    if not last_reply:
+        raise HTTPException(409, 'Wait for a candidate reply before assigning.')
+    if last_outbound > last_reply:
+        raise HTTPException(409, 'This conversation has already been answered.')
+    conversation = store.update_sms_conversation(
+        conversation_id,
+        assigned_recruiter_id=body.recruiter_user_id,
+        assigned_recruiter_email=body.recruiter_email,
+        assigned_recruiter_name=body.recruiter_name,
+    )
+    return {'conversation': _halo_conversation_public(conversation, include_messages=True)}
+
+
+@app.post('/internal/halo/conversations/{conversation_id}/reply')
+def halo_reply_to_conversation(conversation_id: int, body: HaloConversationReplyIn):
+    conversation = store.get_sms_conversation(conversation_id)
+    if not conversation:
+        raise HTTPException(404, 'SMS conversation not found.')
+    if not _halo_conversation_in_scope(conversation, body):
+        raise HTTPException(403, 'Conversation is outside the requested organization scope.')
+    if conversation.get('status') == 'opted_out':
+        raise HTTPException(409, 'This candidate opted out of SMS.')
+    messages = conversation.get('messages') or []
+    last_reply = max((float(message.get('created') or 0) for message in messages
+                      if message.get('direction') == 'inbound'), default=0)
+    last_outbound = max((float(message.get('created') or 0) for message in messages
+                         if message.get('direction') == 'outbound'
+                         and message.get('status') in {'accepted', 'sent', 'delivered'}),
+                        default=0)
+    if not last_reply:
+        raise HTTPException(409, 'Wait for a candidate reply before replying.')
+    if last_outbound > last_reply:
+        raise HTTPException(409, 'This candidate has already received a reply to their latest message.')
+    text = body.message.strip()
+    if not text:
+        raise HTTPException(422, 'Reply cannot be blank.')
+    request_id = body.request_id.strip() or uuid.uuid4().hex
+    message, created = store.create_sms_message(
+        conversation_id, 'outbound', text, request_id=request_id,
+        sender_user_id=body.actor_user_id, sender_name=body.actor_name,
+        sender_number=body.sender_number, zoom_user_id=body.zoom_user_id,
+    )
+    if created:
+        try:
+            result = zoom_sms.send_sms(
+                conversation['candidate_phone'], text,
+                sender_number=body.sender_number,
+                sender_user_id=body.zoom_user_id,
+            )
+            sid = str(result.get('sid') or result.get('message_id') or result.get('id') or '')
+            store.update_sms_message(message['id'], status='accepted', zoom_message_id=sid)
+        except zoom_sms.ZoomSmsError as exc:
+            store.update_sms_message(
+                message['id'], status='failed', failure_reason=str(exc),
+            )
+            raise HTTPException(502, str(exc)) from exc
+    conversation = store.get_sms_conversation(conversation_id)
+    return _halo_conversation_public(conversation, include_messages=True)
 
 
 @app.get("/auth/me")
@@ -1623,6 +1765,7 @@ def _candidate_sms_phone(candidate: dict, supplied: str) -> str:
 @app.get('/messaging/status')
 def messaging_status(request: Request):
     user = _request_user(request)
+    zoom_sender = _resolve_zoom_sms_sender(request, strict=False) if zoom_sms.enabled() else None
     providers = {
         'twilio': {
             'enabled': twilio_sms.enabled(),
@@ -1630,9 +1773,7 @@ def messaging_status(request: Request):
         },
         'zoom': {
             'enabled': zoom_sms.enabled(),
-            'sender_configured': bool(
-                config.ZOOM_SMS_SENDER_NUMBER and config.ZOOM_SMS_SENDER_USER_ID
-            ),
+            'sender_configured': bool(zoom_sender),
         },
     }
     return {
@@ -1641,6 +1782,7 @@ def messaging_status(request: Request):
         'provider': 'twilio',
         'sender_configured': providers['twilio']['sender_configured'],
         'providers': providers,
+        'zoom_sender_required': bool(zoom_sms.enabled() and not zoom_sender),
         'reply_notifications_configured': sms_notifications.configured(
             str(user.get('email') or ''),
         ),
@@ -1667,13 +1809,49 @@ def sms_preview(candidate_id: int, phone: str, request: Request):
     }
 
 
+def _resolve_zoom_sms_sender(request: Request, *, strict: bool) -> dict | None:
+    if healthboard_auth.enabled():
+        token = str(getattr(request.state, 'healthboard_extension_token', '') or '')
+        try:
+            return healthboard_auth.medhunt_zoom_sms_sender(token)
+        except (httpx.HTTPError, ValueError) as exc:
+            logging.getLogger('medhunt.zoom_sms').warning(
+                'Could not load the recruiter Zoom sender assignment (%s).',
+                type(exc).__name__,
+            )
+            if strict:
+                raise HTTPException(
+                    503,
+                    'Could not verify your Zoom sender assignment. Try again or contact your Halo administrator.',
+                ) from exc
+            return None
+    # Standalone local deployments retain their environment-configured sender.
+    if config.ZOOM_SMS_SENDER_NUMBER and config.ZOOM_SMS_SENDER_USER_ID:
+        return {
+            'sender_number': config.ZOOM_SMS_SENDER_NUMBER,
+            'zoom_user_id': config.ZOOM_SMS_SENDER_USER_ID,
+        }
+    return None
+
+
 @app.post('/messaging/sms')
 def send_sms(body: SmsSendIn, request: Request):
     user = _request_user(request)
     provider = body.provider.strip().lower()
+    if provider not in {'twilio', 'zoom'}:
+        raise HTTPException(422, 'Choose Twilio or Zoom Phone as the SMS provider.')
     provider_client = twilio_sms if provider == 'twilio' else zoom_sms
     if not provider_client.enabled():
         raise HTTPException(503, f'{provider.title()} SMS is not configured.')
+    zoom_sender = (
+        _resolve_zoom_sms_sender(request, strict=True)
+        if provider == 'zoom' else None
+    )
+    if provider == 'zoom' and not zoom_sender:
+        raise HTTPException(
+            409,
+            'Ask your Halo administrator to assign your Zoom Phone number before sending.',
+        )
     candidate = store.get_candidate(body.candidate_id)
     if not candidate:
         raise HTTPException(404, 'Candidate not found.')
@@ -1691,10 +1869,10 @@ def send_sms(body: SmsSendIn, request: Request):
         raise HTTPException(409, 'This candidate has already been sent SMS outreach.')
     sender_number = (
         config.TWILIO_PHONE_NUMBER if provider == 'twilio'
-        else config.ZOOM_SMS_SENDER_NUMBER
+        else str(zoom_sender['sender_number'])
     )
     sender_provider_id = (
-        'twilio' if provider == 'twilio' else config.ZOOM_SMS_SENDER_USER_ID
+        'twilio' if provider == 'twilio' else str(zoom_sender['zoom_user_id'])
     )
     conversation = store.get_or_create_sms_conversation(
         body.candidate_id, phone,
@@ -1711,7 +1889,14 @@ def send_sms(body: SmsSendIn, request: Request):
     if not created:
         raise HTTPException(409, 'This candidate has already been sent SMS outreach.')
     try:
-        result = provider_client.send_sms(phone, message_text)
+        if provider == 'zoom':
+            result = provider_client.send_sms(
+                phone, message_text,
+                sender_number=sender_number,
+                sender_user_id=sender_provider_id,
+            )
+        else:
+            result = provider_client.send_sms(phone, message_text)
         sid = str(result.get('sid') or result.get('message_id') or result.get('id') or '')
         message = store.update_sms_message(
             message['id'], status='accepted', zoom_message_id=sid,

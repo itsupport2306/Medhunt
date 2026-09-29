@@ -3109,7 +3109,7 @@ def candidate_sms_opted_out(candidate_id) -> bool:
         return bool(row and str(row["status"] or "").casefold() == "opted_out")
 
 
-def list_sms_conversations(user_id="", *, include_all=False):
+def list_sms_conversations(user_id="", *, user_ids=None, include_all=False):
     projection = """SELECT c.*,
         EXISTS(SELECT 1 FROM sms_messages m WHERE m.conversation_id=c.id
                AND m.direction='inbound') AS has_reply,
@@ -3122,9 +3122,27 @@ def list_sms_conversations(user_id="", *, include_all=False):
          ORDER BY m.created DESC LIMIT 1) AS last_outbound_user_id
         FROM sms_conversations c"""
     with _conn() as connection:
-        if include_all or not user_id:
+        scoped_ids = sorted({str(value or "").strip() for value in (user_ids or [])
+                             if str(value or "").strip()})
+        if include_all or (user_ids is None and not user_id):
             rows = connection.execute(
                 projection + " ORDER BY c.updated DESC"
+            ).fetchall()
+        elif user_ids is not None:
+            if not scoped_ids:
+                return []
+            placeholders = ",".join("?" for _ in scoped_ids)
+            rows = connection.execute(
+                projection + f" WHERE c.initiated_by IN ({placeholders})"
+                f" OR c.assigned_recruiter_id IN ({placeholders})"
+                " ORDER BY c.updated DESC",
+                (*scoped_ids, *scoped_ids),
+            ).fetchall()
+        elif user_id:
+            rows = connection.execute(
+                projection + " WHERE c.initiated_by=? OR c.assigned_recruiter_id=?"
+                " ORDER BY c.updated DESC",
+                (str(user_id), str(user_id)),
             ).fetchall()
         else:
             rows = connection.execute(

@@ -4128,7 +4128,8 @@ async function showSmsComposer(candidateId, candidateName, phone) {
   const blocked = availableProviders.length === 0 || preview.opted_out ||
     preview.already_contacted;
   const notices = [];
-  if (!availableProviders.length) notices.push("No SMS provider is configured on the backend.");
+  if (status.zoom_sender_required) notices.push("Ask your Halo organization admin to assign your Zoom Phone number before using Zoom.");
+  if (!availableProviders.length && !status.zoom_sender_required) notices.push("No SMS provider is configured on the backend.");
   if (preview.opted_out) notices.push("This candidate opted out of SMS.");
   if (preview.already_contacted) notices.push("This candidate has already received SMS outreach.");
   if (!status.reply_notifications_configured) notices.push("Reply email notifications are not fully configured.");
