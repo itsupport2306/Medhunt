@@ -2158,7 +2158,9 @@ function indeedResultStatus(profile) {
       ${hometownMatch}
       ${resume}
       ${resumeStatus}
-      ${mobile && profile._candidateId ? `<button type="button" class="resume-link" data-action="compose-sms" data-candidate-id="${Number(profile._candidateId)}" data-candidate-name="${escapeHtml(profile.name)}" data-phone="${escapeHtml(mobile.value)}">Send SMS</button>` : ""}
+      ${result.sms_status === "sent"
+        ? `<span class="lookup-state match sms-sent"><i aria-hidden="true"></i>SMS sent</span>`
+        : mobile && profile._candidateId ? `<button type="button" class="resume-link" data-action="compose-sms" data-candidate-id="${Number(profile._candidateId)}" data-candidate-name="${escapeHtml(profile.name)}" data-phone="${escapeHtml(mobile.value)}">Send SMS</button>` : ""}
     </div>`;
   }
   if (result.status === "not_found") {
@@ -4172,6 +4174,7 @@ async function sendCandidateSms() {
   if (!message) throw new Error("Write a message before sending.");
   if (message.length > 1600) throw new Error("SMS messages can contain up to 1,600 characters.");
   const provider = activeSmsContext.provider;
+  const sentCandidateId = activeSmsContext.candidateId;
   await api("/messaging/sms", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -4186,8 +4189,20 @@ async function sendCandidateSms() {
   });
   closeModal();
   activeSmsContext = null;
+  markIndeedSmsSent(sentCandidateId);
   notify(`Message accepted by ${provider === "zoom" ? "Zoom Phone" : "Twilio"}.`);
   if (activeView === "candidates") await viewCandidates();
+}
+
+function markIndeedSmsSent(candidateId) {
+  const profiles = new Set([...indeedCandidates, ...indeedLookupProfiles]);
+  for (const profile of profiles) {
+    if (Number(profile._candidateId) !== Number(candidateId)) continue;
+    const result = indeedLookupFor(profile);
+    if (!isIndeedMatch(result)) continue;
+    indeedLookupState.set(profile._selectionKey, { ...result, sms_status: "sent" });
+    updateIndeedLookupProgressUi(profile);
+  }
 }
 
 async function viewPipeline() {
