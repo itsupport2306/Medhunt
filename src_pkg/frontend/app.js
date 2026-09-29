@@ -157,7 +157,6 @@ let apiBase = IS_EXTENSION ? DEFAULT_BACKEND : "";
 let backendHealth = null;
 let authConfig = { enabled: false, provider: "healthboard" };
 let authSession = null;
-let extensionCredits = { enabled: false, balance: null, status: "loading" };
 let extensionDeviceId = "";
 let privacyConsent = false;
 let extensionWorkspaceStarted = false;
@@ -254,7 +253,6 @@ function setBusy(button, busy) {
 
 function friendlyActionError(error) {
   const message = String(error?.message || "");
-  if (Number(error?.status) === 402) return message || "You are out of extension credits. Ask your organization admin or manager for more.";
   if (/device|installation|approval/i.test(message) && /registered|approved|revoked|expired|waiting/i.test(message)) return message;
   if (
     Number(error?.status) === 401 ||
@@ -651,10 +649,6 @@ async function submitIntake() {
 
 async function enrichCandidate(id) {
   const result = await api(`/candidates/${id}/contact-lookup`, { method: "POST" });
-  if (result?.credits_remaining != null) {
-    extensionCredits = { enabled: true, balance: Math.max(0, Number(result.credits_remaining)) };
-    updateSourceCreditBalance();
-  }
   notify("Candidate enriched.");
   await viewCandidates();
 }
@@ -953,45 +947,6 @@ async function loadAuth() {
   renderAuthState();
 }
 
-async function refreshExtensionCredits() {
-  if (!IS_EXTENSION || !authSession?.extension_token) {
-    extensionCredits = { enabled: false, balance: null, status: "unavailable" };
-    updateSourceCreditBalance();
-    return;
-  }
-  extensionCredits = { enabled: false, balance: null, status: "loading" };
-  updateSourceCreditBalance();
-  try {
-    const result = await api("/credits/enrichment", { timeout: 15000 });
-    extensionCredits = {
-      enabled: Boolean(result?.enabled && Number.isFinite(Number(result.balance))),
-      balance: result?.balance == null ? null : Math.max(0, Number(result.balance)),
-      status: result?.enabled && Number.isFinite(Number(result.balance)) ? "ready" : "unavailable",
-    };
-  } catch {
-    // A transient balance check must not discard the signed-in session. The
-    // backend independently fails closed before making a billable lookup.
-    extensionCredits = { enabled: false, balance: null, status: "unavailable" };
-  }
-  updateSourceCreditBalance();
-}
-
-function updateSourceCreditBalance() {
-  const badge = $("#sourceCreditBalance");
-  if (!badge) return;
-  badge.hidden = false;
-  if (extensionCredits.enabled) {
-    badge.textContent = `${Number(extensionCredits.balance || 0).toLocaleString()} lookup credits`;
-    badge.title = "Candidate-enrichment credits. Cached contact results do not use credits.";
-  } else if (extensionCredits.status === "loading") {
-    badge.textContent = "Credits loading…";
-    badge.title = "Loading your candidate-enrichment credit balance.";
-  } else {
-    badge.textContent = "Credits unavailable";
-    badge.title = "Credit balance is unavailable. Check your connection or ask your administrator.";
-  }
-}
-
 function renderAuthState() {
   const logoutButton = $("#logoutButton");
   const sourceLogoutButton = $("#sourceLogoutButton");
@@ -1110,10 +1065,8 @@ async function verifyLoginCode() {
 
 async function logout() {
   authSession = null;
-  extensionCredits = { enabled: false, balance: null, status: "unavailable" };
   await writeChromeSession(AUTH_STORAGE_KEY, null);
   renderAuthState();
-  updateSourceCreditBalance();
   closeModal();
   notify("Signed out.");
 }
@@ -2361,7 +2314,6 @@ function indeedPanelHeader() {
       </div>
       <div class="source-header-actions">
         <span class="active-page-indicator"><i aria-hidden="true"></i>${platformLabel}</span>
-        <span class="source-credit-balance" id="sourceCreditBalance">${extensionCredits.enabled ? `${Number(extensionCredits.balance || 0).toLocaleString()} lookup credits` : extensionCredits.status === "loading" ? "Credits loading…" : "Credits unavailable"}</span>
         <button type="button" class="panel-account-button" id="sourceLogoutButton" data-action="logout" aria-label="Log out of Medhunt" title="Log out"${authConfig.enabled && authSession?.extension_token ? "" : " hidden"}>Log out</button>
         <button type="button" class="panel-rescan-button" data-action="refresh-indeed" title="Scan current page" aria-label="Scan current page" aria-disabled="${progress ? "true" : "false"}"${progress ? " disabled" : ""}>
           <span aria-hidden="true">&#8635;</span>
@@ -3466,19 +3418,7 @@ async function lookupSelectedIndeedCandidates() {
         }),
         timeout: chunkTimeout,
       });
-      if (payload?.credits_remaining != null) {
-        extensionCredits = { enabled: true, balance: Math.max(0, Number(payload.credits_remaining)) };
-        updateSourceCreditBalance();
-      }
     } catch (error) {
-      if (Number(error?.status) === 402) {
-        for (const profile of lookupTargets.slice(start)) {
-          applyLookupResult(profile, { status: "failed" });
-        }
-        indeedScanState.phase = "results";
-        renderIndeedProfiles();
-        throw error;
-      }
       for (const profile of chunk) {
         applyLookupResult(profile, {
           status: "failed",
@@ -4494,7 +4434,6 @@ async function startExtensionWorkspace() {
       await login();
       return;
     }
-    await refreshExtensionCredits();
     extensionWorkspaceStarted = true;
     activeView = "indeed";
     renderSourcingStatus(

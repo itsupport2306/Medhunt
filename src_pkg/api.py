@@ -60,7 +60,7 @@ async def lifespan(_app: FastAPI):
         nexus_delivery.stop()
 
 
-APP_VERSION = "3.26.27"
+APP_VERSION = "3.26.30"
 
 app = FastAPI(
     title="Medhunt Sourcing Assistant",
@@ -1377,53 +1377,6 @@ def get_resume(cid: int, resume_id: int):
     )
 
 # ---- enrichment ----
-def _consume_extension_enrichment_credits(
-    request: Request | None, candidate_ids: list[int], run_id: str = "",
-) -> dict | None:
-    if not candidate_ids or not healthboard_auth.enabled():
-        return None
-    token = str(getattr(
-        getattr(request, "state", None), "healthboard_extension_token", "",
-    ) or "")
-    if not token:
-        raise HTTPException(503, "Extension credit service is unavailable. Please sign in again.")
-    try:
-        return healthboard_auth.consume_medhunt_enrichment_credits(
-            token, candidate_ids=candidate_ids, run_id=run_id,
-        )
-    except httpx.HTTPStatusError as exc:
-        try:
-            detail = exc.response.json().get("detail", "Extension credit request failed.")
-        except (ValueError, AttributeError):
-            detail = "Extension credit request failed."
-        raise HTTPException(exc.response.status_code, detail) from exc
-    except Exception as exc:
-        logging.getLogger("medhunt.credits").warning(
-            "Extension credit request failed (%s).", type(exc).__name__,
-        )
-        raise HTTPException(503, "Extension credits could not be checked. Try again shortly.") from exc
-
-
-@app.get("/credits/enrichment")
-def enrichment_credit_balance(request: Request):
-    actor = _request_user(request)
-    token = str(getattr(request.state, "healthboard_extension_token", "") or "")
-    if not healthboard_auth.enabled() or not token:
-        return {"enabled": False, "balance": None}
-    try:
-        return {"enabled": True, **healthboard_auth.medhunt_enrichment_credits(token)}
-    except httpx.HTTPStatusError as exc:
-        try:
-            detail = exc.response.json().get("detail", "Extension credits could not be loaded.")
-        except (ValueError, AttributeError):
-            detail = "Extension credits could not be loaded."
-        raise HTTPException(exc.response.status_code, detail) from exc
-    except Exception as exc:
-        logging.getLogger("medhunt.credits").warning(
-            "Extension credit balance request failed (%s).", type(exc).__name__,
-        )
-        raise HTTPException(503, "Extension credits could not be loaded. Try again shortly.") from exc
-
 
 def _quick_sourcer_selected() -> bool:
     """The public Medhunt product has one backend contact-lookup path."""
@@ -1468,12 +1421,7 @@ def enrich_one(cid: int, request: Request = None):
     _request_user(request)
     if not store.get_candidate(cid):
         raise HTTPException(404, "candidate not found")
-    credit_result = None
-    if quick_sourcer_client.needs_provider_lookup(cid):
-        credit_result = _consume_extension_enrichment_credits(request, [cid])
     result = quick_sourcer_client.lookup_candidate(cid)
-    if credit_result is not None:
-        result["credits_remaining"] = credit_result.get("balance")
     _record_enrichment(
         request, cid,
         result.get("status") or result.get("enrich_status") or "unknown",
@@ -1721,17 +1669,7 @@ def _quick_sourcer_lookup_batch(body: ContactLookupBatchIn) -> dict:
 def contact_lookup_batch(body: ContactLookupBatchIn, request: Request = None):
     _request_user(request)
     """Vendor-neutral browser endpoint with a deliberately minimal response."""
-    billable_ids = [
-        candidate_id for candidate_id in dict.fromkeys(body.candidate_ids)
-        if store.get_candidate(candidate_id)
-        and quick_sourcer_client.needs_provider_lookup(candidate_id)
-    ]
-    credit_result = _consume_extension_enrichment_credits(
-        request, billable_ids, body.run_id,
-    )
     result = _quick_sourcer_lookup_batch(body)
-    if credit_result is not None:
-        result["credits_remaining"] = credit_result.get("balance")
     for candidate_id, item in (result.get("results") or {}).items():
         _record_enrichment(
             request, int(candidate_id), item.get("status") or "unknown",
