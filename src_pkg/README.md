@@ -729,9 +729,10 @@ tests/                  Demo-mode backend and extension checks
 Set `SMS_PROVIDER=twilio`, `TWILIO_SMS_ENABLED=1`, the Twilio account
 credentials, `TWILIO_PHONE_NUMBER`, and the exact public `TWILIO_WEBHOOK_URL`.
 Configure that URL as the Twilio number's incoming-message webhook using POST.
-Set `SENDGRID_API_KEY`, `EMAIL_FROM`, and optionally
-`SMS_REPLY_NOTIFICATION_EMAILS` so candidate replies reach the initiating
-recruiter and any administrator fallback recipients.
+Set `SENDGRID_API_KEY` and `EMAIL_FROM`. `SMS_REPLY_NOTIFICATION_EMAILS`
+defaults to the Radixsol fallback recipients and can be overridden with a
+comma-separated list. Replies without a stored conversation are sent to these
+fallback recipients; mapped replies also reach the initiating recruiter.
 
 The extension builds the initial message from the candidate's captured first
 name, specialty, title, city, and state. The backend permits one initial SMS

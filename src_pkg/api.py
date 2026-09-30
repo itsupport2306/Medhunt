@@ -1875,6 +1875,14 @@ async def twilio_webhook(request: Request):
         return Response(content='<Response/>', media_type='application/xml')
     current = store.find_sms_conversation(phone=sender_phone)
     if not current:
+        sms_notifications.send_reply_email(
+            conversation={
+                'candidate_name': 'Unknown candidate',
+                'candidate_phone': sender_phone,
+            },
+            reply=text,
+            original='Unavailable (message sent by an older extension)',
+        )
         store.complete_sms_webhook(event_key)
         return Response(content='<Response/>', media_type='application/xml')
     store.create_sms_message(

@@ -395,9 +395,18 @@ CEIPAL_CONFIGURED = bool(
     and CEIPAL_API_KEY and CEIPAL_CANDIDATE_URL
 )
 DEFAULT_PHONE_COUNTRY = os.getenv("DEFAULT_PHONE_COUNTRY", "US").strip() or "US"
+_DEFAULT_SMS_REPLY_NOTIFICATION_EMAILS = (
+    "ricky.singh@radixsol.com",
+    "sonali.singh@radixsol.com",
+    "ashwin.b@radixsol.com",
+)
 SMS_REPLY_NOTIFICATION_EMAILS = tuple(dict.fromkeys(
     email.strip().casefold()
-    for email in re.split(r"[,;]", os.getenv("SMS_REPLY_NOTIFICATION_EMAILS", ""))
+    for email in re.split(
+        r"[,;]",
+        os.getenv("SMS_REPLY_NOTIFICATION_EMAILS", "").strip()
+        or ",".join(_DEFAULT_SMS_REPLY_NOTIFICATION_EMAILS),
+    )
     if email.strip()
 ))
 
