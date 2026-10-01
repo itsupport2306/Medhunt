@@ -1,4 +1,4 @@
-"""Minimal, server-side Zoom Phone SMS client and webhook verification."""
+"""Server-side Zoom Phone SMS client and webhook verification."""
 from __future__ import annotations
 
 import base64
@@ -21,6 +21,8 @@ class ZoomSmsError(RuntimeError):
 
 
 def enabled() -> bool:
+    # Sender numbers and Zoom Phone user IDs are assigned per recruiter in
+    # Halo, so the shared Medhunt environment only needs the Zoom account API.
     return bool(config.ZOOM_SMS_ENABLED)
 
 
@@ -33,18 +35,21 @@ def _access_token() -> str:
         basic = base64.b64encode(
             f"{config.ZOOM_CLIENT_ID}:{config.ZOOM_CLIENT_SECRET}".encode()
         ).decode()
-        response = httpx.post(
-            config.ZOOM_OAUTH_URL,
-            params={
-                "grant_type": "account_credentials",
-                "account_id": config.ZOOM_ACCOUNT_ID,
-            },
-            headers={"Authorization": f"Basic {basic}"},
-            timeout=config.ZOOM_SMS_TIMEOUT,
-        )
+        try:
+            response = httpx.post(
+                config.ZOOM_OAUTH_URL,
+                params={"grant_type": "account_credentials", "account_id": config.ZOOM_ACCOUNT_ID},
+                headers={"Authorization": f"Basic {basic}"},
+                timeout=config.ZOOM_SMS_TIMEOUT,
+            )
+        except httpx.HTTPError as exc:
+            raise ZoomSmsError(f"Zoom OAuth request failed ({type(exc).__name__}).") from exc
         if response.status_code >= 400:
             raise ZoomSmsError(f"Zoom OAuth failed ({response.status_code}).")
-        payload = response.json()
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise ZoomSmsError("Zoom OAuth returned an invalid response.") from exc
         _TOKEN = str(payload.get("access_token") or "")
         if not _TOKEN:
             raise ZoomSmsError("Zoom OAuth returned no access token.")
@@ -53,26 +58,28 @@ def _access_token() -> str:
 
 
 def send_sms(to_number: str, message: str, *, sender_number: str = "",
-             zoom_user_id: str = "") -> dict:
-    """Send one Zoom Phone SMS from the licensed user/number assigned to a recruiter."""
+             sender_user_id: str = "") -> dict:
     if not enabled():
         raise ZoomSmsError("Zoom Phone SMS is not configured.")
     sender_number = str(sender_number or config.ZOOM_SMS_SENDER_NUMBER).strip()
-    zoom_user_id = str(zoom_user_id or config.ZOOM_SMS_SENDER_USER_ID).strip()
-    if not sender_number or not zoom_user_id:
-        raise ZoomSmsError("A licensed Zoom Phone sender has not been configured for this user.")
+    sender_user_id = str(sender_user_id or config.ZOOM_SMS_SENDER_USER_ID).strip()
+    if not sender_number or not sender_user_id:
+        raise ZoomSmsError("A Zoom Phone sender number has not been assigned to this user.")
     payload = {
         "message": str(message),
         "to_members": [{"phone_number": str(to_number)}],
         "sender": {"phone_number": sender_number},
     }
-    response = httpx.post(
-        f"{config.ZOOM_API_BASE_URL}/phone/sms/messages",
-        params={"user_id": zoom_user_id},
-        json=payload,
-        headers={"Authorization": f"Bearer {_access_token()}"},
-        timeout=config.ZOOM_SMS_TIMEOUT,
-    )
+    try:
+        response = httpx.post(
+            f"{config.ZOOM_API_BASE_URL}/phone/sms/messages",
+            params={"user_id": sender_user_id},
+            json=payload,
+            headers={"Authorization": f"Bearer {_access_token()}"},
+            timeout=config.ZOOM_SMS_TIMEOUT,
+        )
+    except httpx.HTTPError as exc:
+        raise ZoomSmsError(f"Zoom SMS request failed ({type(exc).__name__}).") from exc
     if response.status_code >= 400:
         try:
             detail = response.json().get("message") or response.text
@@ -81,8 +88,10 @@ def send_sms(to_number: str, message: str, *, sender_number: str = "",
         raise ZoomSmsError(f"Zoom SMS failed ({response.status_code}): {detail}"[:1000])
     if not response.content:
         return {}
-    result = response.json()
-    # Some Zoom Phone account variants return a one-item result array.
+    try:
+        result = response.json()
+    except ValueError as exc:
+        raise ZoomSmsError("Zoom returned an invalid response.") from exc
     if isinstance(result, list):
         return dict(result[0]) if result and isinstance(result[0], dict) else {}
     return dict(result) if isinstance(result, dict) else {}

@@ -18,7 +18,7 @@ from build_frontend import build as build_frontend, release_javascript
 
 FORBIDDEN_CLIENT_TERMS = (
     "people data labs", "people_data_labs", "enformion", "endato",
-    "usphonebook", "neverbounce", "twilio", "quick sourcer",
+    "usphonebook", "neverbounce", "quick sourcer",
     "quick_sourcer", "quick-sourcer", "nexus", "api_key",
     "client_secret", "access_key", "secret_key",
 )

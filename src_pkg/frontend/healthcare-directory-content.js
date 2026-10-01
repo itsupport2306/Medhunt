@@ -2,9 +2,9 @@
   "use strict";
 
   const ADAPTER_REVISION = "healthcare-directory-v13";
-  const ADAPTER_REQUEST = "RADIXSOL_HEALTHCARE_DIRECTORY_V13_REQUEST";
-  if (window.__radixsolHealthcareDirectoryAdapterRevision === ADAPTER_REVISION) return;
-  window.__radixsolHealthcareDirectoryAdapterRevision = ADAPTER_REVISION;
+  const ADAPTER_REQUEST = "MEDHUNT_HEALTHCARE_DIRECTORY_V13_REQUEST";
+  if (window.__medhuntHealthcareDirectoryAdapterRevision === ADAPTER_REVISION) return;
+  window.__medhuntHealthcareDirectoryAdapterRevision = ADAPTER_REVISION;
 
   const host = location.hostname.toLowerCase();
   const matches = (root) => host === root || host.endsWith(`.${root}`);
@@ -72,10 +72,10 @@
     }
   }
 
-  // NPINO appends many valid nursing credentials to the provider link text.
-  // Keep them out of the candidate name so the card is still recognized as
-  // an individual provider (for example "Jane Doe, AGACNP-BC" or
-  // "Jane Doe, C.P.N.P.").
+
+
+
+
   const PROVIDER_CREDENTIAL = /^(?:M\.?D\.?|D\.?O\.?|M\.?P\.?H\.?|Ph\.?D\.?|DNP|APRN(?:-(?:C|BC|CNP))?|APN|ANP|NP(?:-(?:C|BC))?|FNP(?:-(?:C|BC))?|PNP(?:-(?:AC|PC|C|BC))?|C\.?P\.?N\.?P(?:-(?:AC|PC|C|BC))?|ACNP(?:-BC)?|AGNP(?:-(?:C|BC))?|AGACNP(?:-BC)?|AGPCNP(?:-(?:C|BC))?|WHNP(?:-(?:C|BC))?|NNP(?:-(?:C|BC))?|PMHNP(?:-(?:C|BC))?|CRNP|CNP|CNM|CRNA|CNS|CCRN|PA-C|R\.?\s*N\.?(?:-BC)?|LPN|LVN|MSN|B\.?\s*S\.?\s*N\.?|BSNRN|LCCE|REGISTERED NURSE|NURSE PRACTITIONER|DDS|DMD|FACP|FACOG)\.?$/i;
 
   function providerCredentials(value) {
@@ -187,15 +187,15 @@
           if (!value || typeof value !== "object") continue;
           values.push(value);
           if (Array.isArray(value["@graph"])) pending.push(...value["@graph"]);
-          // U.S. News sometimes nests its Physician schema below a
-          // MedicalWebPage instead of publishing it as a top-level object.
+
+
           if (value.mainEntity && typeof value.mainEntity === "object") pending.push(value.mainEntity);
-          // Sharecare publishes directory entries under SearchResultsPage.provider.
+
           if (Array.isArray(value.provider)) pending.push(...value.provider);
           else if (value.provider && typeof value.provider === "object") pending.push(value.provider);
         }
       } catch {
-        // Ignore unrelated or temporarily incomplete structured-data blocks.
+
       }
     }
     return values;
@@ -210,8 +210,8 @@
     const raw = typeof value === "string" ? value : value?.name;
     const text = clean(raw, 180);
     if (!text) return "";
-    // JSON-LD commonly uses Schema.org URLs for medicalSpecialty values.
-    // Keep the rendered PDF and the Nexus mapping human-readable.
+
+
     try {
       const parsed = new URL(text);
       if (parsed.hostname.toLowerCase() === "schema.org") {
@@ -453,10 +453,10 @@
   }
 
   function commonSpiritCard(link) {
-    // Current CommonSpirit cards are wrapped by a LiveView node such as
-    // #profile-card-<uuid>; older snapshots used #card-<uuid>.  Returning
-    // the outer wrapper is important because the provider link itself only
-    // contains the name, not the location or analytics payload.
+
+
+
+
     return link?.closest?.("[id^='profile-card-'], [id^='card-'], .csh-aem-result-card--profilewrap")
       || link?.closest?.(".csh-aem-result-card--provider")
       || link?.parentElement;
@@ -909,18 +909,18 @@
     const includedUrls = new Set(entries.map((entry) => absoluteUrl(
       entry.link?.getAttribute("href") || entry.card?.getAttribute("data-href") || "",
     )));
-    // CRNA result cards can use a different component than Sharecare's
-    // PhysicianCardAlternative. Include every actual doctor-profile link in
-    // the document, even if its surrounding card uses another class.
+
+
+
     for (const [url, link] of linksByUrl) {
       if (!url || includedUrls.has(url)) continue;
       const card = link.closest("article, li, [class*='ProviderCard'], [class*='provider-card'], [class*='result']");
       entries.push({ card, link, physician: byUrl.get(url) || null });
       includedUrls.add(url);
     }
-    // SearchResultsPage JSON-LD can contain more results than the cards that
-    // the current viewport has hydrated. Merge those providers instead of
-    // treating the presence of a few cards as a complete result list.
+
+
+
     for (const physician of physicians) {
       const url = absoluteUrl(physician.url || "");
       if (!url || includedUrls.has(url)) continue;
@@ -1105,8 +1105,8 @@
       || visibleText(document.querySelector("#experience")),
     );
 
-    // Wait for the experience block to hydrate before creating a document.
-    // This avoids saving a second, incomplete PDF while the React page loads.
+
+
     if (!education.length && !licenses.length && !certifications.length) return null;
     return {
       kind: "public_professional_profile",
@@ -1223,15 +1223,15 @@
       let profileUrl;
       try { profileUrl = new URL(href); } catch { continue; }
       if (!/^(?:www\.)?npino\.com$/i.test(profileUrl.hostname)) continue;
-      // NPINO uses /npi/ for doctors and profession-specific paths such as
-      // /nurse/ and /dentist/ for other individual providers.
+
+
       const npi = profileUrl.pathname.match(/^\/[a-z][a-z-]*\/(\d{10})(?:-[^/]*)?\/?$/i)?.[1];
       if (!npi || seen.has(npi)) continue;
       let card = null;
       for (let node = link; node; node = node.parentElement) {
         if (visibleText(node).length > 3000) break;
-        // Do not let an organization card inherit a person's name from an
-        // adjacent result when their common listing container is small.
+
+
         const otherProfile = all("a[href]", node).some((anchor) => {
           const path = absoluteUrl(anchor.getAttribute("href"));
           const linkedNpi = path.match(/\/[a-z][a-z-]*\/(\d{10})(?:-[^/?#]*)?\/?(?:[?#]|$)/i)?.[1];
@@ -1246,8 +1246,8 @@
           card = node;
           if (node.matches?.("article, li, tr, [class*='card'], [class*='result']")) break;
         }
-        // Unlike the former smallestContainer helper, keep walking above li
-        // and table-row boundaries: nurse cards commonly wrap those nodes.
+
+
         if (node === document.body) break;
       }
       if (!card) card = smallestContainer(link, /\bNPI Number\s*:/i);
@@ -1549,7 +1549,7 @@
     try {
       const result = scanSnapshot();
       chrome.runtime.sendMessage({
-        type: "RADIXSOL_PLATFORM_SCAN_PROGRESS",
+        type: "MEDHUNT_PLATFORM_SCAN_PROGRESS",
         platform: PLATFORM.key,
         found: result.count,
         total: result.expected_count,
@@ -1592,23 +1592,23 @@
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     const messageType = message?.type === ADAPTER_REQUEST ? message.original_type : message?.type;
     const respond = (payload) => sendResponse({ ...payload, adapter_revision: ADAPTER_REVISION });
-    if (messageType === "RADIXSOL_PLATFORM_PING") {
+    if (messageType === "MEDHUNT_PLATFORM_PING") {
       respond({ ok: true, platform: PLATFORM.key, label: PLATFORM.label, url: location.href });
       return false;
     }
-    if (messageType === "RADIXSOL_CAPTURE_PLATFORM_PROFILE") {
+    if (messageType === "MEDHUNT_CAPTURE_PLATFORM_PROFILE") {
       respond(captureProfile());
       return false;
     }
-    if (messageType === "RADIXSOL_LIST_PLATFORM_CANDIDATES") {
+    if (messageType === "MEDHUNT_LIST_PLATFORM_CANDIDATES") {
       respond(scanSnapshot());
       return false;
     }
-    if (messageType === "RADIXSOL_SCAN_PLATFORM_CANDIDATES") {
+    if (messageType === "MEDHUNT_SCAN_PLATFORM_CANDIDATES") {
       progressiveScan().then(respond).catch((error) => respond({ ok: false, error: String(error?.message || error) }));
       return true;
     }
-    if (messageType === "RADIXSOL_OPEN_PLATFORM_CANDIDATE") {
+    if (messageType === "MEDHUNT_OPEN_PLATFORM_CANDIDATE") {
       respond(openCandidate(message.index));
       return false;
     }
@@ -1630,7 +1630,7 @@
       lastSignature = signature;
       if (!signature && !hadResults) return;
       chrome.runtime.sendMessage({
-        type: "RADIXSOL_PLATFORM_RESULTS_CHANGED",
+        type: "MEDHUNT_PLATFORM_RESULTS_CHANGED",
         platform: PLATFORM.key,
         count: snapshot.count,
         page_url: location.href,

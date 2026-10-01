@@ -1,11 +1,11 @@
 (() => {
   "use strict";
 
-  const ADAPTER_REVISION = "platform-capture-v2";
-  const ADAPTER_REQUEST = "RADIXSOL_PLATFORM_V2_REQUEST";
-  if (window.__radixsolPlatformAdapterRevision === ADAPTER_REVISION) return;
-  window.__radixsolPlatformAdapterRevision = ADAPTER_REVISION;
-  window.__radixsolPlatformCaptureLoaded = true;
+  const ADAPTER_REVISION = "platform-capture-v3";
+  const ADAPTER_REQUEST = "MEDHUNT_PLATFORM_V3_REQUEST";
+  if (window.__medhuntPlatformAdapterRevision === ADAPTER_REVISION) return;
+  window.__medhuntPlatformAdapterRevision = ADAPTER_REVISION;
+  window.__medhuntPlatformCaptureLoaded = true;
 
   const host = location.hostname.toLowerCase();
   const PLATFORM = host === "vivian.com" || host.endsWith(".vivian.com")
@@ -47,7 +47,7 @@
         /^(?:closed|inactive|exited|stale)$/i.test(node.getAttribute?.("data-state") || "") ||
         /^(?:stale|removed)$/i.test(node.getAttribute?.("data-status") || "") ||
         node.getAttribute?.("data-stale") === "true" ||
-        node.getAttribute?.("data-radixsol-stale") === "true"
+        node.getAttribute?.("data-medhunt-stale") === "true"
       ) return false;
       const style = getComputedStyle(node);
       if (
@@ -198,10 +198,10 @@
       }
       const identity = [normalized(name), normalized(locationText), normalized(discipline), normalized(specialty)].join("|");
       const sourceId = explicitId ? `vv_${explicitId}` : `vv_${hash(identity)}`;
-      const identityKey = `${normalized(name)}|${normalized(locationText)}`;
-      if (seen.has(sourceId) || seen.has(identityKey)) continue;
+
+
+      if (seen.has(sourceId)) continue;
       seen.add(sourceId);
-      seen.add(identityKey);
       const profile = {
         name,
         location: locationText,
@@ -228,7 +228,7 @@
 
   function requestMainCandidates(timeoutMs = 1800) {
     return new Promise((resolve) => {
-      const requestId = `radixsol_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+      const requestId = `medhunt_${Date.now()}_${Math.random().toString(36).slice(2)}`;
       let finished = false;
       const finish = (value) => {
         if (finished) return;
@@ -239,12 +239,12 @@
       const receive = (event) => {
         if (
           event.source === window &&
-          event.data?.type === "RADIXSOL_PLATFORM_MAIN_RESPONSE" &&
+          event.data?.type === "MEDHUNT_PLATFORM_MAIN_V2_RESPONSE" &&
           event.data.requestId === requestId
         ) finish(Array.isArray(event.data.candidates) ? event.data.candidates : []);
       };
       window.addEventListener("message", receive);
-      window.postMessage({ type: "RADIXSOL_PLATFORM_MAIN_REQUEST", requestId }, "*");
+      window.postMessage({ type: "MEDHUNT_PLATFORM_MAIN_V2_REQUEST", requestId }, "*");
       setTimeout(() => finish([]), timeoutMs);
     });
   }
@@ -342,9 +342,24 @@
   }
 
   async function zipProfiles() {
-    let candidates = await requestMainCandidates();
+    const mainCandidates = await requestMainCandidates();
     const fallback = zipDomFallback();
-    if (!candidates.length) candidates = fallback.candidates;
+
+
+    const candidatesById = new Map();
+    for (const candidate of [...mainCandidates, ...fallback.candidates]) {
+      const id = clean(candidate.encryptedJobseekerId);
+      if (!id) continue;
+      const existing = candidatesById.get(id);
+      candidatesById.set(id, existing ? {
+        ...candidate,
+        ...existing,
+        _element: existing._element || candidate._element,
+        _url: existing._url || candidate._url,
+        _lines: existing._lines || candidate._lines,
+      } : candidate);
+    }
+    const candidates = [...candidatesById.values()];
     const profiles = [];
     const elements = new Map();
     const seen = new Set();
@@ -451,7 +466,7 @@
 
   function reportProgress(found, total, profiles) {
     chrome.runtime.sendMessage({
-      type: "RADIXSOL_PLATFORM_SCAN_PROGRESS",
+      type: "MEDHUNT_PLATFORM_SCAN_PROGRESS",
       platform: PLATFORM.key,
       found,
       total,
@@ -493,7 +508,8 @@
       let bottomStableRounds = 0;
       let previousCount = captured.size;
       let previousHeight = Number(container?.scrollHeight) || 0;
-      for (let step = 0; step < 36 && bottomStableRounds < 4 && captured.size < 100; step += 1) {
+      let lateLoadChecks = 0;
+      for (let step = 0; step < 80 && captured.size < 100; step += 1) {
         const clientHeight = Math.max(1, Number(container?.clientHeight) || window.innerHeight || 720);
         const beforeHeight = Number(container?.scrollHeight) || clientHeight;
         const maxTop = Math.max(0, beforeHeight - clientHeight);
@@ -512,6 +528,14 @@
         bottomStableRounds = atBottom && unchanged ? bottomStableRounds + 1 : 0;
         previousCount = captured.size;
         previousHeight = afterHeight;
+        if (bottomStableRounds >= 4) {
+          if (expected > captured.size && lateLoadChecks < 3) {
+            lateLoadChecks += 1;
+            await new Promise((resolve) => setTimeout(resolve, 600));
+            await merge();
+            bottomStableRounds = 0;
+          } else break;
+        }
       }
       const profiles = [...captured.values()].slice(0, 100).map((profile, index) => ({ ...profile, result_index: index }));
       lastProfiles = profiles;
@@ -572,23 +596,23 @@
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     const messageType = message?.type === ADAPTER_REQUEST ? message.original_type : message?.type;
     const respond = (payload) => sendResponse({ ...payload, adapter_revision: ADAPTER_REVISION });
-    if (messageType === "RADIXSOL_PLATFORM_PING") {
+    if (messageType === "MEDHUNT_PLATFORM_PING") {
       respond({ ok: true, platform: PLATFORM.key, label: PLATFORM.label, url: location.href });
       return false;
     }
-    if (messageType === "RADIXSOL_CAPTURE_PLATFORM_PROFILE") {
+    if (messageType === "MEDHUNT_CAPTURE_PLATFORM_PROFILE") {
       captureProfile().then(respond).catch((error) => respond({ ok: false, error: String(error?.message || error) }));
       return true;
     }
-    if (messageType === "RADIXSOL_LIST_PLATFORM_CANDIDATES") {
+    if (messageType === "MEDHUNT_LIST_PLATFORM_CANDIDATES") {
       scanSnapshot().then(respond).catch((error) => respond({ ok: false, error: String(error?.message || error) }));
       return true;
     }
-    if (messageType === "RADIXSOL_SCAN_PLATFORM_CANDIDATES") {
+    if (messageType === "MEDHUNT_SCAN_PLATFORM_CANDIDATES") {
       progressiveScan().then(respond).catch((error) => respond({ ok: false, error: String(error?.message || error) }));
       return true;
     }
-    if (messageType === "RADIXSOL_OPEN_PLATFORM_CANDIDATE") {
+    if (messageType === "MEDHUNT_OPEN_PLATFORM_CANDIDATE") {
       respond(openCandidate(message.index));
       return false;
     }
@@ -608,7 +632,7 @@
       lastSignature = signature;
       if (!signature && !hadResults) return;
       chrome.runtime.sendMessage({
-        type: "RADIXSOL_PLATFORM_RESULTS_CHANGED",
+        type: "MEDHUNT_PLATFORM_RESULTS_CHANGED",
         platform: PLATFORM.key,
         count: snapshot?.profiles?.length || 0,
         page_url: location.href,

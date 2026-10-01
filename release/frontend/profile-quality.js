@@ -6,9 +6,19 @@
 (() => {
   const MAX_PROFILES = 100;
   const CREDENTIALS = new Set([
-    "acls", "aprn", "bls", "bsn", "cna", "cnor", "crna", "cst", "dnp",
-    "do", "lpn", "lvn", "ma", "mba", "md", "msn", "np", "pals", "pccn", "phd",
-    "phn", "rma", "rn",
+
+
+
+
+    "aa", "acls", "acnp", "acnpbc", "agacnp", "agacnpbc", "agnp", "agnpc", "agnpbc",
+    "agpcnp", "agpcnpc", "agpcnpbc", "anp", "anpbc",
+    "apn", "aprn", "bls", "bsn", "bsnrn", "ccrn", "cdces", "cde", "cnm", "cna", "cnor", "cnp",
+    "cmsrn", "cns", "cpnp", "cpnpac", "cpnpbc", "cpnppc", "cph", "cphq", "crna", "crnp", "cst", "dds",
+    "dmd", "dnp", "dpt", "do", "edd", "emt", "facog", "facp", "facs", "fnp", "fnpbc", "fnpc", "gnp",
+    "lcce", "lcsw", "lmft", "lmhc", "lmsw", "lpn", "lvn", "ma", "mba", "md", "mha", "mph", "mpt", "msn",
+    "np", "npc", "npbc", "nnp", "ot", "otd", "pac", "pals", "pccn", "pharmd", "phd", "phn", "pmhnp",
+    "pmhnpbc", "pnp", "pnpbc", "pt", "rd", "rma", "rn", "rnbc", "rph", "slp", "sw", "whnp", "jr", "sr",
+    "ii", "iii", "iv", "v", "nursepractitioner", "whnpc", "whnpbc", "nnpc", "nnpbc",
   ]);
   const NON_PERSON_LABELS = new Set([
     "add friend", "candidate", "candidates", "connect", "contact info",
@@ -310,7 +320,7 @@
     return { profiles: [...profiles.values()], skipped, skippedCount };
   }
 
-  globalThis.RadixsolProfileQuality = Object.freeze({
+  globalThis.MedhuntProfileQuality = Object.freeze({
     cleanText,
     normalizeName,
     likelyPersonName,

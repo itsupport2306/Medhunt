@@ -2,10 +2,10 @@ async function enableActionClick() {
   await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
 }
 
-const TAB_CONTEXT_EVENT = "RADIXSOL_ACTIVE_TAB_CHANGED";
+const TAB_CONTEXT_EVENT = "MEDHUNT_ACTIVE_TAB_CHANGED";
 const tabUpdateTimers = new Map();
 const linkedinDownloadClaims = new Map();
-const PENDING_RESUME_KEY = "radixsolPendingResumeEvents";
+const PENDING_RESUME_KEY = "medhuntPendingResumeEvents";
 
 async function queueResumeEvent(event) {
   const eventId = String(event.event_id || `${event.platform || "indeed"}:${event.candidateId}:${Date.now()}`);
@@ -169,7 +169,7 @@ async function dispatchTrustedIndeedClick(tabId, x, y) {
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message?.type === "RADIXSOL_GET_ACTIVE_TAB_CONTEXT") {
+  if (message?.type === "MEDHUNT_GET_ACTIVE_TAB_CONTEXT") {
     chrome.tabs.query({ active: true, currentWindow: true })
       .then(([tab]) => sendResponse(tab ? tabContext(tab, "requested") : {
         type: TAB_CONTEXT_EVENT,
@@ -193,7 +193,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }));
     return true;
   }
-  if (message?.type === "RADIXSOL_GET_PENDING_RESUME_EVENTS") {
+  if (message?.type === "MEDHUNT_GET_PENDING_RESUME_EVENTS") {
     chrome.storage.session.get([PENDING_RESUME_KEY])
       .then((stored) => sendResponse({
         ok: true,
@@ -202,13 +202,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .catch(() => sendResponse({ ok: true, events: [] }));
     return true;
   }
-  if (message?.type === "RADIXSOL_ACK_RESUME_EVENT") {
+  if (message?.type === "MEDHUNT_ACK_RESUME_EVENT") {
     acknowledgeResumeEvent(message.event_id)
       .then(() => sendResponse({ ok: true }))
       .catch((error) => sendResponse({ ok: false, error: String(error) }));
     return true;
   }
-  if (message?.type === "RADIXSOL_TRUSTED_INDEED_CLICK") {
+  if (message?.type === "MEDHUNT_TRUSTED_INDEED_CLICK") {
     const tabId = Number(sender?.tab?.id);
     const tabUrl = String(sender?.tab?.url || "");
     const x = Number(message.x);
@@ -227,7 +227,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     dispatchTrustedIndeedClick(tabId, x, y).then(sendResponse);
     return true;
   }
-  if (message?.type === "RADIXSOL_TRUSTED_LINKEDIN_CLICK") {
+  if (message?.type === "MEDHUNT_TRUSTED_LINKEDIN_CLICK") {
     const tabId = Number(sender?.tab?.id);
     const tabUrl = String(sender?.tab?.url || "");
     const x = Number(message.x);
@@ -248,9 +248,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     dispatchTrustedIndeedClick(tabId, x, y).then(sendResponse);
     return true;
   }
-  if (message?.type === "RADIXSOL_SET_ACTIVE_CANDIDATE") {
+  if (message?.type === "MEDHUNT_SET_ACTIVE_CANDIDATE") {
     chrome.storage.session.set({
-      radixsolResumeCandidate: {
+      medhuntResumeCandidate: {
         candidateId: Number(message.candidateId),
         name: String(message.name || ""),
         sourceId: String(message.sourceId || ""),
@@ -261,13 +261,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     });
     return true;
   }
-  if (message?.type === "RADIXSOL_CLEAR_ACTIVE_CANDIDATE") {
-    chrome.storage.session.remove(["radixsolResumeCandidate"])
+  if (message?.type === "MEDHUNT_CLEAR_ACTIVE_CANDIDATE") {
+    chrome.storage.session.remove(["medhuntResumeCandidate"])
       .then(() => sendResponse({ ok: true }))
       .catch((error) => sendResponse({ ok: false, error: String(error) }));
     return true;
   }
-  if (message?.type === "RADIXSOL_ARM_LINKEDIN_PDF_CAPTURE") {
+  if (message?.type === "MEDHUNT_ARM_LINKEDIN_PDF_CAPTURE") {
     const tabId = Number(message.tabId);
     const candidateId = Number(message.candidateId);
     const sourceUrl = String(message.sourceUrl || "");
@@ -281,7 +281,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         throw new Error("The selected browser tab does not show this candidate's exact LinkedIn profile.");
       }
       await chrome.storage.session.set({
-        radixsolLinkedinPdfCapture: {
+        medhuntLinkedinPdfCapture: {
           candidateId,
           name: String(message.name || "LinkedIn candidate"),
           sourceUrl,
@@ -296,8 +296,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }).catch((error) => sendResponse({ ok: false, error: String(error?.message || error) }));
     return true;
   }
-  if (message?.type === "RADIXSOL_DISARM_LINKEDIN_PDF_CAPTURE") {
-    chrome.storage.session.remove(["radixsolLinkedinPdfCapture"])
+  if (message?.type === "MEDHUNT_DISARM_LINKEDIN_PDF_CAPTURE") {
+    chrome.storage.session.remove(["medhuntLinkedinPdfCapture"])
       .then(() => sendResponse({ ok: true }))
       .catch((error) => sendResponse({ ok: false, error: String(error?.message || error) }));
     return true;
@@ -394,19 +394,19 @@ async function matchesArmedLinkedinPdf(download, capture) {
 
 chrome.downloads.onCreated.addListener((download) => {
   const linkedinClaim = (async () => {
-    const session = await chrome.storage.session.get(["radixsolLinkedinPdfCapture"]);
-    const linkedin = session.radixsolLinkedinPdfCapture;
+    const session = await chrome.storage.session.get(["medhuntLinkedinPdfCapture"]);
+    const linkedin = session.medhuntLinkedinPdfCapture;
     if (linkedin?.candidateId && Number(linkedin.expiresAt) >= Date.now()) {
       if (await matchesArmedLinkedinPdf(download, linkedin)) {
         await chrome.storage.session.set({
-          radixsolLinkedinPdfCapture: {
+          medhuntLinkedinPdfCapture: {
             ...linkedin,
             downloadId: Number(download.id),
             downloadStartedAt: Date.now(),
           },
         });
         await chrome.runtime.sendMessage({
-          type: "RADIXSOL_LINKEDIN_PDF_CAPTURE_STARTED",
+          type: "MEDHUNT_LINKEDIN_PDF_CAPTURE_STARTED",
           candidateId: Number(linkedin.candidateId),
         }).catch(() => {});
         return true;
@@ -419,12 +419,12 @@ chrome.downloads.onCreated.addListener((download) => {
 
   (async () => {
     await linkedinClaim;
-    const capture = await chrome.storage.local.get(["radixsolResumeCapturing"]);
-    if (!capture.radixsolResumeCapturing) return;
+    const capture = await chrome.storage.local.get(["medhuntResumeCapturing"]);
+    if (!capture.medhuntResumeCapturing) return;
     const url = download.finalUrl || download.url || "";
     if (!url) return;
     await chrome.storage.local.set({
-      radixsolLastResumeDownload: {
+      medhuntLastResumeDownload: {
         id: download.id,
         url,
         mime: download.mime || "",
@@ -443,22 +443,22 @@ chrome.downloads.onChanged.addListener((delta) => {
 
     const pendingClaim = linkedinDownloadClaims.get(Number(delta.id));
     if (pendingClaim) await pendingClaim;
-    const session = await chrome.storage.session.get(["radixsolLinkedinPdfCapture"]);
-    const linkedin = session.radixsolLinkedinPdfCapture;
+    const session = await chrome.storage.session.get(["medhuntLinkedinPdfCapture"]);
+    const linkedin = session.medhuntLinkedinPdfCapture;
     if (linkedin?.candidateId && Number(linkedin.downloadId) === Number(delta.id)) {
       if (delta.state.current === "interrupted") {
         await chrome.runtime.sendMessage({
-          type: "RADIXSOL_LINKEDIN_PDF_CAPTURE_FAILED",
+          type: "MEDHUNT_LINKEDIN_PDF_CAPTURE_FAILED",
           candidateId: Number(linkedin.candidateId),
           error: delta.error?.current || "The LinkedIn PDF download was interrupted.",
         }).catch(() => {});
-        await chrome.storage.session.remove(["radixsolLinkedinPdfCapture"]);
+        await chrome.storage.session.remove(["medhuntLinkedinPdfCapture"]);
         return;
       }
       const [download] = await chrome.downloads.search({ id: delta.id });
       if (download && await matchesArmedLinkedinPdf(download, linkedin)) {
         await queueResumeEvent({
-          type: "RADIXSOL_RESUME_DOWNLOADED",
+          type: "MEDHUNT_RESUME_DOWNLOADED",
           platform: "linkedin",
           candidateId: Number(linkedin.candidateId),
           candidateName: linkedin.name,
@@ -467,29 +467,29 @@ chrome.downloads.onChanged.addListener((delta) => {
         });
       } else {
         await chrome.runtime.sendMessage({
-          type: "RADIXSOL_LINKEDIN_PDF_CAPTURE_FAILED",
+          type: "MEDHUNT_LINKEDIN_PDF_CAPTURE_FAILED",
           candidateId: Number(linkedin.candidateId),
           error: "The PDF did not complete from the exact armed LinkedIn profile and tab.",
         }).catch(() => {});
       }
-      await chrome.storage.session.remove(["radixsolLinkedinPdfCapture"]);
+      await chrome.storage.session.remove(["medhuntLinkedinPdfCapture"]);
       return;
     }
 
     if (delta.state.current !== "complete") return;
     const [download] = await chrome.downloads.search({ id: delta.id });
     if (!download || !isIndeedResumeDownload(download)) return;
-    const stored = await chrome.storage.session.get(["radixsolResumeCandidate"]);
-    const candidate = stored.radixsolResumeCandidate;
+    const stored = await chrome.storage.session.get(["medhuntResumeCandidate"]);
+    const candidate = stored.medhuntResumeCandidate;
     if (!candidate?.candidateId || Number(candidate.expiresAt) < Date.now()) return;
     await queueResumeEvent({
-      type: "RADIXSOL_RESUME_DOWNLOADED",
+      type: "MEDHUNT_RESUME_DOWNLOADED",
       platform: "indeed",
       candidateId: Number(candidate.candidateId),
       candidateName: candidate.name,
       path: download.filename,
       filename: String(download.filename || "").split(/[\\/]/).pop() || "resume.pdf",
     });
-    await chrome.storage.session.remove(["radixsolResumeCandidate"]);
+    await chrome.storage.session.remove(["medhuntResumeCandidate"]);
   })().catch(console.error);
 });

@@ -2,10 +2,10 @@
   "use strict";
 
   const ADAPTER_REVISION = "indeed-capture-v6";
-  const ADAPTER_REQUEST = "RADIXSOL_INDEED_V6_REQUEST";
-  if (window.__radixsolIndeedAdapterRevision === ADAPTER_REVISION) return;
-  window.__radixsolIndeedAdapterRevision = ADAPTER_REVISION;
-  window.__radixsolIndeedCaptureLoaded = true;
+  const ADAPTER_REQUEST = "MEDHUNT_INDEED_V6_REQUEST";
+  if (window.__medhuntIndeedAdapterRevision === ADAPTER_REVISION) return;
+  window.__medhuntIndeedAdapterRevision = ADAPTER_REVISION;
+  window.__medhuntIndeedCaptureLoaded = true;
 
   const NAME_SELECTORS = [
     "[data-cauto-id='candidate-name']",
@@ -45,7 +45,7 @@
         /^(?:closed|inactive|exited|stale)$/i.test(node.getAttribute?.("data-state") || "") ||
         /^(?:stale|removed)$/i.test(node.getAttribute?.("data-status") || "") ||
         node.getAttribute?.("data-stale") === "true" ||
-        node.getAttribute?.("data-radixsol-stale") === "true"
+        node.getAttribute?.("data-medhunt-stale") === "true"
       ) return false;
       const style = getComputedStyle(node);
       if (
@@ -197,9 +197,9 @@
     return new Promise((resolve) => setTimeout(resolve, milliseconds));
   }
 
-  // Indeed's React handlers sometimes listen to pointer/mouse events rather
-  // than a bare HTMLElement.click(). This mirrors a normal user click closely
-  // enough to open candidate panels and their action menus.
+
+
+
   function realClick(element) {
     if (!element) return;
     const options = { bubbles: true, cancelable: true, view: window };
@@ -210,14 +210,14 @@
     try { element.click(); } catch {}
   }
 
-  // Resume bytes posted by inject.js from Indeed's MAIN JavaScript world.
-  // Keep the largest capture because the real resume is normally much larger
-  // than unrelated blobs created by the page.
+
+
+
   let capturedResume = null;
   let capturedTentativeResume = null;
   let resumeCaptureEvents = [];
   window.addEventListener("message", (event) => {
-    if (event.source !== window || !event.data?.__radixsolResume) return;
+    if (event.source !== window || !event.data?.__medhuntResume) return;
     const incoming = {
       base64: String(event.data.base64 || ""),
       contentType: String(event.data.contentType || ""),
@@ -264,18 +264,18 @@
     capturedResume = null;
     capturedTentativeResume = null;
     resumeCaptureEvents = [];
-    await chrome.storage.local.set({ radixsolResumeCapturing: true });
-    await chrome.storage.local.remove(["radixsolLastResumeDownload"]);
+    await chrome.storage.local.set({ medhuntResumeCapturing: true });
+    await chrome.storage.local.remove(["medhuntLastResumeDownload"]);
   }
 
   async function endResumeCapture() {
-    await chrome.storage.local.set({ radixsolResumeCapturing: false });
+    await chrome.storage.local.set({ medhuntResumeCapturing: false });
   }
 
   async function lastCapturedDownload() {
     try {
-      const stored = await chrome.storage.local.get(["radixsolLastResumeDownload"]);
-      return stored.radixsolLastResumeDownload || null;
+      const stored = await chrome.storage.local.get(["medhuntLastResumeDownload"]);
+      return stored.medhuntLastResumeDownload || null;
     } catch {
       return null;
     }
@@ -288,8 +288,8 @@
     while (Date.now() - started < timeoutMs) {
       if (capturedResume) {
         if (!captureObservedAt) captureObservedAt = Date.now();
-        // Give Chrome a brief chance to report its own visible download. If it
-        // does not, the side panel explicitly saves the captured PDF.
+
+
         if (Date.now() - captureObservedAt >= 900) {
           return {
             ...capturedResume,
@@ -379,9 +379,9 @@
       if (element.matches?.("button")) return 500;
       return 100;
     };
-    // A data-testid wrapper may contain both the icon and its popup. Keep it as
-    // a fallback, but rank the actual aria-labelled button/direct PDF link last
-    // because currentProfileControlState intentionally selects the final item.
+
+
+
     return all(DOWNLOAD_SELECTORS.join(","))
       .filter(isVisible)
       .sort((first, second) => score(first) - score(second));
@@ -516,10 +516,10 @@
     const sourceUrl = linkedSourceUrl || location.href;
 
     let derivedId = sourceId;
-    // On Smart Sourcing result pages, location.href can identify the open
-    // drawer rather than the card being scanned. Reusing that page-level ID
-    // collapses several visible candidates into one. Only derive from the
-    // current page URL when capturing an individual profile.
+
+
+
+
     if (!derivedId && (linkedSourceUrl || allowPageIdentity)) {
       try {
         const url = new URL(sourceUrl);
@@ -563,8 +563,8 @@
       !card.matches?.("[role='dialog'], [data-testid*='profile'], [data-cauto-id*='PROFILE']") &&
       Boolean(visibleCandidateName(card))
     ));
-    // Prefer the smallest candidate-specific node. SPA remnants and drawers
-    // often wrap the actual result cards in a second data-candidate-id node.
+
+
     return candidates.filter((card) => !candidates.some((other) => (
       other !== card && card.contains(other)
     )));
@@ -572,9 +572,9 @@
 
   function scanDisplayedCandidates() {
     const nameSelector = RESULT_NAME_SELECTOR;
-    // Prefer Indeed's explicit match cards. Mixing them with generic
-    // data-candidate-id containers can add the open profile drawer as a fake
-    // extra candidate and reuse its id across the real result cards.
+
+
+
     const cards = displayedResultCards();
     let items = [];
 
@@ -612,8 +612,8 @@
       const cardAutoSourceId = cardAutoId.startsWith("MATCH_CARD_BASE-")
         ? cardAutoId.slice("MATCH_CARD_BASE-".length)
         : "";
-      // MATCH_CARD_BASE belongs to the result card and is more reliable than
-      // a candidate id inherited from an open drawer or results container.
+
+
       const headline = extractHeadline(item.card, name, locationText);
       const sourceId = cardAutoSourceId || identity.sourceId ||
         `indeed_${stableHash([name, locationText, headline].join("|"))}`;
@@ -686,7 +686,7 @@
 
   function reportScanProgress(found, total, profiles) {
     chrome.runtime.sendMessage({
-      type: "RADIXSOL_PLATFORM_SCAN_PROGRESS",
+      type: "MEDHUNT_PLATFORM_SCAN_PROGRESS",
       platform: "indeed",
       found,
       total,
@@ -723,8 +723,8 @@
             await sleep(35);
           }
         }
-        // Keep the newest live element for virtualized result lists. Earlier
-        // card nodes are commonly detached as the page scrolls.
+
+
         if (snapshotElements[index]?.isConnected) {
           capturedElements.set(key, snapshotElements[index]);
         }
@@ -742,8 +742,8 @@
     };
 
     try {
-      // Start at the beginning even when the recruiter opened the panel while
-      // midway through a virtualized list, then restore their position below.
+
+
       if (originalTop > 0) {
         setTop(0);
         await sleep(180);
@@ -774,9 +774,9 @@
         previousCount = captured.size;
         previousHeight = afterHeight;
 
-        // A lazy loader may append rows just after reaching the old bottom.
-        // Requiring three unchanged observations avoids stopping on that
-        // transient state, even when the initial expected count was too low.
+
+
+
         if (bottomStableRounds >= 4) {
           if (expected > captured.size && lateLoadChecks < 3) {
             lateLoadChecks += 1;
@@ -880,9 +880,9 @@
         "[role='menuitem'], [role='option'], [role='button'], button, a, li, div, span",
         scope,
       )) {
-        // Indeed sometimes renders the popup inside a data-testid download
-        // wrapper. Do not reject descendants of the trigger: that excluded the
-        // real menu rows in the three-option Download profile/resume layout.
+
+
+
         if (!isVisible(element) || element === trigger) continue;
         const text = visibleText(element).replace(/\s+/g, " ").trim();
         if (!text || text.length > 40 || !/^download\b/i.test(text)) continue;
@@ -911,7 +911,7 @@
     const y = Math.max(2, Math.min(window.innerHeight - 2, Math.round(rect.top + rect.height / 2)));
     return new Promise((resolve) => {
       chrome.runtime.sendMessage(
-        { type: "RADIXSOL_TRUSTED_INDEED_CLICK", x, y },
+        { type: "MEDHUNT_TRUSTED_INDEED_CLICK", x, y },
         (response) => {
           const error = chrome.runtime.lastError;
           if (error) resolve({ ok: false, error: error.message });
@@ -1018,9 +1018,9 @@
       const rendered = exactRenderedProfile(expectedName, selectedElement);
       if (rendered) return rendered;
 
-      // Some Smart Sourcing layouts do not render the candidate name inside
-      // the profile pane. In that case, accept only if clicking the exact saved
-      // result produced a new Download control or changed the profile pane.
+
+
+
       const state = currentProfileControlState();
       const panelChanged = state.control && (
         !beforeState.control ||
@@ -1087,8 +1087,8 @@
           };
         }
 
-        // Keep the verified profile's original control. Re-scanning while its
-        // menu is open can return a popup wrapper instead of the icon button.
+
+
         const currentTrigger = context.downloadControl || trigger;
         currentTrigger.scrollIntoView({ behavior: "auto", block: "center" });
         let menuAction = findDownloadMenuAction(currentTrigger);
@@ -1188,29 +1188,29 @@
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const messageType = message?.type === ADAPTER_REQUEST ? message.original_type : message?.type;
     const respond = (payload) => sendResponse({ ...payload, adapter_revision: ADAPTER_REVISION });
-    if (["RADIXSOL_INDEED_PING", "RADIXSOL_PLATFORM_PING"].includes(messageType)) {
+    if (["MEDHUNT_INDEED_PING", "MEDHUNT_PLATFORM_PING"].includes(messageType)) {
       respond({ ok: true, platform: "indeed", label: "Indeed", url: location.href, version: "5" });
       return false;
     }
-    if (["RADIXSOL_CAPTURE_INDEED_PROFILE", "RADIXSOL_CAPTURE_PLATFORM_PROFILE"].includes(messageType)) {
+    if (["MEDHUNT_CAPTURE_INDEED_PROFILE", "MEDHUNT_CAPTURE_PLATFORM_PROFILE"].includes(messageType)) {
       respond(captureProfile());
       return false;
     }
-    if (["RADIXSOL_LIST_INDEED_CANDIDATES", "RADIXSOL_LIST_PLATFORM_CANDIDATES"].includes(messageType)) {
+    if (["MEDHUNT_LIST_INDEED_CANDIDATES", "MEDHUNT_LIST_PLATFORM_CANDIDATES"].includes(messageType)) {
       respond(scanDisplayedCandidates());
       return false;
     }
-    if (["RADIXSOL_SCAN_INDEED_CANDIDATES", "RADIXSOL_SCAN_PLATFORM_CANDIDATES"].includes(messageType)) {
+    if (["MEDHUNT_SCAN_INDEED_CANDIDATES", "MEDHUNT_SCAN_PLATFORM_CANDIDATES"].includes(messageType)) {
       scanDisplayedCandidatesProgressively()
         .then(respond)
         .catch((error) => respond({ ok: false, error: String(error) }));
       return true;
     }
-    if (["RADIXSOL_OPEN_INDEED_CANDIDATE", "RADIXSOL_OPEN_PLATFORM_CANDIDATE"].includes(messageType)) {
+    if (["MEDHUNT_OPEN_INDEED_CANDIDATE", "MEDHUNT_OPEN_PLATFORM_CANDIDATE"].includes(messageType)) {
       respond(openDisplayedCandidate(message.index));
       return false;
     }
-    if (messageType === "RADIXSOL_DOWNLOAD_INDEED_RESUME") {
+    if (messageType === "MEDHUNT_DOWNLOAD_INDEED_RESUME") {
       downloadDisplayedCandidateResume(message.index, message.expectedName)
         .then(respond)
         .catch((error) => respond({ ok: false, error: String(error?.message || error) }));
@@ -1239,12 +1239,12 @@
       if (signature === lastResultsSignature) return;
       const hadResults = Boolean(lastResultsSignature);
       lastResultsSignature = signature;
-      // Do not announce an empty initial page, but do announce a transition
-      // from populated results to zero so the side panel can clear stale rows.
+
+
       if (!signature && !hadResults) return;
       chrome.runtime.sendMessage(
         {
-          type: "RADIXSOL_PLATFORM_RESULTS_CHANGED",
+          type: "MEDHUNT_PLATFORM_RESULTS_CHANGED",
           platform: "indeed",
           count: signature ? signature.split("|").length : 0,
           page_url: location.href,
@@ -1271,7 +1271,7 @@
   setInterval(() => {
     if (location.href === observedResultsUrl) return;
     observedResultsUrl = location.href;
-    // A new SPA route must not compare against the preceding route's cards.
+
     lastResultsSignature = "";
     detectResultsChange();
   }, 1500);

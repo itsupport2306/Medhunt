@@ -2,29 +2,29 @@
   "use strict";
 
   const ADAPTER_REVISION = "facebook-profile-v8";
-  const ADAPTER_REQUEST = "RADIXSOL_FACEBOOK_V8_REQUEST";
-  if (window.__radixsolFacebookAdapterRevision === ADAPTER_REVISION) return;
-  if (window.__radixsolFacebookMessageListener) {
+  const ADAPTER_REQUEST = "MEDHUNT_FACEBOOK_V8_REQUEST";
+  if (window.__medhuntFacebookAdapterRevision === ADAPTER_REVISION) return;
+  if (window.__medhuntFacebookMessageListener) {
     try {
-      chrome.runtime.onMessage.removeListener(window.__radixsolFacebookMessageListener);
+      chrome.runtime.onMessage.removeListener(window.__medhuntFacebookMessageListener);
     } catch {
-      // An older test/runtime shim may not implement removeListener.
+
     }
   }
-  if (window.__radixsolFacebookObserver) {
-    try { window.__radixsolFacebookObserver.disconnect(); } catch { /* no-op */ }
+  if (window.__medhuntFacebookObserver) {
+    try { window.__medhuntFacebookObserver.disconnect(); } catch { /* no-op */ }
   }
-  if (window.__radixsolFacebookMutationTimer) {
-    clearTimeout(window.__radixsolFacebookMutationTimer);
+  if (window.__medhuntFacebookMutationTimer) {
+    clearTimeout(window.__medhuntFacebookMutationTimer);
   }
-  if (window.__radixsolFacebookRouteTimer) {
-    clearInterval(window.__radixsolFacebookRouteTimer);
+  if (window.__medhuntFacebookRouteTimer) {
+    clearInterval(window.__medhuntFacebookRouteTimer);
   }
-  window.__radixsolFacebookCaptureLoaded = true;
-  window.__radixsolFacebookAdapterRevision = ADAPTER_REVISION;
+  window.__medhuntFacebookCaptureLoaded = true;
+  window.__medhuntFacebookAdapterRevision = ADAPTER_REVISION;
 
   const PLATFORM = { key: "facebook", label: "Facebook" };
-  // Application routes must never be mistaken for a person's vanity name.
+
   const RESERVED_ROUTES = new Set([
     "watch", "marketplace", "gaming", "groups", "events", "pages", "ads",
     "business", "help", "settings", "notifications", "messages", "friends",
@@ -127,9 +127,9 @@
       const segments = path.split("/").filter(Boolean).map((part) => decodeURIComponent(part));
       if (!segments.length) return null;
       const first = clean(segments[0]).toLowerCase();
-      // Modern Facebook sometimes emits /people/Name/<numeric-id> links.
-      // Reject every other /people shape instead of treating "people" as a
-      // vanity username.
+
+
+
       if (first === "people") {
         if (segments.length >= 3 && /^\d+$/.test(segments.at(-1) || "")) {
           const id = segments.at(-1);
@@ -273,9 +273,9 @@
     if (/\bfacebook page\b/i.test(regionLabel)) pageScore += 6;
     if (/^(?:business\.business|business|place|product)$/i.test(ogType)) pageScore += 4;
 
-    // Business Pages expose strong Page-specific UI and no friend identity.
-    // Personal profiles in professional mode may show Follow and thousands of
-    // followers, so neither of those is treated as Page evidence by itself.
+
+
+
     if (pageScore >= 6 && personalScore < 5) return "page";
     return "personal";
   }
@@ -418,8 +418,8 @@
       if (PROFILE_SIGNAL_RE.test(line)) signalIndexes.push(index);
     });
     for (const signalIndex of signalIndexes) {
-      // The visible name immediately precedes the Friends / action row even
-      // when Facebook renders it as a plain span outside role=main.
+
+
       for (let offset = 1; offset <= 8 && signalIndex - offset >= 0; offset += 1) {
         const value = lines[signalIndex - offset];
         if (PROFILE_SIGNAL_RE.test(value)) continue;
@@ -585,9 +585,9 @@
         values.push(text);
         continue;
       }
-      // Legacy profiles sometimes render "Role at Employer" as a plain
-      // direct child. Accept it only inside a known facts area (or directly
-      // under main), never from a post, comment, feed, or dialog.
+
+
+
       if (/^.{2,100}\s+at\s+.{2,140}$/i.test(text)
           && (insideArea(element) || element.parentElement === root)) {
         values.push(text);
@@ -598,9 +598,9 @@
 
   function normalizeLocation(value) {
     return clean(value)
-      // Facebook can expose both a semantic aria label and visible text, for
-      // example `Hometown: From Wichita, Kansas`. Strip every leading label
-      // while retaining the location itself.
+
+
+
       .replace(/^(?:(?:Lives in|Current city|Location|Hometown|From)\s*:?\s*)+/i, "")
       .replace(/\s*[·|]\s*.*$/, "")
       .trim();
@@ -721,14 +721,14 @@
 
   function readProfile(identity = facebookIdentity(), suppliedRegion = null) {
     if (!identity) return null;
-    // Facebook SPA navigation can retain a hidden/background Search results
-    // main next to the active profile. Bind identity and facts to the selected
-    // non-search main so one person's card cannot contaminate another profile.
+
+
+
     const root = suppliedRegion || profileRegion(identity) || document.body;
     let header = profileHeader(root, identity);
     if (!header.name && root !== document.body) {
-      // A few layouts place the cover just outside main. Body fallback may
-      // recover the header, but facts below remain scoped to the active main.
+
+
       header = profileHeader(document.body, identity);
     }
     if (!header.name) return null;
@@ -746,14 +746,14 @@
     )), 20);
     const routeBound = boundIdentities.includes(identity.sourceId);
     if (boundIdentities.length && !routeBound) return null;
-    const previous = window.__radixsolFacebookLastProfile;
+    const previous = window.__medhuntFacebookLastProfile;
     if (
       previous && previous.source_id !== identity.sourceId
       && sameLooseText(previous.name, header.name) && !routeBound
     ) return null;
-    // Facts are deliberately limited to the visible profile header and
-    // Intro/About/Personal-details regions. Timeline posts and comments can
-    // mention other people and places and must never become lookup evidence.
+
+
+
     const values = boundedFactValues(root, header.element);
     const facts = extractFacts(values, header);
     const noteLines = [
@@ -785,7 +785,7 @@
       result_index: 0,
       captured_at: new Date().toISOString(),
     };
-    window.__radixsolFacebookLastProfile = {
+    window.__medhuntFacebookLastProfile = {
       source_id: profile.source_id,
       name: profile.name,
     };
@@ -855,12 +855,12 @@
   }
 
   const messageListener = (message, _sender, sendResponse) => {
-    // The revision-only envelope lets the side panel bypass an anonymous
-    // listener left behind by pre-v4 builds in an already-open Facebook tab.
+
+
     const messageType = message?.type === ADAPTER_REQUEST
       ? message?.original_type
       : message?.type;
-    if (messageType === "RADIXSOL_PLATFORM_PING") {
+    if (messageType === "MEDHUNT_PLATFORM_PING") {
       const identity = facebookIdentity();
       const region = identity ? (profileRegion(identity) || document.body) : null;
       const profileKind = identity ? profileSurfaceKind(identity, region) : "unsupported";
@@ -875,18 +875,18 @@
       });
       return false;
     }
-    if (messageType === "RADIXSOL_CAPTURE_PLATFORM_PROFILE") {
+    if (messageType === "MEDHUNT_CAPTURE_PLATFORM_PROFILE") {
       const result = snapshot();
       sendResponse(result.ok
         ? { ...result, adapter_revision: ADAPTER_REVISION, profile: result.profiles[0] }
         : { ...result, adapter_revision: ADAPTER_REVISION });
       return false;
     }
-    if (["RADIXSOL_LIST_PLATFORM_CANDIDATES", "RADIXSOL_SCAN_PLATFORM_CANDIDATES"].includes(messageType)) {
+    if (["MEDHUNT_LIST_PLATFORM_CANDIDATES", "MEDHUNT_SCAN_PLATFORM_CANDIDATES"].includes(messageType)) {
       const result = snapshot();
-      if (result.ok && messageType === "RADIXSOL_SCAN_PLATFORM_CANDIDATES") {
+      if (result.ok && messageType === "MEDHUNT_SCAN_PLATFORM_CANDIDATES") {
         chrome.runtime.sendMessage({
-          type: "RADIXSOL_PLATFORM_SCAN_PROGRESS",
+          type: "MEDHUNT_PLATFORM_SCAN_PROGRESS",
           platform: PLATFORM.key,
           found: 1,
           total: 1,
@@ -896,7 +896,7 @@
       sendResponse({ ...result, adapter_revision: ADAPTER_REVISION });
       return false;
     }
-    if (messageType === "RADIXSOL_OPEN_PLATFORM_CANDIDATE") {
+    if (messageType === "MEDHUNT_OPEN_PLATFORM_CANDIDATE") {
       window.scrollTo({ top: 0, behavior: "smooth" });
       sendResponse({
         ok: true,
@@ -907,7 +907,7 @@
     }
     return false;
   };
-  window.__radixsolFacebookMessageListener = messageListener;
+  window.__medhuntFacebookMessageListener = messageListener;
   chrome.runtime.onMessage.addListener(messageListener);
 
   function observedProfileState() {
@@ -970,7 +970,7 @@
     if (!force && state.signature === lastSignature) return;
     lastSignature = state.signature;
     chrome.runtime.sendMessage({
-      type: "RADIXSOL_PLATFORM_RESULTS_CHANGED",
+      type: "MEDHUNT_PLATFORM_RESULTS_CHANGED",
       platform: PLATFORM.key,
       adapter_revision: ADAPTER_REVISION,
       count: state.count,
@@ -984,12 +984,12 @@
   }
 
   const observer = new MutationObserver(() => {
-    clearTimeout(window.__radixsolFacebookMutationTimer);
-    window.__radixsolFacebookMutationTimer = setTimeout(() => {
+    clearTimeout(window.__medhuntFacebookMutationTimer);
+    window.__medhuntFacebookMutationTimer = setTimeout(() => {
       emitObservedState(false);
     }, 500);
   });
-  window.__radixsolFacebookObserver = observer;
+  window.__medhuntFacebookObserver = observer;
   observer.observe(document.documentElement, {
     childList: true, subtree: true, characterData: true, attributes: true,
     attributeFilter: [
@@ -998,27 +998,27 @@
     ],
   });
 
-  // Emit the current state immediately. This covers a fully rendered profile
-  // where no later mutation occurs, including locked/Page/empty states.
+
+
   emitObservedState(true, { initial: true });
 
   let observedIdentity = facebookIdentity()?.sourceId || "";
-  window.__radixsolFacebookRouteTimer = setInterval(() => {
+  window.__medhuntFacebookRouteTimer = setInterval(() => {
     const current = facebookIdentity();
     const currentId = current?.sourceId || "";
     if (currentId === observedIdentity) return;
     observedIdentity = currentId;
     lastSignature = "";
     chrome.runtime.sendMessage({
-      type: "RADIXSOL_PLATFORM_RESULTS_CHANGED",
+      type: "MEDHUNT_PLATFORM_RESULTS_CHANGED",
       platform: PLATFORM.key,
       count: 0,
       identity_changed: true,
       source_id: currentId,
       page_url: current?.url || location.href,
     }, () => void chrome.runtime.lastError);
-    clearTimeout(window.__radixsolFacebookMutationTimer);
-    window.__radixsolFacebookMutationTimer = setTimeout(() => {
+    clearTimeout(window.__medhuntFacebookMutationTimer);
+    window.__medhuntFacebookMutationTimer = setTimeout(() => {
       emitObservedState(false);
     }, 100);
   }, 400);

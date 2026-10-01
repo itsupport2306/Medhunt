@@ -1,8 +1,8 @@
 (() => {
   "use strict";
 
-  if (window.__radixsolPlatformMainLoaded) return;
-  window.__radixsolPlatformMainLoaded = true;
+  if (window.__medhuntPlatformMainRevision === "v2") return;
+  window.__medhuntPlatformMainRevision = "v2";
 
   function plainText(value) {
     return value == null ? "" : String(value).trim();
@@ -43,14 +43,11 @@
       "[class*='candidate-card']",
       "article",
     ];
-    let cards = [];
+    const cards = new Set();
     for (const selector of selectors) {
       try {
-        cards = Array.from(document.querySelectorAll(selector));
-      } catch {
-        cards = [];
-      }
-      if (cards.length) break;
+        for (const card of document.querySelectorAll(selector)) cards.add(card);
+      } catch {}
     }
 
     const output = [];
@@ -76,7 +73,7 @@
   }
 
   window.addEventListener("message", (event) => {
-    if (event.source !== window || event.data?.type !== "RADIXSOL_PLATFORM_MAIN_REQUEST") return;
+    if (event.source !== window || event.data?.type !== "MEDHUNT_PLATFORM_MAIN_V2_REQUEST") return;
     const requestId = plainText(event.data.requestId);
     if (!requestId) return;
     let candidates = [];
@@ -89,7 +86,7 @@
       error = plainText(caught?.message || caught);
     }
     window.postMessage({
-      type: "RADIXSOL_PLATFORM_MAIN_RESPONSE",
+      type: "MEDHUNT_PLATFORM_MAIN_V2_RESPONSE",
       requestId,
       candidates,
       error,

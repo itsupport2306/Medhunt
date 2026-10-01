@@ -50,6 +50,9 @@ def queue_latest_resume_if_ready(candidate_id: int) -> dict | None:
     """
     if not config.NEXUS_SYNC_ENABLED:
         return None
+    route = store.get_candidate_delivery_route(int(candidate_id))
+    if not route or not bool(route.get("nexus_enabled")):
+        return None
     candidate = store.get_candidate(int(candidate_id))
     projected = contact_access.project_candidate(candidate)
     if not (

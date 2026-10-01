@@ -323,6 +323,19 @@ code { font-size: .92em; background: #f0f2f6; border-radius: 4px; padding: 1px 4
   border-top: 1px solid #eef1f6;
   padding-top: 10px;
 }
+.bulk-sms-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.lookup-bulk-sms-toolbar { margin: 12px 0; }
+.bulk-sms-toolbar > div:first-child { min-width: 0; flex: 1 1 220px; }
+.bulk-sms-select { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+.lookup-bulk-sms-select { flex: 1 0 100%; }
+.bulk-sms-select input { width: auto; margin: 0; }
+.bulk-sms-sheet { max-width: 780px; }
+.bulk-sms-preview-list { display: grid; gap: 10px; margin: 14px 0; }
+.bulk-sms-preview-row { display: grid; gap: 6px; padding: 10px; border: 1px solid var(--line); border-radius: 10px; }
+.bulk-sms-preview-row textarea { width: 100%; box-sizing: border-box; }
+.bulk-sms-preview-head { align-items: flex-start; gap: 10px; }
+.bulk-sms-preview-head > span { text-align: right; }
+.error-text { color: var(--red); }
 
 .board-wrap { overflow-x: auto; padding-bottom: 4px; }
 .board { display: grid; grid-template-columns: repeat(6, minmax(150px, 1fr)); gap: 10px; min-width: 920px; }
@@ -1184,21 +1197,9 @@ body.extension-shell .indeed-workflow {
   height: 6px;
   background: #67e8d5;
 }
-.source-shell-header .source-credit-balance {
-  display: inline-flex;
-  min-height: 30px;
-  align-items: center;
-  padding: 0 8px;
-  border: 1px solid rgba(103, 232, 213, .3);
-  border-radius: 999px;
-  color: #9ef3e2;
-  background: rgba(103, 232, 213, .08);
-  font-size: 10px;
-  font-weight: 700;
-  white-space: nowrap;
-}
 .source-shell-header .panel-rescan-button {
   width: 44px;
+  min-width: 44px;
   height: 44px;
   display: grid;
   place-items: center;

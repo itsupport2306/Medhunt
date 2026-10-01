@@ -372,6 +372,28 @@ TWILIO_SMS_ENABLED = bool(
     os.getenv("TWILIO_SMS_ENABLED", "0").strip().lower() in ("1", "true", "yes")
     and TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_PHONE_NUMBER
 )
+
+# CEIPAL Candidate Pass API. Halo controls which recruiters route enriched
+# candidates here; credentials and tenant endpoint stay server-side.
+CEIPAL_SYNC_ENABLED = os.getenv("CEIPAL_SYNC_ENABLED", "0").strip().lower() in (
+    "1", "true", "yes",
+)
+CEIPAL_AUTH_URL = os.getenv(
+    "CEIPAL_AUTH_URL", "https://api.ceipal.com/v1/createAuthtoken/",
+).strip()
+CEIPAL_EMAIL = os.getenv("CEIPAL_EMAIL", "").strip()
+CEIPAL_PASSWORD = os.getenv("CEIPAL_PASSWORD", "").strip()
+CEIPAL_API_KEY = os.getenv("CEIPAL_API_KEY", "").strip()
+CEIPAL_CANDIDATE_URL = os.getenv("CEIPAL_CANDIDATE_URL", "").strip()
+CEIPAL_TIMEOUT = max(5.0, min(120.0, float(os.getenv("CEIPAL_TIMEOUT", "30"))))
+CEIPAL_WORKER_INTERVAL_SECONDS = max(
+    0.5, float(os.getenv("CEIPAL_WORKER_INTERVAL_SECONDS", "2"))
+)
+CEIPAL_MAX_ATTEMPTS = max(1, min(20, int(os.getenv("CEIPAL_MAX_ATTEMPTS", "8"))))
+CEIPAL_CONFIGURED = bool(
+    CEIPAL_SYNC_ENABLED and CEIPAL_AUTH_URL and CEIPAL_EMAIL and CEIPAL_PASSWORD
+    and CEIPAL_API_KEY and CEIPAL_CANDIDATE_URL
+)
 DEFAULT_PHONE_COUNTRY = os.getenv("DEFAULT_PHONE_COUNTRY", "US").strip() or "US"
 SMS_REPLY_NOTIFICATION_EMAILS = tuple(dict.fromkeys(
     email.strip().casefold()

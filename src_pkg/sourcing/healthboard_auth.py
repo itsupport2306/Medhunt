@@ -118,23 +118,24 @@ def report_enrichment_service(*, user_id: str, event_id: str, candidate_id: int,
     return True
 
 
-def medhunt_enrichment_credits(token: str) -> dict:
+def medhunt_zoom_sms_sender(token: str) -> dict | None:
+    """Read the signed-in recruiter's Zoom sender assignment from Halo."""
+    supplied = str(token or "").strip()
+    if not enabled() or not supplied:
+        return None
     response = httpx.get(
-        _url("/api/extension/medhunt/credits"),
-        headers={"X-Capture-Token": str(token or "").strip()},
+        _url("/api/extension/medhunt/sms-sender"),
+        headers={"X-Capture-Token": supplied},
         timeout=config.HEALTHBOARD_AUTH_TIMEOUT,
     )
+    # Halo returns 409 when an administrator has not assigned this recruiter
+    # a sender, or when their organization assignments disagree.
+    if response.status_code == 409:
+        return None
     response.raise_for_status()
-    return dict(response.json())
-
-
-def consume_medhunt_enrichment_credits(token: str, *, candidate_ids: list[int],
-                                       run_id: str = "") -> dict:
-    response = httpx.post(
-        _url("/api/extension/medhunt/credits/consume"),
-        headers={"X-Capture-Token": str(token or "").strip()},
-        json={"candidate_ids": candidate_ids, "run_id": run_id},
-        timeout=config.HEALTHBOARD_AUTH_TIMEOUT,
-    )
-    response.raise_for_status()
-    return dict(response.json())
+    payload = response.json()
+    number = str(payload.get("sender_number") or "").strip()
+    zoom_user_id = str(payload.get("zoom_user_id") or "").strip()
+    if not number or not zoom_user_id:
+        return None
+    return {"sender_number": number, "zoom_user_id": zoom_user_id}

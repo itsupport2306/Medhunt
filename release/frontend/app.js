@@ -2,7 +2,7 @@
 
 const $ = (selector, element = document) => element.querySelector(selector);
 const IS_EXTENSION = ["chrome-extension:", "moz-extension:"].includes(location.protocol);
-const DEFAULT_BACKEND = "https://medhunt-fyxr.onrender.com";
+const DEFAULT_BACKEND = "https://medhunt1.onrender.com";
 const HOSTED_AUTH_REQUIRED = IS_EXTENSION && DEFAULT_BACKEND.startsWith("https://");
 const LOCAL_API_TOKEN = "__MEDHUNT_LOCAL_API_TOKEN__";
 const BACKEND_STORAGE_KEY = "medhuntBenchmarkABackendUrl";
@@ -25,8 +25,8 @@ const SOURCING_PLATFORMS = {
     host: (hostname) => hostname === "indeed.com" || hostname.endsWith(".indeed.com"),
     contentScript: "indeed-content.js",
     mainScript: "inject.js",
-    adapterRevision: "indeed-capture-v5",
-    adapterRequestType: "RADIXSOL_INDEED_V5_REQUEST",
+    adapterRevision: "indeed-capture-v6",
+    adapterRequestType: "MEDHUNT_INDEED_V6_REQUEST",
     resumeCapture: true,
   },
   vivian: {
@@ -34,8 +34,8 @@ const SOURCING_PLATFORMS = {
     label: "Vivian",
     host: (hostname) => hostname === "vivian.com" || hostname.endsWith(".vivian.com"),
     contentScript: "platform-content.js",
-    adapterRevision: "platform-capture-v2",
-    adapterRequestType: "RADIXSOL_PLATFORM_V2_REQUEST",
+    adapterRevision: "platform-capture-v3",
+    adapterRequestType: "MEDHUNT_PLATFORM_V3_REQUEST",
     resumeCapture: false,
   },
   ziprecruiter: {
@@ -44,8 +44,8 @@ const SOURCING_PLATFORMS = {
     host: (hostname) => hostname === "ziprecruiter.com" || hostname.endsWith(".ziprecruiter.com"),
     contentScript: "platform-content.js",
     mainScript: "platform-main.js",
-    adapterRevision: "platform-capture-v2",
-    adapterRequestType: "RADIXSOL_PLATFORM_V2_REQUEST",
+    adapterRevision: "platform-capture-v3",
+    adapterRequestType: "MEDHUNT_PLATFORM_V3_REQUEST",
     resumeCapture: false,
   },
   linkedin: {
@@ -53,8 +53,8 @@ const SOURCING_PLATFORMS = {
     label: "LinkedIn",
     host: (hostname) => hostname === "linkedin.com" || hostname.endsWith(".linkedin.com"),
     contentScript: "linkedin-content.js",
-    adapterRevision: "linkedin-capture-v4",
-    adapterRequestType: "RADIXSOL_LINKEDIN_V2_REQUEST",
+    adapterRevision: "linkedin-capture-v5",
+    adapterRequestType: "MEDHUNT_LINKEDIN_V5_REQUEST",
     resumeCapture: false,
     guidedPdfCapture: true,
     automaticPdfCapture: true,
@@ -66,7 +66,7 @@ const SOURCING_PLATFORMS = {
     host: (hostname) => hostname === "facebook.com" || hostname.endsWith(".facebook.com"),
     contentScript: "facebook-content.js",
     adapterRevision: "facebook-profile-v8",
-    adapterRequestType: "RADIXSOL_FACEBOOK_V8_REQUEST",
+    adapterRequestType: "MEDHUNT_FACEBOOK_V8_REQUEST",
     resumeCapture: false,
     guidedPdfCapture: false,
     singleProfile: true,
@@ -76,8 +76,8 @@ const SOURCING_PLATFORMS = {
     label: "NPI No.",
     host: (hostname) => hostname === "npino.com" || hostname.endsWith(".npino.com"),
     contentScript: "healthcare-directory-content.js",
-    adapterRevision: "healthcare-directory-v12",
-    adapterRequestType: "RADIXSOL_HEALTHCARE_DIRECTORY_V12_REQUEST",
+    adapterRevision: "healthcare-directory-v13",
+    adapterRequestType: "MEDHUNT_HEALTHCARE_DIRECTORY_V13_REQUEST",
     resumeCapture: false,
   },
   nysed: {
@@ -85,8 +85,8 @@ const SOURCING_PLATFORMS = {
     label: "NYSED",
     host: (hostname) => hostname === "eservices.nysed.gov",
     contentScript: "healthcare-directory-content.js",
-    adapterRevision: "healthcare-directory-v12",
-    adapterRequestType: "RADIXSOL_HEALTHCARE_DIRECTORY_V12_REQUEST",
+    adapterRevision: "healthcare-directory-v13",
+    adapterRequestType: "MEDHUNT_HEALTHCARE_DIRECTORY_V13_REQUEST",
     resumeCapture: false,
   },
   npiprofile: {
@@ -94,8 +94,8 @@ const SOURCING_PLATFORMS = {
     label: "NPI Profile",
     host: (hostname) => hostname === "npiprofile.com" || hostname.endsWith(".npiprofile.com"),
     contentScript: "healthcare-directory-content.js",
-    adapterRevision: "healthcare-directory-v12",
-    adapterRequestType: "RADIXSOL_HEALTHCARE_DIRECTORY_V12_REQUEST",
+    adapterRevision: "healthcare-directory-v13",
+    adapterRequestType: "MEDHUNT_HEALTHCARE_DIRECTORY_V13_REQUEST",
     resumeCapture: false,
   },
   usnews: {
@@ -104,8 +104,8 @@ const SOURCING_PLATFORMS = {
     host: (hostname, url) => hostname === "health.usnews.com" &&
       /^\/(?:doctors|nurse-practitioners)(?:\/|$)/i.test(url?.pathname || ""),
     contentScript: "healthcare-directory-content.js",
-    adapterRevision: "healthcare-directory-v12",
-    adapterRequestType: "RADIXSOL_HEALTHCARE_DIRECTORY_V12_REQUEST",
+    adapterRevision: "healthcare-directory-v13",
+    adapterRequestType: "MEDHUNT_HEALTHCARE_DIRECTORY_V13_REQUEST",
     resumeCapture: false,
   },
   medifind: {
@@ -114,8 +114,8 @@ const SOURCING_PLATFORMS = {
     host: (hostname, url) => (hostname === "medifind.com" || hostname.endsWith(".medifind.com"))
       && /^\/(?:doctors|specialty)(?:\/|$)/i.test(url?.pathname || ""),
     contentScript: "healthcare-directory-content.js",
-    adapterRevision: "healthcare-directory-v12",
-    adapterRequestType: "RADIXSOL_HEALTHCARE_DIRECTORY_V12_REQUEST",
+    adapterRevision: "healthcare-directory-v13",
+    adapterRequestType: "MEDHUNT_HEALTHCARE_DIRECTORY_V13_REQUEST",
     resumeCapture: false,
   },
   commonspirit: {
@@ -124,8 +124,8 @@ const SOURCING_PLATFORMS = {
     host: (hostname, url) => (hostname === "commonspirit.org" || hostname.endsWith(".commonspirit.org"))
       && /^\/(?:search|find-a-(?:doctor|location))(?:\/|$)/i.test(url?.pathname || ""),
     contentScript: "healthcare-directory-content.js",
-    adapterRevision: "healthcare-directory-v12",
-    adapterRequestType: "RADIXSOL_HEALTHCARE_DIRECTORY_V12_REQUEST",
+    adapterRevision: "healthcare-directory-v13",
+    adapterRequestType: "MEDHUNT_HEALTHCARE_DIRECTORY_V13_REQUEST",
     resumeCapture: false,
   },
   sharecare: {
@@ -134,8 +134,8 @@ const SOURCING_PLATFORMS = {
     host: (hostname, url) => hostname === "providers.sharecare.com"
       && /^\/(?:find-a-doctor|doctor)(?:\/|$)/i.test(url?.pathname || ""),
     contentScript: "healthcare-directory-content.js",
-    adapterRevision: "healthcare-directory-v12",
-    adapterRequestType: "RADIXSOL_HEALTHCARE_DIRECTORY_V12_REQUEST",
+    adapterRevision: "healthcare-directory-v13",
+    adapterRequestType: "MEDHUNT_HEALTHCARE_DIRECTORY_V13_REQUEST",
     resumeCapture: false,
   },
   webmd: {
@@ -146,8 +146,8 @@ const SOURCING_PLATFORMS = {
         || /^\/providers\/specialty(?:\/|$)/i.test(url?.pathname || "")
         || /^\/doctor\/[^/]+-overview\/?$/i.test(url?.pathname || "")),
     contentScript: "healthcare-directory-content.js",
-    adapterRevision: "healthcare-directory-v12",
-    adapterRequestType: "RADIXSOL_HEALTHCARE_DIRECTORY_V12_REQUEST",
+    adapterRevision: "healthcare-directory-v13",
+    adapterRequestType: "MEDHUNT_HEALTHCARE_DIRECTORY_V13_REQUEST",
     resumeCapture: false,
   },
 };
@@ -167,6 +167,9 @@ let activeJobId = null;
 let activeView = IS_EXTENSION ? "indeed" : "candidates";
 let activeDraft = null;
 let activeSmsContext = null;
+let activeBulkSmsContext = null;
+let candidateSmsRows = [];
+let bulkSmsSelectedIds = new Set();
 let activeIndeedProfile = null;
 let publicRecordReturnProfile = null;
 let activePublicRecordResult = null;
@@ -178,6 +181,7 @@ let activeSourcingContextKey = "";
 let activePageIndicatorLabel = "Candidate page";
 let indeedCandidates = [];
 let indeedSelected = new Set();
+let indeedBulkSmsSelectedKeys = new Set();
 let indeedSaveStatus = null;
 const indeedSavePromises = new Map();
 const professionalProfileResumePromises = new Map();
@@ -382,9 +386,8 @@ function normalizeBackendUrl(raw) {
   } catch {
     throw new Error("Enter a valid backend URL.");
   }
-  const local = parsed.protocol === "http:" && ["127.0.0.1", "localhost"].includes(parsed.hostname);
-  if ((!local && parsed.protocol !== "https:") || parsed.username || parsed.password) {
-    throw new Error("Use HTTP on localhost for development or HTTPS for a hosted backend.");
+  if (parsed.protocol !== "https:" || parsed.username || parsed.password) {
+    throw new Error("Use an HTTPS hosted backend.");
   }
   return parsed.origin;
 }
@@ -491,6 +494,7 @@ function publicPhoneLabel(kind) {
 function candidateCard(candidate) {
   const email = Array.isArray(candidate.emails) ? candidate.emails[0] : "";
   const phoneContact = publicPhoneContacts(candidate)[0] || null;
+  const mobileContact = publicPhoneContacts(candidate).find((item) => item.kind === "mobile") || null;
   const phone = phoneContact?.value || "";
   const phoneLabel = publicPhoneLabel(phoneContact?.kind);
   const address = Array.isArray(candidate.addresses) ? candidate.addresses[0] : "";
@@ -526,7 +530,8 @@ function candidateCard(candidate) {
       <button type="button" class="btn teal sm" data-action="enrich" data-id="${Number(candidate.id)}">Enrich</button>
       ${publicRecordButton(candidate.name, candidate.location, candidate.id)}
       <button type="button" class="btn sm" data-action="draft" data-id="${Number(candidate.id)}">Draft outreach</button>
-      ${phoneContact?.kind === "mobile" ? `<button type="button" class="btn sm sms-button" data-action="compose-sms" data-candidate-id="${Number(candidate.id)}" data-candidate-name="${escapeHtml(candidate.name)}" data-phone="${escapeHtml(phone)}">Send SMS</button>` : ""}
+      ${mobileContact ? `<button type="button" class="btn sm" data-action="compose-sms" data-candidate-id="${Number(candidate.id)}" data-candidate-name="${escapeHtml(candidate.name)}" data-phone="${escapeHtml(mobileContact.value)}">Send SMS</button>
+      <label class="bulk-sms-select"><input type="checkbox" data-action="toggle-bulk-sms" data-candidate-id="${Number(candidate.id)}"${bulkSmsSelectedIds.has(Number(candidate.id)) ? " checked" : ""}><span>Select for bulk SMS</span></label>` : ""}
       <button type="button" class="btn ghost sm" data-action="move" data-id="${Number(candidate.id)}">Move ▾</button>
     </div>
   </article>`;
@@ -549,6 +554,11 @@ async function viewCandidates() {
       api(`/candidates${suffix}`),
       api("/stats"),
     ]);
+    candidateSmsRows = candidates;
+    const visibleIds = new Set(candidates
+      .filter((candidate) => publicPhoneContacts(candidate).some((item) => item.kind === "mobile"))
+      .map((candidate) => Number(candidate.id)));
+    bulkSmsSelectedIds = new Set([...bulkSmsSelectedIds].filter((id) => visibleIds.has(id)));
     $("#content").innerHTML = `
       <div class="notice">Candidate contact access · human approval required · do-not-contact enforced.</div>
       <div class="kpis">
@@ -570,6 +580,14 @@ async function viewCandidates() {
             <button type="button" class="btn ghost" data-action="rank-all"${activeJobId ? "" : " disabled"}>Rank vs job</button>
             <button type="button" class="btn" data-action="navigate" data-view="add">Add candidates</button>
           </div>
+        </div>
+      </div>
+      <div class="card bulk-sms-toolbar">
+        <div><strong>Bulk SMS</strong><div class="muted small">Select candidates with verified mobile numbers, then review each personalized message before sending.</div></div>
+        <div class="row">
+          <span id="bulkSmsSelectionCount" class="muted small">${bulkSmsSelectedIds.size} selected</span>
+          <button type="button" class="btn ghost" data-action="clear-bulk-sms-selection"${bulkSmsSelectedIds.size ? "" : " disabled"}>Clear</button>
+          <button type="button" class="btn teal" data-action="open-bulk-sms"${bulkSmsSelectedIds.size ? "" : " disabled"}>Review messages</button>
         </div>
       </div>
       <div class="cards">
@@ -648,7 +666,7 @@ async function submitIntake() {
 }
 
 async function enrichCandidate(id) {
-  await api(`/candidates/${id}/contact-lookup`, { method: "POST" });
+  const result = await api(`/candidates/${id}/contact-lookup`, { method: "POST" });
   notify("Candidate enriched.");
   await viewCandidates();
 }
@@ -948,25 +966,21 @@ async function loadAuth() {
 }
 
 function renderAuthState() {
-  const button = $("#authButton");
   const logoutButton = $("#logoutButton");
+  const sourceLogoutButton = $("#sourceLogoutButton");
   const avatar = $("#userAvatar");
-  if (!button || !avatar) return;
-  if (logoutButton) logoutButton.hidden = !(authConfig.enabled && authSession?.extension_token);
+  const signedIn = Boolean(authConfig.enabled && authSession?.extension_token);
+  if (logoutButton) logoutButton.hidden = !signedIn;
+  if (sourceLogoutButton) sourceLogoutButton.hidden = !signedIn;
+  if (!avatar) return;
   if (authConfig.enabled && authSession?.user) {
     const user = authSession.user;
     avatar.textContent = initials(user.name || user.email || "User");
     avatar.setAttribute("aria-label", user.name || user.email || "Signed-in user");
-    button.textContent = authSession.device_pending ? "Approval pending" : "Account";
-    button.dataset.action = authSession.device_pending ? "check-device-approval" : "account";
   } else if (authConfig.enabled) {
     avatar.textContent = "?";
     avatar.setAttribute("aria-label", "Sign in to Medhunt");
-    button.textContent = "Sign in";
-    button.dataset.action = "login";
   } else {
-    button.textContent = "";
-    button.dataset.action = "";
     avatar.textContent = "MT";
     avatar.setAttribute("aria-label", "Medhunt local workspace");
   }
@@ -1090,7 +1104,7 @@ function showPendingDeviceApproval() {
       </div>
       <p>This installation is signed in, but it cannot access candidate data yet.</p>
       <div class="notice"><strong>${escapeHtml(device.device_name || extensionDeviceName())}</strong><br><span class="muted small">Request ending ${escapeHtml(device.installation_suffix || "")}</span></div>
-      <p class="muted small">Ask an administrator or approve this request from an existing Medhunt device. No verification code needs to be shared.</p>
+      <p class="muted small">Ask a Healthcareboard administrator to approve this installation. No verification code needs to be shared.</p>
       <div class="row modal-actions">
         <button type="button" class="btn ghost" data-action="logout">Cancel sign-in</button>
         <button type="button" class="btn teal" data-action="check-device-approval">Check approval</button>
@@ -1239,7 +1253,7 @@ function sourcingPageEligibility(platform, value) {
     return { eligible, reason: eligible ? "" : "linkedin-route" };
   }
   if (platform.key === "facebook") {
-    const eligible = Boolean(globalThis.RadixsolProfileQuality?.validProfileUrl(url.href, "facebook"));
+    const eligible = Boolean(globalThis.MedhuntProfileQuality?.validProfileUrl(url.href, "facebook"));
     return { eligible, reason: eligible ? "" : "facebook-route" };
   }
   return { eligible: true, reason: "" };
@@ -1278,6 +1292,7 @@ function clearCapturedProfileState(phase = "idle") {
   activeIndeedProfile = null;
   indeedCandidates = [];
   indeedSelected = new Set();
+  indeedBulkSmsSelectedKeys = new Set();
   indeedLookupState = new Map();
   indeedLookupScope = new Set();
   indeedLookupProfiles = [];
@@ -1379,11 +1394,11 @@ async function sendIndeedResumeMessage(message, sourceTabId = 0) {
 }
 
 async function captureIndeedProfile() {
-  const result = await sendSourcingMessage({ type: "RADIXSOL_CAPTURE_PLATFORM_PROFILE" });
+  const result = await sendSourcingMessage({ type: "MEDHUNT_CAPTURE_PLATFORM_PROFILE" });
   if (!result?.ok) {
     throw new Error(result?.error || `The visible ${activeSourcingPlatform.label} profile could not be read.`);
   }
-  const checked = globalThis.RadixsolProfileQuality?.sanitizeProfile(result.profile, {
+  const checked = globalThis.MedhuntProfileQuality?.sanitizeProfile(result.profile, {
     platform: activeSourcingPlatform.key,
     pageUrl: result.page_url || activeSourcingPageUrl,
     singleProfile: true,
@@ -1541,7 +1556,7 @@ async function captureProfessionalProfileInBackground(profile, timeoutMs = 45000
 
     const message = {
       type: platform.adapterRequestType,
-      original_type: "RADIXSOL_CAPTURE_PLATFORM_PROFILE",
+      original_type: "MEDHUNT_CAPTURE_PLATFORM_PROFILE",
     };
     let lastError = null;
     while (Date.now() < deadline) {
@@ -1608,9 +1623,11 @@ async function hydrateStoredResume(profile) {
     const candidate = await api(`/candidates/${candidateId}`, { timeout: 15000 });
     const resume = Array.isArray(candidate?.resumes) ? candidate.resumes[0] : null;
     if (!resume || !Number(resume.id)) return null;
-    // A public-profile PDF may have been stored before the contact lookup
-    // completed. Do not reuse that un-enriched snapshot; rebuild it so the
-    // downloaded PDF receives the current Medhunt contact sheet.
+
+
+
+
+
     const hasContacts = Boolean(
       (Array.isArray(candidate?.emails) && candidate.emails.length)
       || (Array.isArray(candidate?.phones) && candidate.phones.length),
@@ -2102,6 +2119,7 @@ function indeedResultStatus(profile) {
     const shownEmails = emails.slice(0, ROW_CONTACT_LIMIT);
     const shownPhones = phoneContacts.slice(0, ROW_CONTACT_LIMIT);
     const mobile = phoneContacts.find((phone) => phone.kind === "mobile");
+    const canBulkSms = Boolean(mobile && profile._candidateId && result.sms_status !== "sent");
     return `<div class="lookup-contact">
       <span class="lookup-state match"><i aria-hidden="true"></i>Contact ready</span>
       ${shownEmails.map((email) => `<span class="lookup-value">${escapeHtml(email)}</span>`).join("")}
@@ -2113,7 +2131,10 @@ function indeedResultStatus(profile) {
       ${hometownMatch}
       ${resume}
       ${resumeStatus}
-      ${mobile ? `<button type="button" class="resume-link sms-inline" data-action="compose-sms" data-candidate-id="${Number(profile._candidateId)}" data-candidate-name="${escapeHtml(profile.name)}" data-phone="${escapeHtml(mobile.value)}">Send SMS</button>` : ""}
+      ${result.sms_status === "sent"
+        ? `<span class="lookup-state match sms-sent"><i aria-hidden="true"></i>SMS sent</span>`
+        : mobile && profile._candidateId ? `<button type="button" class="resume-link" data-action="compose-sms" data-candidate-id="${Number(profile._candidateId)}" data-candidate-name="${escapeHtml(profile.name)}" data-phone="${escapeHtml(mobile.value)}">Send SMS</button>` : ""}
+      ${canBulkSms ? `<label class="bulk-sms-select lookup-bulk-sms-select"><input type="checkbox" data-action="toggle-bulk-lookup-sms" data-profile-key="${escapeHtml(profile._selectionKey)}"${indeedBulkSmsSelectedKeys.has(profile._selectionKey) ? " checked" : ""}><span>Select for bulk SMS</span></label>` : ""}
     </div>`;
   }
   if (result.status === "not_found") {
@@ -2314,6 +2335,7 @@ function indeedPanelHeader() {
       </div>
       <div class="source-header-actions">
         <span class="active-page-indicator"><i aria-hidden="true"></i>${platformLabel}</span>
+        <button type="button" class="panel-account-button" id="sourceLogoutButton" data-action="logout" aria-label="Log out of Medhunt" title="Log out"${authConfig.enabled && authSession?.extension_token ? "" : " hidden"}>Log out</button>
         <button type="button" class="panel-rescan-button" data-action="refresh-indeed" title="Scan current page" aria-label="Scan current page" aria-disabled="${progress ? "true" : "false"}"${progress ? " disabled" : ""}>
           <span aria-hidden="true">&#8635;</span>
         </button>
@@ -2391,6 +2413,15 @@ function renderIndeedProfiles(scan = {}) {
           ${failed ? `<button type="button" role="tab" aria-selected="${indeedResultFilter === "failed"}" tabindex="${indeedResultFilter === "failed" ? "0" : "-1"}" class="summary-tile failed${indeedResultFilter === "failed" ? " active" : ""}" data-action="filter-indeed-results" data-filter="failed">
             <span class="summary-signal" aria-hidden="true"></span><span>Retry</span><strong>${failed}</strong>
           </button>` : ""}
+        </div>
+        <div class="card bulk-sms-toolbar lookup-bulk-sms-toolbar">
+          <div><strong>Bulk SMS</strong><div class="muted small">Select ready candidates, then preview and edit each message.</div></div>
+          <div class="row">
+            <button type="button" class="btn ghost" data-action="select-ready-bulk-sms">Select ready</button>
+            <span id="lookupBulkSmsSelectionCount" class="muted small">${indeedBulkSmsSelectedKeys.size} selected</span>
+            <button type="button" class="btn ghost" data-action="clear-bulk-sms-selection"${indeedBulkSmsSelectedKeys.size ? "" : " disabled"}>Clear</button>
+            <button type="button" class="btn teal" data-action="open-bulk-sms"${indeedBulkSmsSelectedKeys.size ? "" : " disabled"}>Review messages</button>
+          </div>
         </div>` : `
         <div class="capture-toolbar">
           <div class="queue-heading">
@@ -2736,8 +2767,8 @@ async function scanIndeedCandidates(options = {}) {
       previousSelection.size === indeedCandidates.length;
     const result = await sendSourcingMessage({
       type: quiet
-        ? "RADIXSOL_LIST_PLATFORM_CANDIDATES"
-        : "RADIXSOL_SCAN_PLATFORM_CANDIDATES",
+        ? "MEDHUNT_LIST_PLATFORM_CANDIDATES"
+        : "MEDHUNT_SCAN_PLATFORM_CANDIDATES",
     }, false, scanContext);
     if (IS_EXTENSION && scanContext) {
       const [latestTab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -2793,7 +2824,7 @@ async function scanIndeedCandidates(options = {}) {
       (quiet && indeedLookupInProgress)
     ) return;
     activeSourcingPageUrl = result.page_url || activeSourcingPageUrl;
-    const quality = globalThis.RadixsolProfileQuality?.sanitizeProfiles(
+    const quality = globalThis.MedhuntProfileQuality?.sanitizeProfiles(
       result.profiles || [],
       {
         platform: activeSourcingPlatform.key,
@@ -2982,7 +3013,7 @@ function scheduleActiveSourcingSync(reason = "changed", delay = 180) {
 
 if (IS_EXTENSION) {
   chrome.runtime.onMessage.addListener((message, sender) => {
-    if (message?.type === "RADIXSOL_ACTIVE_TAB_CHANGED") {
+    if (message?.type === "MEDHUNT_ACTIVE_TAB_CHANGED") {
       if (sourcingWorkInProgress()) pendingSourcingContext = message;
       else if (
         message.platform === "indeed" &&
@@ -2991,11 +3022,11 @@ if (IS_EXTENSION) {
       else scheduleActiveSourcingSync(message.reason || "changed", message.status === "complete" ? 120 : 240);
       return false;
     }
-    if (message?.type === "RADIXSOL_RESUME_DOWNLOADED") {
+    if (message?.type === "MEDHUNT_RESUME_DOWNLOADED") {
       handleDownloadedResume(message);
       return false;
     }
-    if (message?.type === "RADIXSOL_LINKEDIN_PDF_CAPTURE_STARTED") {
+    if (message?.type === "MEDHUNT_LINKEDIN_PDF_CAPTURE_STARTED") {
       const profile = indeedCandidates.find(
         (candidate) => Number(candidate._candidateId) === Number(message.candidateId),
       );
@@ -3010,7 +3041,7 @@ if (IS_EXTENSION) {
       }
       return false;
     }
-    if (message?.type === "RADIXSOL_LINKEDIN_PDF_CAPTURE_FAILED") {
+    if (message?.type === "MEDHUNT_LINKEDIN_PDF_CAPTURE_FAILED") {
       const profile = indeedCandidates.find(
         (candidate) => Number(candidate._candidateId) === Number(message.candidateId),
       );
@@ -3033,7 +3064,7 @@ if (IS_EXTENSION) {
       return false;
     }
     if (
-      ["RADIXSOL_PLATFORM_SCAN_PROGRESS", "RADIXSOL_PLATFORM_RESULTS_CHANGED"].includes(message?.type) &&
+      ["MEDHUNT_PLATFORM_SCAN_PROGRESS", "MEDHUNT_PLATFORM_RESULTS_CHANGED"].includes(message?.type) &&
       sender?.tab?.id && (
         sender.tab.active === false || Number(sender.tab.id) !== Number(activeSourcingTabId)
       )
@@ -3047,7 +3078,7 @@ if (IS_EXTENSION) {
         )
       )
     ) return false;
-    if (message?.type === "RADIXSOL_PLATFORM_SCAN_PROGRESS") {
+    if (message?.type === "MEDHUNT_PLATFORM_SCAN_PROGRESS") {
       if (message.platform && message.platform !== activeSourcingPlatform?.key) return false;
       indeedScanState = {
         phase: "scanning",
@@ -3061,7 +3092,8 @@ if (IS_EXTENSION) {
 
 
       if (
-        Number(message.total) > 0
+        ["npino", "npiprofile", "nysed", "usnews", "medifind", "commonspirit", "sharecare", "webmd"].includes(message.platform)
+        && Number(message.total) > 0
         && Number(message.found) >= Number(message.total)
         && !indeedLookupInProgress
       ) {
@@ -3073,7 +3105,7 @@ if (IS_EXTENSION) {
       }
       return false;
     }
-    if (message?.type !== "RADIXSOL_PLATFORM_RESULTS_CHANGED") return false;
+    if (message?.type !== "MEDHUNT_PLATFORM_RESULTS_CHANGED") return false;
     if (message.platform && message.platform !== activeSourcingPlatform?.key) return false;
     const facebookIdentityChanged = message.platform === "facebook" && message.identity_changed === true;
     if (facebookIdentityChanged) {
@@ -3111,13 +3143,13 @@ async function openIndeedResult(index) {
   const profile = indeedCandidates[index];
   if (!profile) throw new Error("That displayed candidate is no longer available.");
   const result = await sendSourcingMessage({
-    type: "RADIXSOL_OPEN_PLATFORM_CANDIDATE",
+    type: "MEDHUNT_OPEN_PLATFORM_CANDIDATE",
     index: profile.result_index ?? index,
   });
   if (!result?.ok) throw new Error(result?.error || `${activeSourcingPlatform.label} could not open that candidate.`);
   if (profile._candidateId && activeSourcingPlatform.resumeCapture) {
     await sendExtensionMessage({
-      type: "RADIXSOL_SET_ACTIVE_CANDIDATE",
+      type: "MEDHUNT_SET_ACTIVE_CANDIDATE",
       candidateId: profile._candidateId,
       name: profile.name,
       sourceId: profile.source_id || "",
@@ -3161,7 +3193,7 @@ async function captureLinkedinPdf(index) {
   }
 
   const armed = await sendExtensionMessage({
-    type: "RADIXSOL_ARM_LINKEDIN_PDF_CAPTURE",
+    type: "MEDHUNT_ARM_LINKEDIN_PDF_CAPTURE",
     tabId: tab.id,
     candidateId: profile._candidateId,
     name: profile.name,
@@ -3172,7 +3204,7 @@ async function captureLinkedinPdf(index) {
   let guide = null;
   const guideRequest = {
     type: SOURCING_PLATFORMS.linkedin.adapterRequestType,
-    original_type: "RADIXSOL_AUTO_LINKEDIN_PDF",
+    original_type: "MEDHUNT_AUTO_LINKEDIN_PDF",
   };
   try {
     guide = await sendTabMessage(tab.id, guideRequest);
@@ -3184,7 +3216,7 @@ async function captureLinkedinPdf(index) {
     guide = await sendTabMessage(tab.id, guideRequest);
   }
   if (!guide?.ok) {
-    await sendExtensionMessage({ type: "RADIXSOL_DISARM_LINKEDIN_PDF_CAPTURE" }).catch(() => {});
+    await sendExtensionMessage({ type: "MEDHUNT_DISARM_LINKEDIN_PDF_CAPTURE" }).catch(() => {});
     throw new Error(guide?.error || "LinkedIn did not make Save to PDF available.");
   }
   await chrome.tabs.update(tab.id, { active: true });
@@ -3198,7 +3230,7 @@ async function captureLinkedinPdf(index) {
   const candidateId = Number(profile._candidateId);
   clearTimeout(linkedinPdfCaptureTimers.get(candidateId));
   linkedinPdfCaptureTimers.set(candidateId, setTimeout(async () => {
-    await sendExtensionMessage({ type: "RADIXSOL_DISARM_LINKEDIN_PDF_CAPTURE" }).catch(() => {});
+    await sendExtensionMessage({ type: "MEDHUNT_DISARM_LINKEDIN_PDF_CAPTURE" }).catch(() => {});
     const latest = indeedLookupFor(profile);
     if (["armed", "downloading"].includes(latest.resume_status)) {
       indeedLookupState.set(profile._selectionKey, {
@@ -3231,7 +3263,7 @@ async function captureLinkedinPdf(index) {
 }
 
 async function cancelLinkedinPdf(index) {
-  await sendExtensionMessage({ type: "RADIXSOL_DISARM_LINKEDIN_PDF_CAPTURE" });
+  await sendExtensionMessage({ type: "MEDHUNT_DISARM_LINKEDIN_PDF_CAPTURE" });
   const profile = indeedCandidates[index];
   if (profile) {
     clearTimeout(linkedinPdfCaptureTimers.get(Number(profile._candidateId)));
@@ -3543,7 +3575,7 @@ async function handleDownloadedResume(message) {
     waiter?.resolve(resume);
     if (eventId) {
       await sendExtensionMessage({
-        type: "RADIXSOL_ACK_RESUME_EVENT",
+        type: "MEDHUNT_ACK_RESUME_EVENT",
         event_id: eventId,
       }).catch(() => {});
     }
@@ -3575,7 +3607,7 @@ async function handleDownloadedResume(message) {
 async function processPendingResumeEvents() {
   if (!IS_EXTENSION || !backendHealth) return;
   const pending = await sendExtensionMessage({
-    type: "RADIXSOL_GET_PENDING_RESUME_EVENTS",
+    type: "MEDHUNT_GET_PENDING_RESUME_EVENTS",
   }).catch(() => ({ events: [] }));
   for (const event of pending?.events || []) await handleDownloadedResume(event);
 }
@@ -3652,7 +3684,7 @@ async function downloadMatchedLinkedinPdf(profile, sourceTabId) {
     await wait(650);
 
     const armed = await sendExtensionMessage({
-      type: "RADIXSOL_ARM_LINKEDIN_PDF_CAPTURE",
+      type: "MEDHUNT_ARM_LINKEDIN_PDF_CAPTURE",
       tabId: Number(sourceTabId),
       candidateId,
       name: profile.name,
@@ -3661,14 +3693,14 @@ async function downloadMatchedLinkedinPdf(profile, sourceTabId) {
     if (!armed?.ok) throw new Error(armed?.error || "LinkedIn PDF capture could not start.");
 
     completion = linkedinResumeCompletion(candidateId);
-    const started = await sendLinkedinPdfMessage(sourceTabId, "RADIXSOL_AUTO_LINKEDIN_PDF");
+    const started = await sendLinkedinPdfMessage(sourceTabId, "MEDHUNT_AUTO_LINKEDIN_PDF");
     if (!started?.ok) throw new Error(started?.error || "LinkedIn did not make Save to PDF available.");
     const resume = await completion.promise;
     await saveStoredResumeDownload(profile, candidateId, resume).catch(() => {});
     return true;
   } catch (error) {
     completion?.cancel(error);
-    await sendExtensionMessage({ type: "RADIXSOL_DISARM_LINKEDIN_PDF_CAPTURE" }).catch(() => {});
+    await sendExtensionMessage({ type: "MEDHUNT_DISARM_LINKEDIN_PDF_CAPTURE" }).catch(() => {});
     const latest = indeedLookupFor(profile);
     indeedLookupState.set(profile._selectionKey, {
       ...latest,
@@ -3800,8 +3832,8 @@ function startIndeedResumeBatch(profiles) {
           updateSourceHeaderProgressUi();
           break;
         }
-        // Keep capture, server-side cover creation, and local save in this
-        // awaited loop: the next candidate must not start until this one ends.
+
+
         const saved = await downloadMatchedIndeedResume(profile);
         indeedResumeBatchState.processed += 1;
         if (saved) indeedResumeBatchState.saved += 1;
@@ -3872,10 +3904,10 @@ async function downloadMatchedIndeedResume(profile) {
 
 
 
-    await sendExtensionMessage({ type: "RADIXSOL_CLEAR_ACTIVE_CANDIDATE" });
+    await sendExtensionMessage({ type: "MEDHUNT_CLEAR_ACTIVE_CANDIDATE" });
 
     const captured = await sendIndeedResumeMessage({
-      type: "RADIXSOL_DOWNLOAD_INDEED_RESUME",
+      type: "MEDHUNT_DOWNLOAD_INDEED_RESUME",
       index: profile.result_index,
       expectedName: profile.name,
     }, profile._sourceTabId);
@@ -4052,57 +4084,47 @@ async function copyDraft() {
 
 async function showSmsComposer(candidateId, candidateName, phone) {
   if (!candidateId || !phone) throw new Error("A verified mobile number is required.");
-  activeSmsContext = { candidateId, candidateName, phone };
-  const [status, consentResult] = await Promise.all([
+  const [status, preview] = await Promise.all([
     api("/messaging/status"),
-    api(`/candidates/${candidateId}/sms-consent?phone=${encodeURIComponent(phone)}`),
+    api(`/candidates/${candidateId}/sms-preview?phone=${encodeURIComponent(phone)}`),
   ]);
-  const consent = consentResult.consent;
-  const phoneConsent = consentResult.phone_consent || consent;
-  const phoneControl = consentResult.phone_control || null;
-  const testModeBypass = consentResult.test_mode_bypass === true;
-  const optedOut = phoneControl?.state === "opted_out";
-  const optInPending = consentResult.opt_in_pending === true ||
-    ["sending", "pending"].includes(phoneControl?.state);
-  const permitted = (phoneConsent?.status === "opted_in" ||
-    phoneControl?.state === "opted_in" || testModeBypass) && !optedOut;
-  const firstName = String(candidateName || "there").trim().split(/\s+/)[0] || "there";
-  const optInMessage = `Hi ${firstName}, I'm from Radixsol. We'd like to contact you by text about job opportunities that match your experience. Reply START to opt in to SMS messages from ABC Recruiting. Msg & data rates may apply. Reply STOP to opt out, HELP for help.`;
-  const defaultMessage = `Hi ${firstName}, this is the recruiting team at Medhunt. Would you be open to hearing about a relevant opportunity?`;
+  activeSmsContext = { candidateId, candidateName, phone: preview.phone };
+  const providers = status.providers || {};
+  const zoomAvailable = Boolean(providers.zoom?.enabled && providers.zoom?.sender_configured);
+  activeSmsContext.provider = "zoom";
+  const blocked = !zoomAvailable || preview.opted_out ||
+    preview.already_contacted;
+  const notices = [];
+  if (status.zoom_sender_required) notices.push("Ask your Halo organization admin to assign your Zoom Phone number before using Zoom.");
+  if (!zoomAvailable && !status.zoom_sender_required) notices.push("Zoom Phone SMS is not configured on the backend.");
+  if (preview.opted_out) notices.push("This candidate opted out of SMS.");
+  if (preview.already_contacted) notices.push("This candidate has already received SMS outreach.");
+  if (!status.reply_notifications_configured) notices.push("Reply email notifications are not fully configured.");
   $("#modalRoot").innerHTML = `<div class="modal" role="presentation">
-    <section class="sheet sms-sheet" role="dialog" aria-modal="true" aria-labelledby="smsTitle">
-      <span class="section-kicker">Zoom Phone</span>
-      <h3 id="smsTitle">Message ${escapeHtml(candidateName || "candidate")}</h3>
-      <p class="muted small">Verified mobile: ${escapeHtml(phone)}</p>
-      ${!status.enabled ? `<div class="notice error">Zoom Phone SMS is not configured on the Medhunt server.</div>` : ""}
-      ${optedOut ? `<div class="notice error"><strong>Opted out.</strong> This phone number replied STOP (or another opt-out keyword). No further SMS can be sent.</div>` : ""}
-      ${!optedOut && testModeBypass ? `<div class="notice warning"><strong>Test mode:</strong> this exact allowlisted test number can be messaged without a permission record. Do not use candidate numbers here.</div>` : permitted ? `<div class="sms-consent-state ready">Documented permission on file · ${escapeHtml(phoneConsent?.source || "candidate SMS opt-in")}</div>` : `
-        <div class="sms-consent-panel">
-          <strong>${optInPending ? "Waiting for candidate opt-in" : "SMS permission required"}</strong>
-          <p class="muted small">${optInPending ? "The opt-in request was sent. The recruiting message unlocks automatically after the candidate replies START or YES." : "Send this opt-in request before any recruiting texts. Public profile data alone is not permission."}</p>
-          <p class="sms-opt-in-preview">${escapeHtml(optInMessage)}</p>
-          <button type="button" class="btn teal" data-action="request-sms-opt-in"${status.enabled && !optInPending && phoneControl?.state !== "failed" && !optedOut ? "" : " disabled"}>${optInPending ? "Opt-in request already sent" : phoneControl?.state === "failed" ? "Request status needs review" : "Send opt-in text with Zoom Phone"}</button>
-          <label class="field-label" for="smsConsentSource">Permission source</label>
-          <select id="smsConsentSource">
-            <option value="application">Job application</option>
-            <option value="talent_pool">Talent-pool signup</option>
-            <option value="written">Written agreement</option>
-            <option value="verbal">Verbal agreement</option>
-            <option value="inbound_sms">Candidate initiated by SMS</option>
-          </select>
-          <label class="field-label" for="smsConsentEvidence">Evidence/reference</label>
-          <textarea id="smsConsentEvidence" rows="3" placeholder="Date, form or record reference"></textarea>
-          <button type="button" class="btn" data-action="record-sms-consent">Save permission record</button>
-        </div>`}
-      <label class="field-label" for="smsMessage">Message</label>
-      <textarea id="smsMessage" rows="6" maxlength="420"${permitted ? "" : " disabled"}>${escapeHtml(defaultMessage)}</textarea>
-      <p class="muted small">Medhunt automatically adds its identity and “Reply STOP to opt out” to each message.</p>
+    <section class="sheet" role="dialog" aria-modal="true" aria-labelledby="smsTitle">
+      <h3 id="smsTitle">Send SMS to ${escapeHtml(candidateName || "candidate")}</h3>
+      <div class="muted small">To: ${escapeHtml(preview.phone || phone)}</div>
+      <div class="field-label mt">Send from: Zoom Phone</div>
+      <label class="field-label mt" for="smsMessage">Message</label>
+      <textarea id="smsMessage" rows="7" maxlength="1600" placeholder="Write a message for this candidate"></textarea>
+      <p id="smsWordCount" class="muted small" aria-live="polite">0 / 29 words</p>
+      ${notices.map((item) => `<div class="notice mt">${escapeHtml(item)}</div>`).join("")}
       <div class="row modal-actions">
         <button type="button" class="btn ghost" data-action="close-modal">Cancel</button>
-        <button type="button" class="btn teal" data-action="send-sms"${permitted && status.enabled ? "" : " disabled"}>Send with Zoom Phone</button>
+        <button type="button" class="btn teal" data-action="send-sms"${blocked ? " disabled" : ""}>Send with Zoom Phone</button>
       </div>
     </section>
   </div>`;
+  const messageInput = $("#smsMessage");
+  const sendButton = $('[data-action="send-sms"]');
+  const updateWordCount = () => {
+    const words = messageInput?.value.trim().split(/\s+/u).filter(Boolean).length || 0;
+    const counter = $("#smsWordCount");
+    if (counter) counter.textContent = `${words} / 29 words`;
+    if (sendButton) sendButton.disabled = blocked || words === 0 || words > 29;
+  };
+  if (messageInput) messageInput.addEventListener("input", updateWordCount);
+  updateWordCount();
 }
 
 async function composeSmsFromButton(button) {
@@ -4113,50 +4135,302 @@ async function composeSmsFromButton(button) {
   );
 }
 
-async function recordSmsConsent() {
-  if (!activeSmsContext) throw new Error("Candidate message context expired.");
-  const source = $("#smsConsentSource")?.value || "";
-  const evidence = $("#smsConsentEvidence")?.value.trim() || "";
-  if (evidence.length < 3) throw new Error("Enter the permission record reference.");
-  await api(`/candidates/${activeSmsContext.candidateId}/sms-consent`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      phone: activeSmsContext.phone,
-      status: "opted_in",
-      source,
-      evidence,
-      disclosure_version: "medhunt-sms-v1",
-    }),
+function updateBulkSmsToolbar() {
+  const count = bulkSmsSelectedIds.size;
+  const counter = $("#bulkSmsSelectionCount");
+  const review = $('[data-action="open-bulk-sms"]');
+  const clear = $('[data-action="clear-bulk-sms-selection"]');
+  if (counter) counter.textContent = `${count} selected`;
+  const lookupCount = $("#lookupBulkSmsSelectionCount");
+  if (lookupCount) lookupCount.textContent = `${indeedBulkSmsSelectedKeys.size} selected`;
+  if (review) review.disabled = count + indeedBulkSmsSelectedKeys.size === 0;
+  if (clear) clear.disabled = count + indeedBulkSmsSelectedKeys.size === 0;
+}
+
+function onBulkSmsSelectionChange(event) {
+  const lookupCheckbox = event.target.closest('input[data-action="toggle-bulk-lookup-sms"]');
+  if (lookupCheckbox) {
+    const profileKey = lookupCheckbox.dataset.profileKey;
+    if (profileKey) {
+      if (lookupCheckbox.checked) indeedBulkSmsSelectedKeys.add(profileKey);
+      else indeedBulkSmsSelectedKeys.delete(profileKey);
+    }
+    updateBulkSmsToolbar();
+    return;
+  }
+  const checkbox = event.target.closest('input[data-action="toggle-bulk-sms"]');
+  if (!checkbox) return;
+  const candidateId = Number(checkbox.dataset.candidateId);
+  if (!Number.isInteger(candidateId)) return;
+  if (checkbox.checked) bulkSmsSelectedIds.add(candidateId);
+  else bulkSmsSelectedIds.delete(candidateId);
+  updateBulkSmsToolbar();
+}
+
+function clearBulkSmsSelection() {
+  bulkSmsSelectedIds.clear();
+  indeedBulkSmsSelectedKeys.clear();
+  document.querySelectorAll('input[data-action="toggle-bulk-sms"]').forEach((checkbox) => {
+    checkbox.checked = false;
   });
-  notify("SMS permission record saved.");
-  await showSmsComposer(
-    activeSmsContext.candidateId, activeSmsContext.candidateName, activeSmsContext.phone,
+  document.querySelectorAll('input[data-action="toggle-bulk-lookup-sms"]').forEach((checkbox) => {
+    checkbox.checked = false;
+  });
+  updateBulkSmsToolbar();
+}
+
+function selectReadyBulkSmsProfiles() {
+  for (const profile of indeedCandidates) {
+    const result = indeedLookupFor(profile);
+    if (!isIndeedMatch(result) || result.sms_status === "sent" || !profile._candidateId) continue;
+    if (publicPhoneContacts(result).some((phone) => phone.kind === "mobile")) {
+      indeedBulkSmsSelectedKeys.add(profile._selectionKey);
+    }
+  }
+  document.querySelectorAll('input[data-action="toggle-bulk-lookup-sms"]').forEach((checkbox) => {
+    checkbox.checked = indeedBulkSmsSelectedKeys.has(checkbox.dataset.profileKey);
+  });
+  updateBulkSmsToolbar();
+}
+
+function smsFirstName(candidate) {
+  return String(candidate?.name || "Candidate").trim().split(/\s+/u)[0] || "Candidate";
+}
+
+function renderBulkSmsTemplate(template, firstName) {
+  return template.replace(/\{\{\s*first_name\s*\}\}/giu, firstName);
+}
+
+function smsWordCount(message) {
+  return String(message || "").trim().split(/\s+/u).filter(Boolean).length;
+}
+
+function bulkSmsSendableEntries(context) {
+  return context.entries.filter((entry) =>
+    !entry.blockedReason && ["ready", "failed"].includes(entry.state)
   );
 }
 
-async function requestSmsOptIn() {
-  if (!activeSmsContext) throw new Error("Candidate message context expired.");
-  await api("/messaging/sms/opt-in-request", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      candidate_id: activeSmsContext.candidateId,
-      phone: activeSmsContext.phone,
-      request_id: crypto.randomUUID(),
-    }),
-    timeout: 60000,
-  });
-  notify("Opt-in request accepted by Zoom Phone.");
-  await showSmsComposer(
-    activeSmsContext.candidateId, activeSmsContext.candidateName, activeSmsContext.phone,
+function bulkSmsCanSend(context) {
+  const sendable = bulkSmsSendableEntries(context);
+  return !context.sending && sendable.length > 0 && sendable.every((entry) =>
+    entry.message.trim() && entry.message.length <= 1600 && smsWordCount(entry.message) <= 29
   );
+}
+
+function renderBulkSmsPreviewRows() {
+  const context = activeBulkSmsContext;
+  const target = $("#bulkSmsPreviewRows");
+  if (!context || !target) return;
+  target.innerHTML = context.entries.map((entry) => {
+    const count = smsWordCount(entry.message);
+    const blocked = Boolean(entry.blockedReason) || ["sent", "sending", "skipped"].includes(entry.state);
+    let stateLabel = entry.blockedReason || entry.state;
+    if (entry.state === "ready" && !entry.blockedReason) stateLabel = "Ready";
+    if (entry.state === "sending") stateLabel = "Sending…";
+    if (entry.state === "sent") stateLabel = "Sent";
+    if (entry.state === "failed") stateLabel = `Failed: ${entry.reason || "Send failed"}`;
+    if (entry.state === "skipped" && !entry.blockedReason) stateLabel = entry.reason || "Skipped";
+    return `<article class="bulk-sms-preview-row">
+      <div class="row spread bulk-sms-preview-head"><strong>${escapeHtml(entry.firstName)} · ${escapeHtml(entry.phone)}</strong><span class="muted small">${escapeHtml(stateLabel)}</span></div>
+      <textarea rows="3" maxlength="1600" data-bulk-sms-message="${entry.candidateId}" aria-label="Message to ${escapeHtml(entry.firstName)}"${blocked || context.sending ? " disabled" : ""}>${escapeHtml(entry.message)}</textarea>
+      <div class="row spread"><span class="muted small">Preview · editable for this candidate</span><span id="bulkSmsWordCount-${entry.candidateId}" class="${count > 29 ? "error-text" : "muted"} small">${count} / 29 words</span></div>
+    </article>`;
+  }).join("");
+  const sendButton = $('[data-action="send-bulk-sms"]');
+  if (sendButton) {
+    sendButton.disabled = !bulkSmsCanSend(context);
+    sendButton.textContent = context.sending
+      ? `Sending ${context.entries.filter((entry) => entry.state === "sent").length}/${context.entries.length}…`
+      : `Send ${bulkSmsSendableEntries(context).length} messages`;
+  }
+}
+
+function renderBulkSmsModal() {
+  const context = activeBulkSmsContext;
+  if (!context) return;
+  const notices = [];
+  if (!context.replyNotificationsConfigured) notices.push("Reply email notifications are not fully configured.");
+  if (context.entries.some((entry) => entry.blockedReason)) {
+    notices.push("Candidates marked as already contacted, opted out, or unavailable will be skipped.");
+  }
+  $("#modalRoot").innerHTML = `<div class="modal" role="presentation">
+    <section class="sheet bulk-sms-sheet" role="dialog" aria-modal="true" aria-labelledby="bulkSmsTitle">
+      <h3 id="bulkSmsTitle">Review bulk SMS</h3>
+      <p class="muted small">The first name is filled in for each candidate. Change the template to update all previews, or edit an individual message below. Each message is sent separately.</p>
+      <div class="field-label mt">Send from: Zoom Phone</div>
+      <label class="field-label mt" for="bulkSmsTemplate">Message template</label>
+      <textarea id="bulkSmsTemplate" rows="4" maxlength="1600">${escapeHtml(context.template)}</textarea>
+      <p class="muted small">Messages are limited to 29 words.</p>
+      ${notices.map((item) => `<div class="notice mt">${escapeHtml(item)}</div>`).join("")}
+      <div id="bulkSmsPreviewRows" class="bulk-sms-preview-list"></div>
+      <div class="row modal-actions">
+        <button type="button" class="btn ghost" data-action="close-modal">Cancel</button>
+        <button type="button" class="btn teal" data-action="send-bulk-sms"${bulkSmsCanSend(context) ? "" : " disabled"}>Send ${bulkSmsSendableEntries(context).length} messages</button>
+      </div>
+    </section>
+  </div>`;
+  renderBulkSmsPreviewRows();
+  $("#bulkSmsTemplate").addEventListener("input", (event) => {
+    context.template = event.target.value;
+    context.entries.forEach((entry) => {
+      if (entry.blockedReason || !["ready", "failed"].includes(entry.state)) return;
+      entry.message = renderBulkSmsTemplate(context.template, entry.firstName);
+      const textarea = $(`[data-bulk-sms-message="${entry.candidateId}"]`);
+      if (textarea) textarea.value = entry.message;
+      updateBulkSmsWordCounter(entry);
+    });
+    updateBulkSmsSendButton();
+  });
+  $("#bulkSmsPreviewRows").addEventListener("input", (event) => {
+    const textarea = event.target.closest("textarea[data-bulk-sms-message]");
+    if (!textarea) return;
+    const entry = context.entries.find((item) => item.candidateId === Number(textarea.dataset.bulkSmsMessage));
+    if (!entry) return;
+    entry.message = textarea.value;
+    updateBulkSmsWordCounter(entry);
+    updateBulkSmsSendButton();
+  });
+}
+
+function updateBulkSmsWordCounter(entry) {
+  const counter = $(`#bulkSmsWordCount-${entry.candidateId}`);
+  if (!counter) return;
+  const count = smsWordCount(entry.message);
+  counter.textContent = `${count} / 29 words`;
+  counter.className = `${count > 29 ? "error-text" : "muted"} small`;
+}
+
+function updateBulkSmsSendButton() {
+  const context = activeBulkSmsContext;
+  const button = $('[data-action="send-bulk-sms"]');
+  if (!context || !button) return;
+  button.disabled = !bulkSmsCanSend(context);
+  if (!context.sending) button.textContent = `Send ${bulkSmsSendableEntries(context).length} messages`;
+}
+
+async function openBulkSmsReview() {
+  const lookupMode = activeView === "indeed" && Boolean(indeedLookupSummary);
+  const selected = lookupMode
+    ? indeedCandidates.filter((profile) => indeedBulkSmsSelectedKeys.has(profile._selectionKey)).map((profile) => {
+      const mobile = publicPhoneContacts(indeedLookupFor(profile)).find((item) => item.kind === "mobile");
+      return mobile && profile._candidateId ? {
+        id: Number(profile._candidateId),
+        name: profile.name,
+        phone: mobile.value,
+        profileKey: profile._selectionKey,
+      } : null;
+    }).filter(Boolean)
+    : candidateSmsRows.filter((candidate) => bulkSmsSelectedIds.has(Number(candidate.id))).map((candidate) => {
+      const mobile = publicPhoneContacts(candidate).find((item) => item.kind === "mobile");
+      return mobile ? { id: Number(candidate.id), name: candidate.name, phone: mobile.value } : null;
+    }).filter(Boolean);
+  if (!selected.length) throw new Error("Select at least one candidate with a verified mobile number.");
+  const messaging = await api("/messaging/status");
+  const zoomAvailable = Boolean(messaging.providers?.zoom?.enabled && messaging.providers?.zoom?.sender_configured);
+  if (!zoomAvailable) {
+    throw new Error(messaging.zoom_sender_required
+      ? "Ask your Halo administrator to assign your Zoom Phone number before sending."
+      : "Zoom Phone SMS is not configured for your account.");
+  }
+  const entries = [];
+  const template = "Hello {{first_name}}, This is Brian from Radixsol. We have a Job title-Specialty opening in City, state, 13/26 weeks and Quick Offers, Would you be interested in more details?";
+  const seenCandidates = new Set();
+  for (const candidate of selected) {
+    if (seenCandidates.has(candidate.id)) continue;
+    seenCandidates.add(candidate.id);
+    const entry = {
+      candidateId: candidate.id,
+      firstName: smsFirstName(candidate),
+      phone: candidate.phone,
+      profileKey: candidate.profileKey || "",
+      message: "",
+      state: "ready",
+      blockedReason: "",
+      reason: "",
+    };
+    entry.message = renderBulkSmsTemplate(template, entry.firstName);
+    try {
+      const preview = await api(`/candidates/${entry.candidateId}/sms-preview?phone=${encodeURIComponent(entry.phone)}`);
+      entry.phone = preview.phone;
+      if (preview.opted_out) entry.blockedReason = "Opted out";
+      else if (preview.already_contacted) entry.blockedReason = "Already contacted";
+    } catch (error) {
+      entry.blockedReason = error.message || "Unavailable";
+    }
+    entries.push(entry);
+  }
+  if (!entries.length) throw new Error("The selected candidates have no verified mobile numbers.");
+  activeBulkSmsContext = {
+    entries,
+    providers: ["zoom"],
+    provider: "zoom",
+    template,
+    sending: false,
+    replyNotificationsConfigured: Boolean(messaging.reply_notifications_configured),
+  };
+  renderBulkSmsModal();
+}
+
+async function sendBulkSms() {
+  const context = activeBulkSmsContext;
+  if (!context || context.sending) return;
+  if (!bulkSmsCanSend(context)) throw new Error("Fix empty or over-29-word messages before sending.");
+  context.sending = true;
+  renderBulkSmsPreviewRows();
+  for (const entry of bulkSmsSendableEntries(context)) {
+    if (!entry.message.trim() || entry.message.length > 1600 || smsWordCount(entry.message) > 29) continue;
+    entry.state = "sending";
+    renderBulkSmsPreviewRows();
+    try {
+      await api("/messaging/sms", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          candidate_id: entry.candidateId,
+          phone: entry.phone,
+          message: entry.message.trim(),
+          provider: "zoom",
+          request_id: crypto.randomUUID(),
+        }),
+        timeout: 60000,
+      });
+      entry.state = "sent";
+      bulkSmsSelectedIds.delete(entry.candidateId);
+      if (entry.profileKey) {
+        indeedBulkSmsSelectedKeys.delete(entry.profileKey);
+        const profile = indeedCandidates.find((item) => item._selectionKey === entry.profileKey);
+        if (profile) {
+          const previous = indeedLookupFor(profile);
+          indeedLookupState.set(profile._selectionKey, { ...previous, sms_status: "sent" });
+          updateIndeedLookupProgressUi(profile);
+        }
+      }
+    } catch (error) {
+      entry.reason = error.message || "Send failed";
+      entry.state = error.status === 409 ? "skipped" : "failed";
+    }
+    renderBulkSmsPreviewRows();
+    updateBulkSmsToolbar();
+  }
+  context.sending = false;
+  renderBulkSmsPreviewRows();
+  const sent = context.entries.filter((entry) => entry.state === "sent").length;
+  const failed = context.entries.filter((entry) => entry.state === "failed").length;
+  notify(`Bulk SMS finished: ${sent} sent${failed ? `, ${failed} failed` : ""}.`);
+  if (activeView === "candidates") await viewCandidates();
 }
 
 async function sendCandidateSms() {
   if (!activeSmsContext) throw new Error("Candidate message context expired.");
-  const message = $("#smsMessage")?.value.trim() || "";
+  const message = $("#smsMessage")?.value?.trim() || "";
   if (!message) throw new Error("Write a message before sending.");
+  if (message.split(/\s+/u).filter(Boolean).length > 29) {
+    throw new Error("SMS messages are limited to 29 words.");
+  }
+  if (message.length > 1600) throw new Error("SMS messages can contain up to 1,600 characters.");
+  const provider = "zoom";
+  const sentCandidateId = activeSmsContext.candidateId;
   await api("/messaging/sms", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -4164,45 +4438,29 @@ async function sendCandidateSms() {
       candidate_id: activeSmsContext.candidateId,
       phone: activeSmsContext.phone,
       message,
+      provider: "zoom",
       request_id: crypto.randomUUID(),
     }),
     timeout: 60000,
   });
   closeModal();
+  activeSmsContext = null;
+  markIndeedSmsSent(sentCandidateId);
   notify("Message accepted by Zoom Phone.");
+  if (activeView === "candidates") await viewCandidates();
 }
 
-async function viewMessages() {
-  $("#title").textContent = "Messages";
-  try {
-    const data = await api("/messaging/conversations");
-    const items = data.items || [];
-    $("#content").innerHTML = `<div class="card messages-card">
-      <div class="row spread"><div><h3>Candidate conversations</h3><p class="muted small">Review and assign replies in Halo.</p></div><span class="pill live">${items.length}</span></div>
-      <div class="conversation-list">
-        ${items.length ? items.map((item) => `<button type="button" class="conversation-row" data-action="open-conversation" data-conversation-id="${Number(item.id)}">
-          <span><strong>${escapeHtml(item.candidate_name || `Candidate ${item.candidate_id}`)}</strong><small>${escapeHtml(item.candidate_phone || "")}</small></span>
-          <span><b>${escapeHtml(item.status || "open")}</b><small>${item.assigned_recruiter_name ? `Assigned to ${escapeHtml(item.assigned_recruiter_name)}` : "Unassigned"}</small></span>
-        </button>`).join("") : `<p class="muted">No SMS conversations yet.</p>`}
-      </div>
-    </div>`;
-  } catch (error) {
-    $("#content").innerHTML = backendError(error);
+function markIndeedSmsSent(candidateId) {
+  const profiles = new Set([...indeedCandidates, ...indeedLookupProfiles]);
+  for (const profile of profiles) {
+    if (Number(profile._candidateId) !== Number(candidateId)) continue;
+    const result = indeedLookupFor(profile);
+    if (!isIndeedMatch(result)) continue;
+    indeedLookupState.set(profile._selectionKey, { ...result, sms_status: "sent" });
+    indeedBulkSmsSelectedKeys.delete(profile._selectionKey);
+    updateIndeedLookupProgressUi(profile);
   }
-}
-
-async function openConversation(conversationId) {
-  const conversation = await api(`/messaging/conversations/${conversationId}`);
-  $("#modalRoot").innerHTML = `<div class="modal" role="presentation">
-    <section class="sheet sms-sheet" role="dialog" aria-modal="true" aria-labelledby="conversationTitle">
-      <h3 id="conversationTitle">${escapeHtml(conversation.candidate_name || "Candidate conversation")}</h3>
-      <div class="message-thread">${(conversation.messages || []).map((message) => `<div class="message-bubble ${message.direction === "inbound" ? "inbound" : "outbound"}"><span>${escapeHtml(message.body)}</span><small>${escapeHtml(message.status || "")}</small></div>`).join("")}</div>
-      <p class="muted small">Recruiter assignment is managed in Halo.</p>
-      <div class="row modal-actions">
-        <button type="button" class="btn ghost" data-action="close-modal">Close</button>
-      </div>
-    </section>
-  </div>`;
+  updateBulkSmsToolbar();
 }
 
 async function viewPipeline() {
@@ -4321,7 +4579,6 @@ const views = {
   indeed: viewIndeed,
   add: viewAdd,
   pipeline: viewPipeline,
-  messages: viewMessages,
   dnc: viewDnc,
   analytics: viewAnalytics,
   settings: viewSettings,
@@ -4382,6 +4639,8 @@ document.addEventListener("change", async (event) => {
   if (event.target.id === "jobSelect") await go(activeView);
 });
 
+document.addEventListener("change", onBulkSmsSelectionChange);
+
 document.addEventListener("click", async (event) => {
   const nav = event.target.closest(".nav-link");
   if (nav) {
@@ -4411,7 +4670,6 @@ document.addEventListener("click", async (event) => {
 
   const actions = {
     "login": login,
-    "account": showAccount,
     "request-login-code": requestLoginCode,
     "verify-login-code": verifyLoginCode,
     "check-device-approval": checkDeviceApproval,
@@ -4459,10 +4717,11 @@ document.addEventListener("click", async (event) => {
     "move": () => moveCandidate(id),
     "draft": () => draftOutreach(id),
     "compose-sms": () => composeSmsFromButton(button),
-    "record-sms-consent": recordSmsConsent,
-    "request-sms-opt-in": requestSmsOptIn,
     "send-sms": sendCandidateSms,
-    "open-conversation": () => openConversation(Number(button.dataset.conversationId)),
+    "clear-bulk-sms-selection": clearBulkSmsSelection,
+    "select-ready-bulk-sms": selectReadyBulkSmsProfiles,
+    "open-bulk-sms": openBulkSmsReview,
+    "send-bulk-sms": sendBulkSms,
     "approve-draft": () => approveDraft(id),
     "copy-draft": copyDraft,
     "add-dnc": addDnc,

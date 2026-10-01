@@ -2,26 +2,26 @@
   "use strict";
 
   const ADAPTER_REVISION = "facebook-profile-v8";
-  const ADAPTER_REQUEST = "RADIXSOL_FACEBOOK_V8_REQUEST";
-  if (window.__radixsolFacebookAdapterRevision === ADAPTER_REVISION) return;
-  if (window.__radixsolFacebookMessageListener) {
+  const ADAPTER_REQUEST = "MEDHUNT_FACEBOOK_V8_REQUEST";
+  if (window.__medhuntFacebookAdapterRevision === ADAPTER_REVISION) return;
+  if (window.__medhuntFacebookMessageListener) {
     try {
-      chrome.runtime.onMessage.removeListener(window.__radixsolFacebookMessageListener);
+      chrome.runtime.onMessage.removeListener(window.__medhuntFacebookMessageListener);
     } catch {
 
     }
   }
-  if (window.__radixsolFacebookObserver) {
-    try { window.__radixsolFacebookObserver.disconnect(); } catch { /* no-op */ }
+  if (window.__medhuntFacebookObserver) {
+    try { window.__medhuntFacebookObserver.disconnect(); } catch { /* no-op */ }
   }
-  if (window.__radixsolFacebookMutationTimer) {
-    clearTimeout(window.__radixsolFacebookMutationTimer);
+  if (window.__medhuntFacebookMutationTimer) {
+    clearTimeout(window.__medhuntFacebookMutationTimer);
   }
-  if (window.__radixsolFacebookRouteTimer) {
-    clearInterval(window.__radixsolFacebookRouteTimer);
+  if (window.__medhuntFacebookRouteTimer) {
+    clearInterval(window.__medhuntFacebookRouteTimer);
   }
-  window.__radixsolFacebookCaptureLoaded = true;
-  window.__radixsolFacebookAdapterRevision = ADAPTER_REVISION;
+  window.__medhuntFacebookCaptureLoaded = true;
+  window.__medhuntFacebookAdapterRevision = ADAPTER_REVISION;
 
   const PLATFORM = { key: "facebook", label: "Facebook" };
 
@@ -746,7 +746,7 @@
     )), 20);
     const routeBound = boundIdentities.includes(identity.sourceId);
     if (boundIdentities.length && !routeBound) return null;
-    const previous = window.__radixsolFacebookLastProfile;
+    const previous = window.__medhuntFacebookLastProfile;
     if (
       previous && previous.source_id !== identity.sourceId
       && sameLooseText(previous.name, header.name) && !routeBound
@@ -785,7 +785,7 @@
       result_index: 0,
       captured_at: new Date().toISOString(),
     };
-    window.__radixsolFacebookLastProfile = {
+    window.__medhuntFacebookLastProfile = {
       source_id: profile.source_id,
       name: profile.name,
     };
@@ -860,7 +860,7 @@
     const messageType = message?.type === ADAPTER_REQUEST
       ? message?.original_type
       : message?.type;
-    if (messageType === "RADIXSOL_PLATFORM_PING") {
+    if (messageType === "MEDHUNT_PLATFORM_PING") {
       const identity = facebookIdentity();
       const region = identity ? (profileRegion(identity) || document.body) : null;
       const profileKind = identity ? profileSurfaceKind(identity, region) : "unsupported";
@@ -875,18 +875,18 @@
       });
       return false;
     }
-    if (messageType === "RADIXSOL_CAPTURE_PLATFORM_PROFILE") {
+    if (messageType === "MEDHUNT_CAPTURE_PLATFORM_PROFILE") {
       const result = snapshot();
       sendResponse(result.ok
         ? { ...result, adapter_revision: ADAPTER_REVISION, profile: result.profiles[0] }
         : { ...result, adapter_revision: ADAPTER_REVISION });
       return false;
     }
-    if (["RADIXSOL_LIST_PLATFORM_CANDIDATES", "RADIXSOL_SCAN_PLATFORM_CANDIDATES"].includes(messageType)) {
+    if (["MEDHUNT_LIST_PLATFORM_CANDIDATES", "MEDHUNT_SCAN_PLATFORM_CANDIDATES"].includes(messageType)) {
       const result = snapshot();
-      if (result.ok && messageType === "RADIXSOL_SCAN_PLATFORM_CANDIDATES") {
+      if (result.ok && messageType === "MEDHUNT_SCAN_PLATFORM_CANDIDATES") {
         chrome.runtime.sendMessage({
-          type: "RADIXSOL_PLATFORM_SCAN_PROGRESS",
+          type: "MEDHUNT_PLATFORM_SCAN_PROGRESS",
           platform: PLATFORM.key,
           found: 1,
           total: 1,
@@ -896,7 +896,7 @@
       sendResponse({ ...result, adapter_revision: ADAPTER_REVISION });
       return false;
     }
-    if (messageType === "RADIXSOL_OPEN_PLATFORM_CANDIDATE") {
+    if (messageType === "MEDHUNT_OPEN_PLATFORM_CANDIDATE") {
       window.scrollTo({ top: 0, behavior: "smooth" });
       sendResponse({
         ok: true,
@@ -907,7 +907,7 @@
     }
     return false;
   };
-  window.__radixsolFacebookMessageListener = messageListener;
+  window.__medhuntFacebookMessageListener = messageListener;
   chrome.runtime.onMessage.addListener(messageListener);
 
   function observedProfileState() {
@@ -970,7 +970,7 @@
     if (!force && state.signature === lastSignature) return;
     lastSignature = state.signature;
     chrome.runtime.sendMessage({
-      type: "RADIXSOL_PLATFORM_RESULTS_CHANGED",
+      type: "MEDHUNT_PLATFORM_RESULTS_CHANGED",
       platform: PLATFORM.key,
       adapter_revision: ADAPTER_REVISION,
       count: state.count,
@@ -984,12 +984,12 @@
   }
 
   const observer = new MutationObserver(() => {
-    clearTimeout(window.__radixsolFacebookMutationTimer);
-    window.__radixsolFacebookMutationTimer = setTimeout(() => {
+    clearTimeout(window.__medhuntFacebookMutationTimer);
+    window.__medhuntFacebookMutationTimer = setTimeout(() => {
       emitObservedState(false);
     }, 500);
   });
-  window.__radixsolFacebookObserver = observer;
+  window.__medhuntFacebookObserver = observer;
   observer.observe(document.documentElement, {
     childList: true, subtree: true, characterData: true, attributes: true,
     attributeFilter: [
@@ -1003,22 +1003,22 @@
   emitObservedState(true, { initial: true });
 
   let observedIdentity = facebookIdentity()?.sourceId || "";
-  window.__radixsolFacebookRouteTimer = setInterval(() => {
+  window.__medhuntFacebookRouteTimer = setInterval(() => {
     const current = facebookIdentity();
     const currentId = current?.sourceId || "";
     if (currentId === observedIdentity) return;
     observedIdentity = currentId;
     lastSignature = "";
     chrome.runtime.sendMessage({
-      type: "RADIXSOL_PLATFORM_RESULTS_CHANGED",
+      type: "MEDHUNT_PLATFORM_RESULTS_CHANGED",
       platform: PLATFORM.key,
       count: 0,
       identity_changed: true,
       source_id: currentId,
       page_url: current?.url || location.href,
     }, () => void chrome.runtime.lastError);
-    clearTimeout(window.__radixsolFacebookMutationTimer);
-    window.__radixsolFacebookMutationTimer = setTimeout(() => {
+    clearTimeout(window.__medhuntFacebookMutationTimer);
+    window.__medhuntFacebookMutationTimer = setTimeout(() => {
       emitObservedState(false);
     }, 100);
   }, 400);

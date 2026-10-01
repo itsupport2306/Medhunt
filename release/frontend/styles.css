@@ -323,6 +323,19 @@ code { font-size: .92em; background: #f0f2f6; border-radius: 4px; padding: 1px 4
   border-top: 1px solid #eef1f6;
   padding-top: 10px;
 }
+.bulk-sms-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.lookup-bulk-sms-toolbar { margin: 12px 0; }
+.bulk-sms-toolbar > div:first-child { min-width: 0; flex: 1 1 220px; }
+.bulk-sms-select { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+.lookup-bulk-sms-select { flex: 1 0 100%; }
+.bulk-sms-select input { width: auto; margin: 0; }
+.bulk-sms-sheet { max-width: 780px; }
+.bulk-sms-preview-list { display: grid; gap: 10px; margin: 14px 0; }
+.bulk-sms-preview-row { display: grid; gap: 6px; padding: 10px; border: 1px solid var(--line); border-radius: 10px; }
+.bulk-sms-preview-row textarea { width: 100%; box-sizing: border-box; }
+.bulk-sms-preview-head { align-items: flex-start; gap: 10px; }
+.bulk-sms-preview-head > span { text-align: right; }
+.error-text { color: var(--red); }
 
 .board-wrap { overflow-x: auto; padding-bottom: 4px; }
 .board { display: grid; grid-template-columns: repeat(6, minmax(150px, 1fr)); gap: 10px; min-width: 920px; }
@@ -1186,6 +1199,7 @@ body.extension-shell .indeed-workflow {
 }
 .source-shell-header .panel-rescan-button {
   width: 44px;
+  min-width: 44px;
   height: 44px;
   display: grid;
   place-items: center;
@@ -1195,6 +1209,21 @@ body.extension-shell .indeed-workflow {
   color: #dceaf1;
   background: transparent;
   font-size: 21px;
+}
+.source-shell-header .panel-account-button {
+  min-height: 32px;
+  padding: 0 9px;
+  border: 1px solid rgba(255, 255, 255, .2);
+  border-radius: 9px;
+  color: #dceaf1;
+  background: rgba(255, 255, 255, .08);
+  font-size: 11px;
+  font-weight: 650;
+  cursor: pointer;
+}
+.source-shell-header .panel-account-button:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, .16);
 }
 .source-shell-header .panel-rescan-button:hover {
   color: #fff;
@@ -1839,55 +1868,3 @@ body.extension-shell .candidate-queue-card > .linkedin-pdf-tools {
   letter-spacing: .03em;
   text-transform: uppercase;
 }
-
-/* ---- consent-gated Zoom Phone messaging ---- */
-.sms-button, .sms-inline { border-color: #9ecfca; color: var(--teal); }
-.sms-inline { margin-top: 5px; }
-.sms-consent-panel {
-  margin: 14px 0;
-  padding: 14px;
-  border: 1px solid #d7e2e8;
-  border-radius: 10px;
-  background: #f7fafb;
-}
-.sms-opt-in-preview {
-  margin: 10px 0 0;
-  padding: 11px;
-  border-radius: 8px;
-  background: #fff;
-  color: var(--ink);
-  font-size: 12px;
-  line-height: 1.55;
-}
-.sms-consent-panel .btn { margin-top: 10px; }
-.sms-consent-state {
-  margin: 12px 0;
-  padding: 9px 11px;
-  border-radius: 8px;
-  font-size: 11px;
-  font-weight: 700;
-}
-.sms-consent-state.ready { color: #086b62; background: #e4f5f2; }
-.conversation-list { display: grid; gap: 8px; margin-top: 14px; }
-.conversation-row {
-  width: 100%;
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 12px;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  color: var(--ink);
-  background: #fff;
-  text-align: left;
-}
-.conversation-row:hover { border-color: #9ecfca; background: #f7fbfb; }
-.conversation-row span:last-child { text-align: right; }
-.conversation-row strong, .conversation-row b, .conversation-row small { display: block; }
-.conversation-row small { margin-top: 3px; color: var(--muted); font-size: 10px; }
-.message-thread { display: grid; gap: 8px; margin: 14px 0; max-height: 300px; overflow: auto; }
-.message-bubble { max-width: 86%; padding: 9px 11px; border-radius: 11px; background: #edf2f5; font-size: 12px; }
-.message-bubble.outbound { justify-self: end; color: #fff; background: var(--teal); }
-.message-bubble.inbound { justify-self: start; }
-.message-bubble span, .message-bubble small { display: block; white-space: pre-wrap; }
-.message-bubble small { margin-top: 4px; opacity: .75; font-size: 9px; text-transform: uppercase; }

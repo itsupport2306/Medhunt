@@ -1,15 +1,15 @@
 "use strict";
 
-// Platform-independent guard for profiles returned by content scripts. Site
-// adapters read the DOM; this layer prevents obvious navigation labels,
-// malformed source URLs, stale cards, and duplicates from reaching storage.
+
+
+
 (() => {
   const MAX_PROFILES = 100;
   const CREDENTIALS = new Set([
-    // Credential tokens are compared after punctuation is removed by
-    // credentialToken(). Keep both the common short forms and the board /
-    // population-specific NP suffixes so a credentialed name is still a
-    // person name on every supported source.
+
+
+
+
     "aa", "acls", "acnp", "acnpbc", "agacnp", "agacnpbc", "agnp", "agnpc", "agnpbc",
     "agpcnp", "agpcnpc", "agpcnpbc", "anp", "anpbc",
     "apn", "aprn", "bls", "bsn", "bsnrn", "ccrn", "cdces", "cde", "cnm", "cna", "cnor", "cnp",
@@ -252,10 +252,10 @@
       roles: textList(raw.roles),
       employers: textList(raw.employers),
       schools: textList(raw.schools),
-      // Preserve source-declared specialties independently from generic
-      // skills/roles. Healthcare and staffing adapters can expose either a
-      // scalar `specialty` or bounded specialty arrays; keeping both here
-      // lets the import contract carry them to the recruiting system for exact resolution.
+
+
+
+
       specialty: cleanText(raw.specialty, 240),
       specialties: textList([
         ...(Array.isArray(raw.specialties) ? raw.specialties : []),
@@ -320,7 +320,7 @@
     return { profiles: [...profiles.values()], skipped, skippedCount };
   }
 
-  globalThis.RadixsolProfileQuality = Object.freeze({
+  globalThis.MedhuntProfileQuality = Object.freeze({
     cleanText,
     normalizeName,
     likelyPersonName,

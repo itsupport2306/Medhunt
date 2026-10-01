@@ -1,10 +1,10 @@
 (() => {
   "use strict";
 
-  const ADAPTER_REVISION = "healthcare-directory-v12";
-  const ADAPTER_REQUEST = "RADIXSOL_HEALTHCARE_DIRECTORY_V12_REQUEST";
-  if (window.__radixsolHealthcareDirectoryAdapterRevision === ADAPTER_REVISION) return;
-  window.__radixsolHealthcareDirectoryAdapterRevision = ADAPTER_REVISION;
+  const ADAPTER_REVISION = "healthcare-directory-v13";
+  const ADAPTER_REQUEST = "MEDHUNT_HEALTHCARE_DIRECTORY_V13_REQUEST";
+  if (window.__medhuntHealthcareDirectoryAdapterRevision === ADAPTER_REVISION) return;
+  window.__medhuntHealthcareDirectoryAdapterRevision = ADAPTER_REVISION;
 
   const host = location.hostname.toLowerCase();
   const matches = (root) => host === root || host.endsWith(`.${root}`);
@@ -72,7 +72,11 @@
     }
   }
 
-  const PROVIDER_CREDENTIAL = /^(?:M\.?D\.?|D\.?O\.?|M\.?P\.?H\.?|Ph\.?D\.?|DNP|APRN(?:-C)?|NP|FNP(?:-(?:C|BC))?|PMHNP(?:-(?:C|BC))?|AGNP(?:-(?:C|BC))?|CRNP|CNP|CNM|CRNA|PA-C|R\.?\s*N\.?|LPN|MSN|B\.?\s*S\.?\s*N\.?|BSNRN|LCCE|REGISTERED NURSE|DDS|DMD|FACP|FACOG)\.?$/i;
+
+
+
+
+  const PROVIDER_CREDENTIAL = /^(?:M\.?D\.?|D\.?O\.?|M\.?P\.?H\.?|Ph\.?D\.?|DNP|APRN(?:-(?:C|BC|CNP))?|APN|ANP|NP(?:-(?:C|BC))?|FNP(?:-(?:C|BC))?|PNP(?:-(?:AC|PC|C|BC))?|C\.?P\.?N\.?P(?:-(?:AC|PC|C|BC))?|ACNP(?:-BC)?|AGNP(?:-(?:C|BC))?|AGACNP(?:-BC)?|AGPCNP(?:-(?:C|BC))?|WHNP(?:-(?:C|BC))?|NNP(?:-(?:C|BC))?|PMHNP(?:-(?:C|BC))?|CRNP|CNP|CNM|CRNA|CNS|CCRN|PA-C|R\.?\s*N\.?(?:-BC)?|LPN|LVN|MSN|B\.?\s*S\.?\s*N\.?|BSNRN|LCCE|REGISTERED NURSE|NURSE PRACTITIONER|DDS|DMD|FACP|FACOG)\.?$/i;
 
   function providerCredentials(value) {
     const parts = clean(value, 240)
@@ -86,12 +90,12 @@
     const values = unique(credentials).join(" ");
     if (/\b(?:M\.?D\.?|D\.?O\.?)\b/i.test(values)) return "Physician";
     if (/\bCRNA\b/i.test(values)) return "Nurse Anesthetist";
-    if (/\b(?:DNP|APRN(?:-C)?|NP|FNP(?:-(?:C|BC))?|PMHNP(?:-(?:C|BC))?|AGNP(?:-(?:C|BC))?|CRNP|CNP|CNM)\b/i.test(values)) {
+    if (/\b(?:DNP|APRN(?:-(?:C|BC|CNP))?|NP(?:-(?:C|BC))?|FNP(?:-(?:C|BC))?|ACNP(?:-BC)?|AGACNP(?:-BC)?|AGPCNP(?:-(?:C|BC))?|PNP(?:-(?:AC|PC|C|BC))?|CPNP(?:-(?:AC|PC|C|BC))?|WHNP(?:-(?:C|BC))?|NNP(?:-(?:C|BC))?|PMHNP(?:-(?:C|BC))?|AGNP(?:-(?:C|BC))?|CRNP|CNP|CNM)\b/i.test(values)) {
       return "Nurse Practitioner";
     }
     if (/\bPA-C\b/i.test(values)) return "Physician Assistant";
     if (/\b(?:DDS|DMD)\b/i.test(values)) return "Dentist";
-    if (/\b(?:RN|LPN)\b/i.test(values)) return "Nurse";
+    if (/\b(?:RN(?:-BC)?|LPN|LVN|CNS|CCRN)\b/i.test(values)) return "Nurse";
     return "Healthcare Provider";
   }
 
@@ -1545,7 +1549,7 @@
     try {
       const result = scanSnapshot();
       chrome.runtime.sendMessage({
-        type: "RADIXSOL_PLATFORM_SCAN_PROGRESS",
+        type: "MEDHUNT_PLATFORM_SCAN_PROGRESS",
         platform: PLATFORM.key,
         found: result.count,
         total: result.expected_count,
@@ -1588,23 +1592,23 @@
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     const messageType = message?.type === ADAPTER_REQUEST ? message.original_type : message?.type;
     const respond = (payload) => sendResponse({ ...payload, adapter_revision: ADAPTER_REVISION });
-    if (messageType === "RADIXSOL_PLATFORM_PING") {
+    if (messageType === "MEDHUNT_PLATFORM_PING") {
       respond({ ok: true, platform: PLATFORM.key, label: PLATFORM.label, url: location.href });
       return false;
     }
-    if (messageType === "RADIXSOL_CAPTURE_PLATFORM_PROFILE") {
+    if (messageType === "MEDHUNT_CAPTURE_PLATFORM_PROFILE") {
       respond(captureProfile());
       return false;
     }
-    if (messageType === "RADIXSOL_LIST_PLATFORM_CANDIDATES") {
+    if (messageType === "MEDHUNT_LIST_PLATFORM_CANDIDATES") {
       respond(scanSnapshot());
       return false;
     }
-    if (messageType === "RADIXSOL_SCAN_PLATFORM_CANDIDATES") {
+    if (messageType === "MEDHUNT_SCAN_PLATFORM_CANDIDATES") {
       progressiveScan().then(respond).catch((error) => respond({ ok: false, error: String(error?.message || error) }));
       return true;
     }
-    if (messageType === "RADIXSOL_OPEN_PLATFORM_CANDIDATE") {
+    if (messageType === "MEDHUNT_OPEN_PLATFORM_CANDIDATE") {
       respond(openCandidate(message.index));
       return false;
     }
@@ -1626,7 +1630,7 @@
       lastSignature = signature;
       if (!signature && !hadResults) return;
       chrome.runtime.sendMessage({
-        type: "RADIXSOL_PLATFORM_RESULTS_CHANGED",
+        type: "MEDHUNT_PLATFORM_RESULTS_CHANGED",
         platform: PLATFORM.key,
         count: snapshot.count,
         page_url: location.href,

@@ -2,10 +2,10 @@
   "use strict";
 
   const ADAPTER_REVISION = "linkedin-capture-v5";
-  const ADAPTER_REQUEST = "RADIXSOL_LINKEDIN_V5_REQUEST";
-  if (window.__radixsolLinkedinAdapterRevision === ADAPTER_REVISION) return;
-  window.__radixsolLinkedinAdapterRevision = ADAPTER_REVISION;
-  window.__radixsolLinkedinCaptureLoaded = true;
+  const ADAPTER_REQUEST = "MEDHUNT_LINKEDIN_V5_REQUEST";
+  if (window.__medhuntLinkedinAdapterRevision === ADAPTER_REVISION) return;
+  window.__medhuntLinkedinAdapterRevision = ADAPTER_REVISION;
+  window.__medhuntLinkedinCaptureLoaded = true;
 
   const PLATFORM = { key: "linkedin", label: "LinkedIn" };
   const RESULT_CARD_SELECTOR = [
@@ -38,8 +38,8 @@
     if (!isVisible(element)) return Promise.resolve({ ok: false, error: "The LinkedIn action is not visible." });
     if (options.scroll !== false) {
       element.scrollIntoView({ block: "center", inline: "center", behavior: "auto" });
-      // LinkedIn's hydrated profile header can replace its action buttons
-      // after a scroll. Measure the live element only after layout settles.
+
+
       await pause(100);
     }
     if (!isVisible(element)) {
@@ -51,7 +51,7 @@
     const y = Math.round(rect.top + (rect.height / 2));
     return new Promise((resolve) => {
       chrome.runtime.sendMessage(
-        { type: "RADIXSOL_TRUSTED_LINKEDIN_CLICK", x, y },
+        { type: "MEDHUNT_TRUSTED_LINKEDIN_CLICK", x, y },
         (response) => {
           if (chrome.runtime.lastError) {
             resolve({ ok: false, error: chrome.runtime.lastError.message });
@@ -174,7 +174,7 @@
         });
         if (person) return person;
       } catch {
-        // Ignore malformed or unrelated structured data.
+
       }
     }
     return {};
@@ -266,9 +266,9 @@
       /\b(?:incorporated|inc\.?|llc|ltd\.?|corp(?:oration)?|company|hospital|health|healthcare|medical|care center|clinic|group|associates|network|foundation|partners|staffing|solutions?|services?|department of|university|college)\b/i.test(candidate)
     ) return "";
 
-    // Values adjacent to LinkedIn's Contact info control and structured
-    // address values are authoritative. Generic class selectors must still
-    // look location-like so pronouns, degree badges and employers cannot win.
+
+
+
     if (trusted) return candidate;
     return (
       /,/.test(candidate) ||
@@ -382,9 +382,9 @@
           if (employer) employers.push(employer);
         }
 
-        // Current LinkedIn profile entries expose their primary and secondary
-        // labels separately. Use only those semantic pairs; arbitrary prose in
-        // an Experience description must never become identity context.
+
+
+
         for (const entry of section.querySelectorAll([
           "li.artdeco-list__item",
           ".pvs-list__item--line-separated",
@@ -569,9 +569,9 @@
         ));
         if (linkedPersonIsSubject) return true;
 
-        // Some LinkedIn variants show only "2 mutual connections" next to
-        // avatar links. Accept that small local region only when it contains
-        // no candidate location/current-role evidence.
+
+
+
         const includesCandidateEvidence = textLines(element).some((line) => (
           resultLocationCandidate(line) || /^(?:current|past)\s*:/i.test(line)
         )) || Boolean(element.querySelector?.(
@@ -622,9 +622,9 @@
     const sectionHeading = firstText(["h1", "h2", "h3"], section || document.createElement("div"));
     if (/^people(?:\s+results?)?$/i.test(sectionHeading)) return true;
 
-    // LinkedIn's universal search uses this semantic result structure for a
-    // person even when data-view-name itself remains generic. Post-author and
-    // article links use different actor classes and must not satisfy it.
+
+
+
     return Boolean(
       card?.matches?.("li.reusable-search__result-container, .reusable-search__result-container") &&
       link?.closest?.(".entity-result__title-text, .entity-result__title-line, [class*='entity-result__title']") &&
@@ -664,8 +664,8 @@
       ".entity-result__secondary-subtitle",
       "[class*='entity-result__primary-subtitle']",
       "[class*='entity-result__secondary-subtitle']",
-      "[data-radixsol-field='headline']",
-      "[data-radixsol-field='location']",
+      "[data-medhunt-field='headline']",
+      "[data-medhunt-field='location']",
       "[class*='location']",
     ].join(","))) || lines.some((line) => (
       resultLocationCandidate(line, name) ||
@@ -749,7 +749,7 @@
       "[class*='entity-result__secondary-subtitle']",
       "[data-view-name*='search-result'] [class*='location']",
       "[data-view-name='people-search-result'] [class*='location']",
-      "[data-radixsol-field='location']",
+      "[data-medhunt-field='location']",
     ];
     for (const selector of trustedSelectors) {
       for (const element of card.querySelectorAll(selector)) {
@@ -794,7 +794,7 @@
       ".entity-result__primary-subtitle",
       "[class*='entity-result__primary-subtitle']",
       "[data-view-name*='search-result'] [class*='headline']",
-      "[data-radixsol-field='headline']",
+      "[data-medhunt-field='headline']",
     ]) {
       for (const element of card.querySelectorAll(selector)) {
         const candidate = usableResultHeadline(element.innerText || element.textContent, name, locationText);
@@ -826,9 +826,9 @@
     if (!candidate) return { role: "", employer: "" };
     const parts = candidate.split(/\s+at\s+/i);
     if (parts.length < 2) {
-      // A no-"at" headline is a role only when it looks occupational. This
-      // keeps a bare company such as "Acme Health, Inc." from being copied
-      // into either role or employer while retaining titles like "ICU RN".
+
+
+
       if (
         CREDENTIAL_SEQUENCE.test(candidate) ||
         /\b(?:incorporated|inc\.?|llc|ltd\.?|corp(?:oration)?|company|hospital|healthcare|medical center|clinic|solutions?|services?)\b/i.test(candidate)
@@ -847,9 +847,9 @@
     const name = nameFromResultCard(card, identity);
     if (!name) return null;
 
-    // Headline and location influence one another's rejection rules, so first
-    // use the semantic LinkedIn fields and then fill either missing value from
-    // the ordered visible lines.
+
+
+
     let headline = resultCardHeadline(card, name, "");
     let locationText = resultCardLocation(card, name, headline);
     if (!headline) headline = resultCardHeadline(card, name, locationText);
@@ -962,7 +962,7 @@
 
   function reportScanProgress(profiles) {
     chrome.runtime.sendMessage({
-      type: "RADIXSOL_PLATFORM_SCAN_PROGRESS",
+      type: "MEDHUNT_PLATFORM_SCAN_PROGRESS",
       platform: PLATFORM.key,
       found: profiles.length,
       total: profiles.length,
@@ -974,9 +974,9 @@
     if (!resultPage()) return snapshot();
     if (scanInProgress) return { ok: false, error: "A LinkedIn candidate scan is already running." };
     scanInProgress = true;
-    // An explicit scan is a fresh census. LIST/mutation reads preserve the
-    // accumulated virtualized set, but Refresh must be able to remove stale
-    // rows even when LinkedIn keeps the same search URL.
+
+
+
     accumulatedSearchKey = currentSearchKey();
     accumulatedSearchProfiles = new Map();
     accumulatedSearchElements = new Map();
@@ -1004,8 +1004,8 @@
       originalTop = Number(container?.scrollTop) || 0;
       if (typeof container?.scrollTo === "function") container.scrollTo({ top: 0, behavior: "auto" });
       else if (container) container.scrollTop = 0;
-      // LinkedIn virtualizes People results, so give the top cards time to
-      // mount before beginning the downward accumulation pass.
+
+
       await new Promise((resolve) => setTimeout(resolve, 320));
       merge();
       let stableAtBottom = 0;
@@ -1206,16 +1206,16 @@
     if (!normalizedProfileUrl()) {
       return { ok: false, error: "Open the candidate's exact LinkedIn profile first." };
     }
-    // A prior attempt can leave the popover open. Use its action directly
-    // instead of toggling the More button and accidentally closing it.
+
+
     let action = saveToPdfAction();
     const more = action ? null : await waitForLinkedinMoreButton();
     if (!action && !more) return { ok: false, error: "LinkedIn's More action is unavailable on this profile." };
     if (!action) {
       let opened = await trustedClick(more);
       if (!opened?.ok) {
-        // The header may have re-rendered during the first scroll. Resolve its
-        // current button once more rather than clicking stale coordinates.
+
+
         const replacement = await waitForLinkedinMoreButton(3000);
         if (!replacement || replacement === more) return opened;
         opened = await trustedClick(replacement);
@@ -1231,8 +1231,8 @@
     if (!action) {
       return { ok: false, error: "LinkedIn did not offer Save to PDF for this profile." };
     }
-    // Popover items are already visible. Scrolling one can dismiss LinkedIn's
-    // detached popover before the trusted click reaches it.
+
+
     const clicked = await trustedClick(action, { scroll: false });
     return clicked?.ok
       ? { ok: true, action: "save_to_pdf" }
@@ -1242,26 +1242,26 @@
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     const messageType = message?.type === ADAPTER_REQUEST ? message.original_type : message?.type;
     const respond = (payload) => sendResponse({ ...payload, adapter_revision: ADAPTER_REVISION });
-    if (messageType === "RADIXSOL_PLATFORM_PING") {
+    if (messageType === "MEDHUNT_PLATFORM_PING") {
       respond({ ok: true, platform: PLATFORM.key, label: PLATFORM.label, url: location.href });
       return false;
     }
-    if (messageType === "RADIXSOL_CAPTURE_PLATFORM_PROFILE") {
+    if (messageType === "MEDHUNT_CAPTURE_PLATFORM_PROFILE") {
       const result = snapshot();
       respond(result.ok ? { ...result, profile: result.profiles[0] } : result);
       return false;
     }
-    if (messageType === "RADIXSOL_LIST_PLATFORM_CANDIDATES") {
+    if (messageType === "MEDHUNT_LIST_PLATFORM_CANDIDATES") {
       const result = snapshot();
       respond(result);
       return false;
     }
-    if (messageType === "RADIXSOL_SCAN_PLATFORM_CANDIDATES") {
+    if (messageType === "MEDHUNT_SCAN_PLATFORM_CANDIDATES") {
       if (!resultPage()) {
         const result = snapshot();
         if (result.ok) {
           chrome.runtime.sendMessage({
-            type: "RADIXSOL_PLATFORM_SCAN_PROGRESS",
+            type: "MEDHUNT_PLATFORM_SCAN_PROGRESS",
             platform: PLATFORM.key,
             found: result.profiles.length,
             total: result.profiles.length,
@@ -1276,7 +1276,7 @@
       });
       return true;
     }
-    if (messageType === "RADIXSOL_OPEN_PLATFORM_CANDIDATE") {
+    if (messageType === "MEDHUNT_OPEN_PLATFORM_CANDIDATE") {
       if (resultPage()) respond(openCandidate(message.index));
       else {
         window.scrollTo({ top: 0, behavior: "smooth" });
@@ -1284,11 +1284,11 @@
       }
       return false;
     }
-    if (messageType === "RADIXSOL_GUIDE_LINKEDIN_PDF") {
+    if (messageType === "MEDHUNT_GUIDE_LINKEDIN_PDF") {
       respond(guidePdfDownload());
       return false;
     }
-    if (messageType === "RADIXSOL_AUTO_LINKEDIN_PDF") {
+    if (messageType === "MEDHUNT_AUTO_LINKEDIN_PDF") {
       automaticPdfDownload().then(respond).catch((error) => {
         respond({ ok: false, error: String(error?.message || error) });
       });
@@ -1333,7 +1333,7 @@
     lastSignature = signature;
     try {
       chrome.runtime.sendMessage({
-        type: "RADIXSOL_PLATFORM_RESULTS_CHANGED",
+        type: "MEDHUNT_PLATFORM_RESULTS_CHANGED",
         platform: PLATFORM.key,
         view: state.view,
         result_page: state.resultPage,
@@ -1342,7 +1342,7 @@
         empty: state.profiles.length === 0,
       }, () => void chrome.runtime.lastError);
     } catch {
-      // The extension can be reloaded while a LinkedIn tab remains open.
+
     }
   }
 
@@ -1368,7 +1368,7 @@
     observedUrl = location.href;
     scheduleResultsChanged(100);
   }, 750);
-  // Emit the initial state too. The side panel may already be open when the
-  // adapter is injected, so waiting for a later DOM mutation leaves it stale.
+
+
   scheduleResultsChanged(50);
 })();

@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Medhunt",
   "description": "Capture authorized candidate profiles, find verified contact details, and manage recruiting workflows.",
-  "version": "3.26.13",
+  "version": "3.26.30",
   "icons": {
     "16": "icons/medhunt-16.png",
     "32": "icons/medhunt-32.png",
@@ -19,8 +19,6 @@
     "scripting"
   ],
   "host_permissions": [
-    "http://127.0.0.1/*",
-    "http://localhost/*",
     "*://*.indeed.com/*",
     "*://*.vivian.com/*",
     "*://*.ziprecruiter.com/*",
@@ -40,7 +38,9 @@
     "*://*.commonspirit.org/*",
     "https://providers.sharecare.com/find-a-doctor/*",
     "https://providers.sharecare.com/doctor/*",
-    "https://doctor.webmd.com/*"
+    "https://doctor.webmd.com/*",
+    "https://medhunt-fyxr.onrender.com/*",
+    "https://medhunt1.onrender.com/*"
   ],
   "background": {
     "service_worker": "background.js"

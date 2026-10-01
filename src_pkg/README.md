@@ -617,17 +617,11 @@ revocation, expiry, and registration events are retained in
 `extension_device_events`. Older extension builds that do not send an
 installation identifier must be updated before this backend is deployed.
 
-### Extension enrichment credits
+### Extension enrichment usage
 
-Each Healthcareboard user receives 100 Medhunt extension enrichment credits on
-their first credit-balance request. One credit is charged per candidate when a
-lookup will make a fresh Quick Sourcer provider request; stored or cached contact
-results are free. The charge is per user and candidate, so retrying or reopening
-the same candidate does not charge it again. A depleted balance blocks new
-provider requests until topped up. Organization owners, admins, and managers can
-review and grant these credits under Halo's Organization → Members & roles page.
-These extension credits are separate from Halo contact-reveal credits. Deploy the
-Halo changes before this extension/backend update so the credit routes exist.
+Medhunt does not deduct or enforce Halo enrichment credits for candidate lookup.
+Third-party provider billing, API limits, and configured lookup controls still
+apply.
 
 ```text
 MEDHUNT_EXTENSION_ORIGINS=chrome-extension://<32-character-extension-id>
