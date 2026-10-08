@@ -4,6 +4,7 @@ pydantic>=2.0.0
 httpx>=0.26.0
 google-genai>=1.0.0             # optional Gemini identity scoring and outreach
 psycopg[binary]>=3.1            # optional; only if using PostgreSQL via DATABASE_URL
+psycopg-pool>=3.2               # bounded concurrent PostgreSQL connections for hosted queue workers
 python-dotenv>=1.0              # loads the workspace .env without exposing secrets
 boto3>=1.34                    # Cloudflare R2 resume object storage
 pypdf>=4.0                    # preserve original resume pages and prepend contact sheet

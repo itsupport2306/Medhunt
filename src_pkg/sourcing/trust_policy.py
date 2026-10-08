@@ -181,7 +181,9 @@ def _same_current_source_identity(candidate: dict, source: dict, evidence: dict)
     return bool(name.get("exact") and location.get("exact") and not name.get("conflict"))
 
 
-def trusted_provider_contacts(candidate: dict, source: dict) -> dict | None:
+def trusted_provider_contacts(
+    candidate: dict, source: dict, *, blocked_contact_keys=None,
+) -> dict | None:
     """Return provider-originated values only when all current trust rules pass."""
     verification_record = source.get("verification") or {}
     evidence = verification_record.get("evidence") or {}
@@ -240,11 +242,14 @@ def trusted_provider_contacts(candidate: dict, source: dict) -> dict | None:
         "verification": verification_record,
     }
     admissible = phone_policy.admissible_phone_values(phone_record)
-    allowed_groups = store.filter_dnc_groups({
-        "emails": provider_contacts.get("emails") or [],
-        "phones": admissible,
-        "addresses": provider_contacts.get("addresses") or [],
-    })
+    allowed_groups = store.filter_dnc_groups(
+        {
+            "emails": provider_contacts.get("emails") or [],
+            "phones": admissible,
+            "addresses": provider_contacts.get("addresses") or [],
+        },
+        blocked_keys=blocked_contact_keys,
+    )
     phone_record["phones"] = allowed_groups.get("phones") or []
     phone_contacts = phone_policy.preferred_phone_details(phone_record)
     phones = [item["value"] for item in phone_contacts]

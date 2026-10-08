@@ -1,8 +1,8 @@
 (() => {
   "use strict";
 
-  if (window.__radixsolPlatformMainRevision === "v2") return;
-  window.__radixsolPlatformMainRevision = "v2";
+  if (window.__radixsolPlatformMainLoaded) return;
+  window.__radixsolPlatformMainLoaded = true;
 
   function plainText(value) {
     return value == null ? "" : String(value).trim();
@@ -43,11 +43,14 @@
       "[class*='candidate-card']",
       "article",
     ];
-    const cards = new Set();
+    let cards = [];
     for (const selector of selectors) {
       try {
-        for (const card of document.querySelectorAll(selector)) cards.add(card);
-      } catch {}
+        cards = Array.from(document.querySelectorAll(selector));
+      } catch {
+        cards = [];
+      }
+      if (cards.length) break;
     }
 
     const output = [];
@@ -73,7 +76,7 @@
   }
 
   window.addEventListener("message", (event) => {
-    if (event.source !== window || event.data?.type !== "RADIXSOL_PLATFORM_MAIN_V2_REQUEST") return;
+    if (event.source !== window || event.data?.type !== "RADIXSOL_PLATFORM_MAIN_REQUEST") return;
     const requestId = plainText(event.data.requestId);
     if (!requestId) return;
     let candidates = [];
@@ -86,7 +89,7 @@
       error = plainText(caught?.message || caught);
     }
     window.postMessage({
-      type: "RADIXSOL_PLATFORM_MAIN_V2_RESPONSE",
+      type: "RADIXSOL_PLATFORM_MAIN_RESPONSE",
       requestId,
       candidates,
       error,

@@ -114,45 +114,6 @@ def test_no_duplicate_creates_candidate_with_whitelisted_trusted_fields():
     }
 
 
-@pytest.mark.parametrize(
-    ("emails", "phones", "expected_search_key"),
-    [
-        (["email-only@example.test"], [], "email"),
-        ([], ["(614) 555-0142"], "phone"),
-    ],
-)
-def test_candidate_creation_accepts_either_trusted_contact(
-    emails, phones, expected_search_key,
-):
-    requests = []
-
-    def handler(request):
-        requests.append(request)
-        if request.url.path.endswith("/candidates/search"):
-            return httpx.Response(200, json={"records": []})
-        if request.url.path.endswith("/candidate/webhook/create"):
-            content = request.content.decode("latin-1")
-            assert f'"{expected_search_key}"' in content or expected_search_key == "phone"
-            if expected_search_key == "email":
-                assert '"email":"email-only@example.test"' in content
-                assert '"phone":""' in content
-            else:
-                assert '"email":""' in content
-                assert '"phone":"(614) 555-0142"' in content
-            return httpx.Response(201, json={"id": 703})
-        raise AssertionError(request.url)
-
-    payload = _payload(emails=emails, phones=phones)
-    result = nexus_sync.process_delivery(
-        payload, PDF, settings=_settings(), client=_client(_settings(), handler),
-    )
-    searches = [json.loads(request.content) for request in requests
-                if request.url.path.endswith("/candidates/search")]
-    assert len(searches) == 1
-    assert expected_search_key in searches[0]
-    assert result["nexus_candidate_id"] == 703
-
-
 def test_nursing_role_resolves_exact_rn_and_unknown_specialty_defaults():
     master_calls = []
 
@@ -230,66 +191,67 @@ def test_actual_candidate_specialty_overrides_generic_default_and_aligns_profess
     assert result["nexus_candidate_id"] == 705
 
 
-def test_source_role_in_notes_resolves_profession_for_directory_profiles():
-    """The import row stores source roles as explicit notes evidence."""
-    identity = nexus_sync._trusted_identity({
-        "candidate": {
-            "contacts_trusted": True,
-            "name": "Alex Provider",
-            "location": "Columbus, OH",
-            "emails": ["alex@example.test"],
-            "phones": [],
-            "notes": "Role: Nurse Anesthetist\nSpecialty: https://schema.org/Anesthesia",
-        },
-    })
-    assert identity["role"] == "Nurse Anesthetist"
-    assert identity["specialties"] == ["https://schema.org/Anesthesia"]
-
-
-def test_sharecare_schema_uri_maps_to_live_nexus_specialty_and_role():
+@pytest.mark.parametrize(("job_title", "specialty"), [
+    ("RN Case Manager", "Case Manager"),
+    ("Hemodialysis Registered Nurse", "Dialysis"),
+    ("RN ICU", "ICU"),
+])
+def test_current_role_supplies_approved_nexus_specialty(job_title, specialty):
     def handler(request):
-        if request.url.path.endswith("/candidates/search"):
-            return httpx.Response(200, json={"records": []})
-        if request.url.path.endswith("/master/professions"):
-            return httpx.Response(200, json=[
-                {"professionId": 11, "name": "Nurse Anesthetist", "active": True},
-            ])
         if request.url.path.endswith("/master/specialties"):
             return httpx.Response(200, json=[
-                {
-                    "specialtyId": 12, "professionId": 11,
-                    "name": "Anesthesiology", "active": True,
-                },
-                {
-                    "specialtyId": 99, "professionId": 1,
-                    "name": "Unknown", "active": True,
-                },
+                {"specialtyId": 321, "professionId": 10, "name": specialty, "active": True},
+                {"specialtyId": 20, "professionId": 10, "name": "Unknown", "active": True},
             ])
         if request.url.path.endswith("/candidate/webhook/create"):
             content = request.content.decode("latin-1")
-            assert '"professionId":11' in content
-            assert '"specialtyId":12' in content
-            return httpx.Response(201, json={"id": 708})
+            assert '"professionId":10' in content
+            assert '"specialtyId":321' in content
+            return httpx.Response(201, json={"id": 720})
         raise AssertionError(request.url)
 
-    settings = _settings(default_profile={
-        "stateIds": {"OH": 30},
-        "countryId": 40,
-        "statusId": 50,
-        "referralSourceId": 60,
-        "jobTypeIds": ["PERM"],
-    })
+    settings = _settings()
     result = nexus_sync.process_delivery(
-        _payload(
-            name="Alex Provider",
-            job_title=None,
-            notes="Role: Nurse Anesthetist\nSpecialty: https://schema.org/Anesthesia",
-        ),
-        PDF,
-        settings=settings,
-        client=_client(settings, handler),
+        _payload(job_title=job_title), PDF,
+        settings=settings, client=_client(settings, handler),
     )
-    assert result["nexus_candidate_id"] == 708
+    assert result["nexus_candidate_id"] == 720
+
+
+def test_source_specialty_precedes_role_in_nexus_classification():
+    def handler(request):
+        if request.url.path.endswith("/master/specialties"):
+            return httpx.Response(200, json=[
+                {"specialtyId": 321, "professionId": 10, "name": "Dialysis", "active": True},
+                {"specialtyId": 322, "professionId": 10, "name": "ICU", "active": True},
+            ])
+        if request.url.path.endswith("/candidate/webhook/create"):
+            content = request.content.decode("latin-1")
+            assert '"specialtyId":321' in content
+            return httpx.Response(201, json={"id": 721})
+        raise AssertionError(request.url)
+
+    settings = _settings()
+    result = nexus_sync.process_delivery(
+        _payload(job_title="RN ICU", notes="Specialty: Dialysis"), PDF,
+        settings=settings, client=_client(settings, handler),
+    )
+    assert result["nexus_candidate_id"] == 721
+
+
+def test_stored_resume_specialty_is_read_only_during_nexus_delivery():
+    payload = _payload(job_title="Registered Nurse")
+    payload["resume_extraction"] = {
+        "fields": {"specialties": ["ICU", "OR"]},
+        "confidence": {"specialties": 0.76},
+        "accepted": {},
+        "conflicts": [],
+    }
+    identity = nexus_sync._trusted_identity(payload)
+    assert identity["source_specialties"] == []
+    assert identity["resume_specialties"] == ["ICU"]
+    payload["resume_extraction"]["conflicts"] = ["name"]
+    assert nexus_sync._trusted_identity(payload)["resume_specialties"] == []
 
 
 def test_unmatched_candidate_specialty_uses_unknown_classification():

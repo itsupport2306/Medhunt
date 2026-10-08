@@ -10,6 +10,8 @@ import json
 import sqlite3
 import threading
 import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -21,26 +23,10 @@ _SQLITE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS users(
   id INTEGER PRIMARY KEY AUTOINCREMENT, auth0_sub TEXT UNIQUE NOT NULL,
   email TEXT DEFAULT '', name TEXT DEFAULT '', created REAL, updated REAL);
-CREATE TABLE IF NOT EXISTS extension_devices(
-  user_id TEXT PRIMARY KEY, installation_id TEXT NOT NULL,
-  bound_at REAL NOT NULL, last_seen REAL NOT NULL);
-CREATE TABLE IF NOT EXISTS extension_device_registrations(
-  id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL,
-  installation_id TEXT NOT NULL, device_name TEXT DEFAULT '',
-  user_agent TEXT DEFAULT '', status TEXT DEFAULT 'pending',
-  requested_at REAL NOT NULL, approved_at REAL DEFAULT 0,
-  approved_by TEXT DEFAULT '', last_seen REAL DEFAULT 0,
-  revoked_at REAL DEFAULT 0, revocation_reason TEXT DEFAULT '',
-  UNIQUE(user_id, installation_id));
-CREATE TABLE IF NOT EXISTS extension_device_events(
-  id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL,
-  installation_id TEXT DEFAULT '', event_type TEXT NOT NULL,
-  actor_user_id TEXT DEFAULT '', details TEXT DEFAULT '{}', created REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS enrichment_events(
   id INTEGER PRIMARY KEY AUTOINCREMENT, auth0_sub TEXT NOT NULL,
   candidate_id INTEGER NOT NULL, status TEXT NOT NULL, provider TEXT DEFAULT '',
-  run_id TEXT DEFAULT '', platform TEXT DEFAULT '', created REAL NOT NULL,
-  halo_status TEXT DEFAULT 'delivered');
+  run_id TEXT DEFAULT '', created REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS jobs(
   id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, location TEXT,
   description TEXT, created REAL);
@@ -59,6 +45,10 @@ CREATE TABLE IF NOT EXISTS candidates(
   contact_expires_at REAL DEFAULT 0,
   notes TEXT DEFAULT '', source TEXT DEFAULT '', source_url TEXT DEFAULT '',
   source_id TEXT DEFAULT '', created REAL, updated REAL);
+CREATE TABLE IF NOT EXISTS medhunt_ats_routes(
+  candidate_id INTEGER NOT NULL, user_id TEXT NOT NULL,
+  destination TEXT NOT NULL DEFAULT 'nexus', eligibility TEXT DEFAULT '{}',
+  updated REAL NOT NULL, PRIMARY KEY(candidate_id,user_id));
 CREATE TABLE IF NOT EXISTS outreach(
   id INTEGER PRIMARY KEY AUTOINCREMENT, candidate_id INTEGER, channel TEXT,
   subject TEXT, body TEXT, status TEXT DEFAULT 'draft', created REAL);
@@ -74,7 +64,8 @@ CREATE TABLE IF NOT EXISTS sms_conversations(
   candidate_phone TEXT NOT NULL, phone_key TEXT NOT NULL,
   initiated_by TEXT DEFAULT '', assigned_recruiter_id TEXT DEFAULT '',
   assigned_recruiter_email TEXT DEFAULT '', assigned_recruiter_name TEXT DEFAULT '',
-  zoom_sender_number TEXT DEFAULT '', zoom_sender_user_id TEXT DEFAULT '', zoom_session_id TEXT DEFAULT '',
+  zoom_sender_number TEXT DEFAULT '', zoom_sender_user_id TEXT DEFAULT '',
+  zoom_session_id TEXT DEFAULT '',
   status TEXT DEFAULT 'open', created REAL, updated REAL, last_message_at REAL);
 CREATE TABLE IF NOT EXISTS sms_messages(
   id INTEGER PRIMARY KEY AUTOINCREMENT, conversation_id INTEGER NOT NULL,
@@ -84,16 +75,10 @@ CREATE TABLE IF NOT EXISTS sms_messages(
   sender_number TEXT DEFAULT '', zoom_user_id TEXT DEFAULT '',
   failure_reason TEXT DEFAULT '', created REAL, updated REAL);
 CREATE TABLE IF NOT EXISTS sms_webhook_events(
-  event_key TEXT PRIMARY KEY, event_type TEXT NOT NULL, created REAL,
-  processed INTEGER DEFAULT 0);
+  event_key TEXT PRIMARY KEY, event_type TEXT NOT NULL, created REAL);
 CREATE TABLE IF NOT EXISTS sms_outreach_claims(
-  candidate_id INTEGER PRIMARY KEY, phone_key TEXT NOT NULL UNIQUE,
-  request_id TEXT NOT NULL UNIQUE, status TEXT NOT NULL DEFAULT 'sending',
-  message_id INTEGER, created REAL NOT NULL, updated REAL NOT NULL);
-CREATE TABLE IF NOT EXISTS sms_phone_controls(
-  phone_key TEXT PRIMARY KEY, candidate_id INTEGER NOT NULL,
-  conversation_id INTEGER, state TEXT NOT NULL, request_id TEXT DEFAULT '',
-  created REAL NOT NULL, updated REAL NOT NULL);
+  candidate_id INTEGER PRIMARY KEY, phone_key TEXT NOT NULL,
+  status TEXT DEFAULT 'sending', created REAL, updated REAL);
 CREATE TABLE IF NOT EXISTS talent_pools(
   id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL,
   created REAL, updated REAL);
@@ -140,26 +125,43 @@ CREATE TABLE IF NOT EXISTS lookup_run_items(
   found INTEGER DEFAULT 0, cached INTEGER DEFAULT 0,
   trace TEXT DEFAULT '{}', created REAL NOT NULL,
   UNIQUE(run_id, source_identity, phase));
+CREATE TABLE IF NOT EXISTS api_request_activity(
+  request_id TEXT PRIMARY KEY, provider TEXT NOT NULL,
+  operation TEXT DEFAULT '', status TEXT DEFAULT 'active',
+  started REAL NOT NULL, finished REAL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS contact_lookup_queue(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, job_key TEXT UNIQUE NOT NULL,
+  run_id TEXT NOT NULL, candidate_id INTEGER NOT NULL,
+  requested_by TEXT DEFAULT '', delivery_target TEXT DEFAULT 'nexus',
+  job_source TEXT DEFAULT 'extension', priority INTEGER DEFAULT 100,
+  external_ref TEXT DEFAULT '',
+  status TEXT DEFAULT 'queued',
+  attempts INTEGER DEFAULT 0, next_attempt_at REAL DEFAULT 0,
+  lease_until REAL DEFAULT 0, result TEXT DEFAULT '{}',
+  last_error TEXT DEFAULT '', created REAL NOT NULL, updated REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS contact_lookup_controls(
+  requested_by TEXT PRIMARY KEY, paused INTEGER NOT NULL DEFAULT 0,
+  updated REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS nexus_candidate_links(
   identity_key TEXT PRIMARY KEY, candidate_id INTEGER NOT NULL,
   nexus_candidate_id TEXT NOT NULL UNIQUE, created REAL, updated REAL);
+CREATE TABLE IF NOT EXISTS nexus_candidate_checks(
+  candidate_id INTEGER PRIMARY KEY, identity_key TEXT NOT NULL,
+  blocked INTEGER NOT NULL DEFAULT 0, result TEXT DEFAULT '{}', checked REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS nexus_deliveries(
   id INTEGER PRIMARY KEY AUTOINCREMENT, candidate_id INTEGER NOT NULL,
-  resume_id INTEGER NOT NULL UNIQUE, identity_key TEXT NOT NULL,
+  resume_id INTEGER NOT NULL UNIQUE, identity_key TEXT NOT NULL, requested_by TEXT DEFAULT '',
   resume_checksum TEXT DEFAULT '', status TEXT DEFAULT 'pending',
   attempts INTEGER DEFAULT 0, next_attempt_at REAL DEFAULT 0,
   lease_until REAL DEFAULT 0, nexus_candidate_id TEXT DEFAULT '',
   operation TEXT DEFAULT '', last_error TEXT DEFAULT '',
   created REAL, updated REAL);
-CREATE TABLE IF NOT EXISTS candidate_delivery_routes(
-  candidate_id INTEGER PRIMARY KEY, user_id TEXT NOT NULL,
-  user_email TEXT DEFAULT '', ceipal_enabled INTEGER DEFAULT 0,
-  nexus_enabled INTEGER DEFAULT 0, created REAL NOT NULL, updated REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS ceipal_deliveries(
-  candidate_id INTEGER PRIMARY KEY, status TEXT DEFAULT 'pending',
-  attempts INTEGER DEFAULT 0, next_attempt_at REAL DEFAULT 0,
-  lease_until REAL DEFAULT 0, last_error TEXT DEFAULT '',
-  created REAL NOT NULL, updated REAL NOT NULL);
+  id INTEGER PRIMARY KEY AUTOINCREMENT, candidate_id INTEGER NOT NULL,
+  user_id TEXT NOT NULL, resume_id INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending', lease_until REAL DEFAULT 0,
+  last_error TEXT DEFAULT '', created REAL NOT NULL, updated REAL NOT NULL,
+  UNIQUE(candidate_id,user_id));
 CREATE TABLE IF NOT EXISTS watcher_email_deliveries(
   id INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL,
   recipient TEXT NOT NULL, status TEXT DEFAULT 'pending',
@@ -178,8 +180,18 @@ CREATE INDEX IF NOT EXISTS idx_resume_extractions_candidate
   ON resume_extractions(candidate_id);
 CREATE INDEX IF NOT EXISTS idx_provider_lookups_run ON provider_lookups(provider, run_id);
 CREATE INDEX IF NOT EXISTS idx_lookup_run_items_run ON lookup_run_items(run_id, phase);
+CREATE INDEX IF NOT EXISTS idx_api_request_activity_provider
+  ON api_request_activity(provider, status, started);
+CREATE INDEX IF NOT EXISTS idx_contact_lookup_queue_ready
+  ON contact_lookup_queue(status, next_attempt_at, created);
+CREATE INDEX IF NOT EXISTS idx_contact_lookup_processing_lease
+  ON contact_lookup_queue(status, lease_until, updated);
+CREATE INDEX IF NOT EXISTS idx_contact_lookup_priority
+  ON contact_lookup_queue(status, job_source, priority, next_attempt_at, created);
 CREATE INDEX IF NOT EXISTS idx_nexus_deliveries_ready
   ON nexus_deliveries(status, next_attempt_at, lease_until);
+CREATE INDEX IF NOT EXISTS idx_ceipal_deliveries_ready
+  ON ceipal_deliveries(status, created);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_nexus_one_processing_identity
   ON nexus_deliveries(identity_key) WHERE status='processing';
 CREATE UNIQUE INDEX IF NOT EXISTS idx_nexus_one_active_identity
@@ -192,10 +204,6 @@ CREATE INDEX IF NOT EXISTS idx_sms_conversations_session
   ON sms_conversations(zoom_session_id);
 CREATE INDEX IF NOT EXISTS idx_sms_messages_conversation
   ON sms_messages(conversation_id, created);
-CREATE INDEX IF NOT EXISTS idx_extension_devices_user_status
-  ON extension_device_registrations(user_id, status, last_seen);
-CREATE INDEX IF NOT EXISTS idx_extension_device_events_user
-  ON extension_device_events(user_id, created);
 """
 
 _POSTGRES_SCHEMA = (
@@ -204,31 +212,11 @@ _POSTGRES_SCHEMA = (
          email TEXT DEFAULT '', name TEXT DEFAULT '', created DOUBLE PRECISION,
          updated DOUBLE PRECISION
        )""",
-    """CREATE TABLE IF NOT EXISTS extension_devices(
-         user_id TEXT PRIMARY KEY, installation_id TEXT NOT NULL,
-         bound_at DOUBLE PRECISION NOT NULL, last_seen DOUBLE PRECISION NOT NULL
-       )""",
-    """CREATE TABLE IF NOT EXISTS extension_device_registrations(
-         id BIGSERIAL PRIMARY KEY, user_id TEXT NOT NULL,
-         installation_id TEXT NOT NULL, device_name TEXT DEFAULT '',
-         user_agent TEXT DEFAULT '', status TEXT DEFAULT 'pending',
-         requested_at DOUBLE PRECISION NOT NULL,
-         approved_at DOUBLE PRECISION DEFAULT 0, approved_by TEXT DEFAULT '',
-         last_seen DOUBLE PRECISION DEFAULT 0, revoked_at DOUBLE PRECISION DEFAULT 0,
-         revocation_reason TEXT DEFAULT '', UNIQUE(user_id, installation_id)
-       )""",
-    """CREATE TABLE IF NOT EXISTS extension_device_events(
-         id BIGSERIAL PRIMARY KEY, user_id TEXT NOT NULL,
-         installation_id TEXT DEFAULT '', event_type TEXT NOT NULL,
-         actor_user_id TEXT DEFAULT '', details TEXT DEFAULT '{}',
-         created DOUBLE PRECISION NOT NULL
-       )""",
     """CREATE TABLE IF NOT EXISTS enrichment_events(
          id BIGSERIAL PRIMARY KEY, auth0_sub TEXT NOT NULL,
          candidate_id BIGINT NOT NULL, status TEXT NOT NULL,
-         provider TEXT DEFAULT '', run_id TEXT DEFAULT '', platform TEXT DEFAULT '',
-         created DOUBLE PRECISION NOT NULL,
-         halo_status TEXT DEFAULT 'delivered'
+         provider TEXT DEFAULT '', run_id TEXT DEFAULT '',
+         created DOUBLE PRECISION NOT NULL
        )""",
     """CREATE TABLE IF NOT EXISTS jobs(
          id BIGSERIAL PRIMARY KEY, title TEXT, location TEXT,
@@ -250,6 +238,11 @@ _POSTGRES_SCHEMA = (
          contact_expires_at DOUBLE PRECISION DEFAULT 0,
          notes TEXT DEFAULT '', source TEXT DEFAULT '', source_url TEXT DEFAULT '',
          source_id TEXT DEFAULT '', created DOUBLE PRECISION, updated DOUBLE PRECISION
+       )""",
+    """CREATE TABLE IF NOT EXISTS medhunt_ats_routes(
+         candidate_id BIGINT NOT NULL, user_id TEXT NOT NULL,
+         destination TEXT NOT NULL DEFAULT 'nexus', eligibility TEXT DEFAULT '{}',
+         updated DOUBLE PRECISION NOT NULL, PRIMARY KEY(candidate_id,user_id)
        )""",
     """CREATE TABLE IF NOT EXISTS outreach(
          id BIGSERIAL PRIMARY KEY, candidate_id BIGINT, channel TEXT,
@@ -319,7 +312,7 @@ _POSTGRES_SCHEMA = (
        )""",
     """CREATE TABLE IF NOT EXISTS nexus_deliveries(
          id BIGSERIAL PRIMARY KEY, candidate_id BIGINT NOT NULL,
-         resume_id BIGINT NOT NULL UNIQUE, identity_key TEXT NOT NULL,
+         resume_id BIGINT NOT NULL UNIQUE, identity_key TEXT NOT NULL, requested_by TEXT DEFAULT '',
          resume_checksum TEXT DEFAULT '', status TEXT DEFAULT 'pending',
          attempts INTEGER DEFAULT 0, next_attempt_at DOUBLE PRECISION DEFAULT 0,
          lease_until DOUBLE PRECISION DEFAULT 0,
@@ -327,17 +320,12 @@ _POSTGRES_SCHEMA = (
          last_error TEXT DEFAULT '', created DOUBLE PRECISION,
           updated DOUBLE PRECISION
         )""",
-    """CREATE TABLE IF NOT EXISTS candidate_delivery_routes(
-         candidate_id BIGINT PRIMARY KEY, user_id TEXT NOT NULL,
-         user_email TEXT DEFAULT '', ceipal_enabled INTEGER DEFAULT 0,
-         nexus_enabled INTEGER DEFAULT 0, created DOUBLE PRECISION NOT NULL,
-         updated DOUBLE PRECISION NOT NULL
-       )""",
     """CREATE TABLE IF NOT EXISTS ceipal_deliveries(
-         candidate_id BIGINT PRIMARY KEY, status TEXT DEFAULT 'pending',
-         attempts INTEGER DEFAULT 0, next_attempt_at DOUBLE PRECISION DEFAULT 0,
-         lease_until DOUBLE PRECISION DEFAULT 0, last_error TEXT DEFAULT '',
-         created DOUBLE PRECISION NOT NULL, updated DOUBLE PRECISION NOT NULL
+         id BIGSERIAL PRIMARY KEY, candidate_id BIGINT NOT NULL,
+         user_id TEXT NOT NULL, resume_id BIGINT NOT NULL,
+         status TEXT NOT NULL DEFAULT 'pending', lease_until DOUBLE PRECISION DEFAULT 0,
+         last_error TEXT DEFAULT '', created DOUBLE PRECISION NOT NULL,
+         updated DOUBLE PRECISION NOT NULL, UNIQUE(candidate_id,user_id)
        )""",
     """CREATE TABLE IF NOT EXISTS watcher_email_deliveries(
          id BIGSERIAL PRIMARY KEY, event_id TEXT NOT NULL,
@@ -360,7 +348,8 @@ _POSTGRES_SCHEMA = (
          candidate_phone TEXT NOT NULL, phone_key TEXT NOT NULL,
          initiated_by TEXT DEFAULT '', assigned_recruiter_id TEXT DEFAULT '',
          assigned_recruiter_email TEXT DEFAULT '', assigned_recruiter_name TEXT DEFAULT '',
-         zoom_sender_number TEXT DEFAULT '', zoom_sender_user_id TEXT DEFAULT '', zoom_session_id TEXT DEFAULT '',
+         zoom_sender_number TEXT DEFAULT '', zoom_sender_user_id TEXT DEFAULT '',
+         zoom_session_id TEXT DEFAULT '',
          status TEXT DEFAULT 'open', created DOUBLE PRECISION,
          updated DOUBLE PRECISION, last_message_at DOUBLE PRECISION
        )""",
@@ -375,19 +364,40 @@ _POSTGRES_SCHEMA = (
        )""",
     """CREATE TABLE IF NOT EXISTS sms_webhook_events(
          event_key TEXT PRIMARY KEY, event_type TEXT NOT NULL,
-         created DOUBLE PRECISION, processed INTEGER DEFAULT 0
+         created DOUBLE PRECISION
+       )""",
+    """CREATE TABLE IF NOT EXISTS api_request_activity(
+         request_id TEXT PRIMARY KEY, provider TEXT NOT NULL,
+         operation TEXT DEFAULT '', status TEXT DEFAULT 'active',
+         started DOUBLE PRECISION NOT NULL,
+         finished DOUBLE PRECISION DEFAULT 0
+       )""",
+    """CREATE TABLE IF NOT EXISTS contact_lookup_queue(
+         id BIGSERIAL PRIMARY KEY, job_key TEXT UNIQUE NOT NULL,
+         run_id TEXT NOT NULL, candidate_id BIGINT NOT NULL,
+         requested_by TEXT DEFAULT '', delivery_target TEXT DEFAULT 'nexus',
+         job_source TEXT DEFAULT 'extension', priority INTEGER DEFAULT 100,
+         external_ref TEXT DEFAULT '',
+         status TEXT DEFAULT 'queued',
+         attempts INTEGER DEFAULT 0,
+         next_attempt_at DOUBLE PRECISION DEFAULT 0,
+         lease_until DOUBLE PRECISION DEFAULT 0, result TEXT DEFAULT '{}',
+         last_error TEXT DEFAULT '', created DOUBLE PRECISION NOT NULL,
+         updated DOUBLE PRECISION NOT NULL
+       )""",
+    """CREATE TABLE IF NOT EXISTS contact_lookup_controls(
+         requested_by TEXT PRIMARY KEY, paused INTEGER NOT NULL DEFAULT 0,
+         updated DOUBLE PRECISION NOT NULL
+       )""",
+    """CREATE TABLE IF NOT EXISTS nexus_candidate_checks(
+         candidate_id BIGINT PRIMARY KEY, identity_key TEXT NOT NULL,
+         blocked INTEGER NOT NULL DEFAULT 0, result TEXT DEFAULT '{}',
+         checked DOUBLE PRECISION NOT NULL
        )""",
     """CREATE TABLE IF NOT EXISTS sms_outreach_claims(
-         candidate_id BIGINT PRIMARY KEY, phone_key TEXT NOT NULL UNIQUE,
-         request_id TEXT NOT NULL UNIQUE, status TEXT NOT NULL DEFAULT 'sending',
-         message_id BIGINT, created DOUBLE PRECISION NOT NULL,
-         updated DOUBLE PRECISION NOT NULL
-       )""",
-    """CREATE TABLE IF NOT EXISTS sms_phone_controls(
-         phone_key TEXT PRIMARY KEY, candidate_id BIGINT NOT NULL,
-         conversation_id BIGINT, state TEXT NOT NULL,
-         request_id TEXT DEFAULT '', created DOUBLE PRECISION NOT NULL,
-         updated DOUBLE PRECISION NOT NULL
+         candidate_id BIGINT PRIMARY KEY, phone_key TEXT NOT NULL,
+         status TEXT DEFAULT 'sending', created DOUBLE PRECISION,
+         updated DOUBLE PRECISION
        )""",
     # Older deployments may already contain one or more of these tables from
     # before candidate-level attribution was added. CREATE TABLE IF NOT EXISTS
@@ -396,14 +406,11 @@ _POSTGRES_SCHEMA = (
     # nullable so historical rows are preserved; all current writes supply the
     # candidate id.
     "ALTER TABLE enrichment_events ADD COLUMN IF NOT EXISTS candidate_id BIGINT",
-    "ALTER TABLE enrichment_events ADD COLUMN IF NOT EXISTS halo_status TEXT DEFAULT 'delivered'",
-    "ALTER TABLE sms_webhook_events ADD COLUMN IF NOT EXISTS processed INTEGER DEFAULT 0",
     "ALTER TABLE sms_conversations ADD COLUMN IF NOT EXISTS zoom_sender_user_id TEXT DEFAULT ''",
     "ALTER TABLE sms_messages ADD COLUMN IF NOT EXISTS sender_user_id TEXT DEFAULT ''",
     "ALTER TABLE sms_messages ADD COLUMN IF NOT EXISTS sender_name TEXT DEFAULT ''",
     "ALTER TABLE sms_messages ADD COLUMN IF NOT EXISTS sender_number TEXT DEFAULT ''",
     "ALTER TABLE sms_messages ADD COLUMN IF NOT EXISTS zoom_user_id TEXT DEFAULT ''",
-    "ALTER TABLE enrichment_events ADD COLUMN IF NOT EXISTS platform TEXT DEFAULT ''",
     "ALTER TABLE outreach ADD COLUMN IF NOT EXISTS candidate_id BIGINT",
     "ALTER TABLE talent_pool_members ADD COLUMN IF NOT EXISTS candidate_id BIGINT",
     "ALTER TABLE campaign_members ADD COLUMN IF NOT EXISTS candidate_id BIGINT",
@@ -414,6 +421,11 @@ _POSTGRES_SCHEMA = (
     "ALTER TABLE nexus_candidate_links ADD COLUMN IF NOT EXISTS candidate_id BIGINT",
     "ALTER TABLE resume_capture_locks ADD COLUMN IF NOT EXISTS candidate_id BIGINT",
     "ALTER TABLE nexus_deliveries ADD COLUMN IF NOT EXISTS candidate_id BIGINT",
+    "ALTER TABLE nexus_deliveries ADD COLUMN IF NOT EXISTS requested_by TEXT DEFAULT ''",
+    "ALTER TABLE contact_lookup_queue ADD COLUMN IF NOT EXISTS delivery_target TEXT DEFAULT 'nexus'",
+    "ALTER TABLE contact_lookup_queue ADD COLUMN IF NOT EXISTS job_source TEXT DEFAULT 'extension'",
+    "ALTER TABLE contact_lookup_queue ADD COLUMN IF NOT EXISTS priority INTEGER DEFAULT 100",
+    "ALTER TABLE contact_lookup_queue ADD COLUMN IF NOT EXISTS external_ref TEXT DEFAULT ''",
     "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS source TEXT DEFAULT ''",
     "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS hometown TEXT DEFAULT ''",
     "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS source_url TEXT DEFAULT ''",
@@ -438,7 +450,6 @@ _POSTGRES_SCHEMA = (
     "CREATE INDEX IF NOT EXISTS idx_candidates_source ON candidates(source, source_id)",
     "CREATE INDEX IF NOT EXISTS idx_enrichment_events_user ON enrichment_events(auth0_sub, created)",
     "CREATE INDEX IF NOT EXISTS idx_enrichment_events_candidate ON enrichment_events(candidate_id, created)",
-    "CREATE INDEX IF NOT EXISTS idx_enrichment_events_halo ON enrichment_events(halo_status, id)",
     "CREATE INDEX IF NOT EXISTS idx_candidates_provider_person ON candidates(provider_person_id)",
     "CREATE INDEX IF NOT EXISTS idx_candidates_master ON candidates(master_candidate_id)",
     "CREATE INDEX IF NOT EXISTS idx_pool_members_candidate ON talent_pool_members(candidate_id)",
@@ -448,8 +459,19 @@ _POSTGRES_SCHEMA = (
     "ON resume_extractions(candidate_id)",
     "CREATE INDEX IF NOT EXISTS idx_provider_lookups_run ON provider_lookups(provider, run_id)",
     "CREATE INDEX IF NOT EXISTS idx_lookup_run_items_run ON lookup_run_items(run_id, phase)",
+    "CREATE INDEX IF NOT EXISTS idx_api_request_activity_provider "
+    "ON api_request_activity(provider, status, started)",
+    "CREATE INDEX IF NOT EXISTS idx_contact_lookup_queue_ready "
+    "ON contact_lookup_queue(status, next_attempt_at, created)",
+    "DROP INDEX IF EXISTS idx_contact_lookup_one_processing",
+    "CREATE INDEX IF NOT EXISTS idx_contact_lookup_processing_lease "
+    "ON contact_lookup_queue(status, lease_until, updated)",
+    "CREATE INDEX IF NOT EXISTS idx_contact_lookup_priority "
+    "ON contact_lookup_queue(status, job_source, priority, next_attempt_at, created)",
     "CREATE INDEX IF NOT EXISTS idx_nexus_deliveries_ready "
     "ON nexus_deliveries(status, next_attempt_at, lease_until)",
+    "CREATE INDEX IF NOT EXISTS idx_ceipal_deliveries_ready "
+    "ON ceipal_deliveries(status, created)",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_nexus_one_processing_identity "
     "ON nexus_deliveries(identity_key) WHERE status='processing'",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_nexus_one_active_identity "
@@ -462,16 +484,14 @@ _POSTGRES_SCHEMA = (
     "ON sms_conversations(zoom_session_id)",
     "CREATE INDEX IF NOT EXISTS idx_sms_messages_conversation "
     "ON sms_messages(conversation_id, created)",
-    "CREATE INDEX IF NOT EXISTS idx_extension_devices_user_status "
-    "ON extension_device_registrations(user_id, status, last_seen)",
-    "CREATE INDEX IF NOT EXISTS idx_extension_device_events_user "
-    "ON extension_device_events(user_id, created)",
 )
 
 _POSTGRES_SCHEMA_READY = False
 _SCHEMA_LOCK = threading.Lock()
-_POSTGRES_CONNECTION = None
-_POSTGRES_CONNECTION_LOCK = threading.RLock()
+_CONTACT_LOOKUP_ENQUEUE_LOCK = threading.Lock()
+_CONTACT_LOOKUP_CLAIM_LOCK = threading.Lock()
+_POSTGRES_POOL = None
+_POSTGRES_POOL_LOCK = threading.Lock()
 _CANDIDATE_FIELDS = {
     "name", "location", "hometown", "job_id", "stage", "fit_score", "phones", "emails",
     "addresses", "enrich_status", "confidence", "notes", "source",
@@ -486,23 +506,17 @@ _CANDIDATE_FIELDS = {
 # each time the local desktop backend starts.  The full idempotent schema below
 # still runs whenever a table, migration column, or required index is missing.
 _POSTGRES_REQUIRED_TABLES = (
-    "users", "extension_devices", "extension_device_registrations",
-    "extension_device_events", "enrichment_events", "jobs", "candidates",
-    "outreach", "talent_pools", "talent_pool_members",
+    "users", "enrichment_events", "jobs", "candidates", "outreach", "talent_pools", "talent_pool_members",
     "campaigns", "campaign_members", "dnc", "resumes", "resume_extractions",
-    "provider_lookups", "lookup_runs", "lookup_run_items",
-    "nexus_candidate_links", "resume_capture_locks", "nexus_deliveries",
-    "candidate_delivery_routes",
-    "ceipal_deliveries",
+    "provider_lookups", "lookup_runs", "lookup_run_items", "api_request_activity",
+    "contact_lookup_queue", "contact_lookup_controls",
+    "nexus_candidate_links", "nexus_candidate_checks", "resume_capture_locks", "nexus_deliveries", "ceipal_deliveries",
     "watcher_email_deliveries",
     "sms_consents", "sms_conversations", "sms_messages", "sms_webhook_events",
-    "sms_outreach_claims", "sms_phone_controls",
+    "sms_outreach_claims",
 )
 _POSTGRES_REQUIRED_COLUMNS = {
-    "enrichment_events": ("candidate_id", "halo_status", "platform"),
-    "sms_webhook_events": ("processed",),
-    "sms_conversations": ("zoom_sender_user_id",),
-    "sms_messages": ("sender_user_id", "sender_name", "sender_number", "zoom_user_id"),
+    "enrichment_events": ("candidate_id",),
     "outreach": ("candidate_id",),
     "talent_pool_members": ("candidate_id",),
     "campaign_members": ("candidate_id",),
@@ -521,21 +535,27 @@ _POSTGRES_REQUIRED_COLUMNS = {
     "provider_lookups": ("candidate_id",),
     "lookup_run_items": ("candidate_id",),
     "nexus_candidate_links": ("candidate_id",),
+    "contact_lookup_queue": ("delivery_target", "job_source", "priority", "external_ref"),
     "resume_capture_locks": ("candidate_id",),
     "nexus_deliveries": ("candidate_id",),
+    "sms_conversations": ("zoom_sender_user_id",),
+    "sms_messages": ("sender_user_id", "sender_name", "sender_number", "zoom_user_id"),
 }
 _POSTGRES_REQUIRED_INDEXES = (
-    "idx_enrichment_events_user", "idx_enrichment_events_candidate", "idx_enrichment_events_halo",
+    "idx_enrichment_events_user", "idx_enrichment_events_candidate",
     "idx_candidates_source", "idx_candidates_provider_person",
     "idx_candidates_master", "idx_pool_members_candidate",
     "idx_campaign_members_candidate", "idx_resumes_candidate",
     "idx_resume_extractions_candidate", "idx_provider_lookups_run",
-    "idx_lookup_run_items_run", "idx_nexus_deliveries_ready",
+    "idx_lookup_run_items_run", "idx_api_request_activity_provider",
+    "idx_contact_lookup_queue_ready", "idx_contact_lookup_processing_lease",
+    "idx_contact_lookup_priority",
+    "idx_nexus_deliveries_ready",
+    "idx_ceipal_deliveries_ready",
     "idx_nexus_one_processing_identity", "idx_nexus_one_active_identity",
     "idx_watcher_email_delivery_status",
     "idx_sms_conversations_candidate", "idx_sms_conversations_session",
     "idx_sms_messages_conversation",
-    "idx_extension_devices_user_status", "idx_extension_device_events_user",
 )
 
 
@@ -622,7 +642,7 @@ def _postgres_schema_is_current(connection):
 @contextmanager
 def _conn():
     if config.DATABASE_URL:
-        global _POSTGRES_CONNECTION
+        global _POSTGRES_POOL
         try:
             import psycopg
             from psycopg.rows import dict_row
@@ -631,29 +651,59 @@ def _conn():
                 "DATABASE_URL is configured but psycopg is not installed. "
                 "Run: pip install -r requirements.txt"
             ) from exc
-
-        # This is a local single-user service. Reusing one guarded PostgreSQL
-        # connection avoids a fresh TLS/Neon handshake for every cache, DNC,
-        # candidate, and update operation in one PDL lookup.
-        with _POSTGRES_CONNECTION_LOCK:
-            raw = _POSTGRES_CONNECTION
-            if raw is None or raw.closed:
-                raw = psycopg.connect(
-                    config.DATABASE_URL,
-                    row_factory=dict_row,
-                    autocommit=True,
-                    connect_timeout=config.DATABASE_CONNECT_TIMEOUT,
-                    # Neon poolers can reuse a physical connection across
-                    # search_path values. Disable psycopg server-side
-                    # prepared statements so a cached result type from the
-                    # public/Nexus schema cannot conflict with Medhunt.
-                    prepare_threshold=None,
-                )
-                connection = _Connection(raw, postgres=True)
+        try:
+            from psycopg_pool import ConnectionPool
+        except ImportError:
+            # Keep the service available if a deployment installs psycopg but
+            # accidentally omits the optional pool package. This path is
+            # slower, but requests and the queue continue to function.
+            raw = psycopg.connect(
+                config.DATABASE_URL,
+                row_factory=dict_row,
+                autocommit=True,
+                connect_timeout=config.DATABASE_CONNECT_TIMEOUT,
+                prepare_threshold=None,
+            )
+            connection = _Connection(raw, postgres=True)
+            try:
                 _configure_postgres_namespace(connection)
-                _POSTGRES_CONNECTION = raw
-            else:
-                connection = _Connection(raw, postgres=True)
+                with raw.transaction():
+                    _activate_postgres_namespace(connection)
+                    _prepare_postgres(connection)
+                    yield connection
+            finally:
+                raw.close()
+            return
+
+        if _POSTGRES_POOL is None:
+            with _POSTGRES_POOL_LOCK:
+                if _POSTGRES_POOL is None:
+                    def configure(raw):
+                        _configure_postgres_namespace(_Connection(raw, postgres=True))
+
+                    _POSTGRES_POOL = ConnectionPool(
+                        conninfo=config.DATABASE_URL,
+                        min_size=config.DATABASE_POOL_SIZE,
+                        max_size=config.DATABASE_POOL_SIZE,
+                        timeout=max(60, config.DATABASE_CONNECT_TIMEOUT),
+                        configure=configure,
+                        kwargs={
+                            "row_factory": dict_row,
+                            "autocommit": True,
+                            "connect_timeout": config.DATABASE_CONNECT_TIMEOUT,
+                            # A Neon transaction pooler can move work between
+                            # physical connections. Avoid server-side prepared
+                            # statements whose cached types may cross schemas.
+                            "prepare_threshold": None,
+                        },
+                    )
+
+        # A bounded pool lets queue workers perform short Neon transactions in
+        # parallel while keeping the database connection count predictable.
+        with _POSTGRES_POOL.connection(
+            timeout=max(60, config.DATABASE_CONNECT_TIMEOUT),
+        ) as raw:
+            connection = _Connection(raw, postgres=True)
             try:
                 # Hosted PostgreSQL poolers may discard session-level SET
                 # values between autocommit statements. Keep schema setup and
@@ -669,11 +719,7 @@ def _conn():
                     if not raw.autocommit:
                         raw.rollback()
                 except Exception:
-                    try:
-                        raw.close()
-                    except Exception:
-                        pass
-                    _POSTGRES_CONNECTION = None
+                    pass
                 raise
         return
 
@@ -684,6 +730,7 @@ def _conn():
     try:
         raw.row_factory = sqlite3.Row
         raw.executescript(_SQLITE_SCHEMA)
+        raw.execute("DROP INDEX IF EXISTS idx_contact_lookup_one_processing")
         columns = {row["name"] for row in raw.execute("PRAGMA table_info(candidates)")}
         for name, definition in (
             ("hometown", "TEXT DEFAULT ''"),
@@ -704,23 +751,6 @@ def _conn():
         ):
             if name not in columns:
                 raw.execute(f"ALTER TABLE candidates ADD COLUMN {name} {definition}")
-        event_columns = {row["name"] for row in raw.execute("PRAGMA table_info(enrichment_events)")}
-        if "halo_status" not in event_columns:
-            raw.execute("ALTER TABLE enrichment_events ADD COLUMN halo_status TEXT DEFAULT 'delivered'")
-        if "platform" not in event_columns:
-            raw.execute("ALTER TABLE enrichment_events ADD COLUMN platform TEXT DEFAULT ''")
-        raw.execute("CREATE INDEX IF NOT EXISTS idx_enrichment_events_halo "
-                    "ON enrichment_events(halo_status, id)")
-        convo_columns = {row["name"] for row in raw.execute("PRAGMA table_info(sms_conversations)")}
-        if "zoom_sender_user_id" not in convo_columns:
-            raw.execute("ALTER TABLE sms_conversations ADD COLUMN zoom_sender_user_id TEXT DEFAULT ''")
-        message_columns = {row["name"] for row in raw.execute("PRAGMA table_info(sms_messages)")}
-        for name in ("sender_user_id", "sender_name", "sender_number", "zoom_user_id"):
-            if name not in message_columns:
-                raw.execute(f"ALTER TABLE sms_messages ADD COLUMN {name} TEXT DEFAULT ''")
-        webhook_columns = {row["name"] for row in raw.execute("PRAGMA table_info(sms_webhook_events)")}
-        if "processed" not in webhook_columns:
-            raw.execute("ALTER TABLE sms_webhook_events ADD COLUMN processed INTEGER DEFAULT 0")
         resume_columns = {row["name"] for row in raw.execute("PRAGMA table_info(resumes)")}
         for name, definition in (
             ("storage_provider", "TEXT DEFAULT 'database'"),
@@ -732,6 +762,38 @@ def _conn():
         ):
             if name not in resume_columns:
                 raw.execute(f"ALTER TABLE resumes ADD COLUMN {name} {definition}")
+        conversation_columns = {
+            row["name"] for row in raw.execute("PRAGMA table_info(sms_conversations)")
+        }
+        if "zoom_sender_user_id" not in conversation_columns:
+            raw.execute(
+                "ALTER TABLE sms_conversations ADD COLUMN zoom_sender_user_id TEXT DEFAULT ''"
+            )
+        message_columns = {
+            row["name"] for row in raw.execute("PRAGMA table_info(sms_messages)")
+        }
+        for name in ("sender_user_id", "sender_name", "sender_number", "zoom_user_id"):
+            if name not in message_columns:
+                raw.execute(f"ALTER TABLE sms_messages ADD COLUMN {name} TEXT DEFAULT ''")
+        queue_columns = {
+            row["name"] for row in raw.execute("PRAGMA table_info(contact_lookup_queue)")
+        }
+        if "delivery_target" not in queue_columns:
+            raw.execute(
+                "ALTER TABLE contact_lookup_queue ADD COLUMN delivery_target TEXT DEFAULT 'nexus'"
+            )
+        for name, definition in (
+            ("job_source", "TEXT DEFAULT 'extension'"),
+            ("priority", "INTEGER DEFAULT 100"),
+            ("external_ref", "TEXT DEFAULT ''"),
+        ):
+            if name not in queue_columns:
+                raw.execute(f"ALTER TABLE contact_lookup_queue ADD COLUMN {name} {definition}")
+        nexus_delivery_columns = {
+            row["name"] for row in raw.execute("PRAGMA table_info(nexus_deliveries)")
+        }
+        if "requested_by" not in nexus_delivery_columns:
+            raw.execute("ALTER TABLE nexus_deliveries ADD COLUMN requested_by TEXT DEFAULT ''")
         yield connection
         raw.commit()
     except Exception:
@@ -866,6 +928,192 @@ def get_candidate(candidate_id):
         return _row(row) if row else None
 
 
+def get_candidates(candidate_ids):
+    """Load a bounded candidate selection in one database round trip."""
+    ordered_ids = list(dict.fromkeys(int(value) for value in candidate_ids or []))
+    if not ordered_ids:
+        return []
+    placeholders = ",".join("?" for _ in ordered_ids)
+    with _conn() as connection:
+        rows = connection.execute(
+            f"SELECT * FROM candidates WHERE id IN ({placeholders})",
+            ordered_ids,
+        ).fetchall()
+    by_id = {int(row["id"]): _row(row) for row in rows}
+    return [by_id[candidate_id] for candidate_id in ordered_ids if candidate_id in by_id]
+
+
+def get_candidate_ats_route(candidate_id: int, user_id: str) -> dict | None:
+    owner = str(user_id or "").strip()[:200]
+    if not owner:
+        return None
+    with _conn() as connection:
+        row = connection.execute(
+            "SELECT * FROM medhunt_ats_routes WHERE candidate_id=? AND user_id=?",
+            (int(candidate_id), owner),
+        ).fetchone()
+    if not row:
+        return None
+    result = dict(row)
+    try:
+        result["eligibility"] = json.loads(result.get("eligibility") or "{}")
+    except (TypeError, ValueError):
+        result["eligibility"] = {}
+    return result
+
+
+def set_candidate_ats_route(
+    candidate_id: int, user_id: str, destination: str, eligibility=None,
+) -> dict:
+    owner = str(user_id or "").strip()[:200]
+    if not owner:
+        raise ValueError("A user id is required for ATS routing.")
+    target = "ceipal" if str(destination or "").casefold() == "ceipal" else "nexus"
+    existing = get_candidate_ats_route(candidate_id, owner)
+    saved_eligibility = (
+        dict(eligibility or {}) if eligibility is not None
+        else (existing.get("eligibility") or {} if existing and existing.get("destination") == target else {})
+    )
+    now = time.time()
+    with _conn() as connection:
+        connection.execute(
+            """INSERT INTO medhunt_ats_routes(candidate_id,user_id,destination,eligibility,updated)
+               VALUES(?,?,?,?,?) ON CONFLICT(candidate_id,user_id) DO UPDATE SET
+               destination=excluded.destination,eligibility=excluded.eligibility,
+               updated=excluded.updated""",
+            (int(candidate_id), owner, target,
+             json.dumps(saved_eligibility, separators=(",", ":")), now),
+        )
+    return {
+        "candidate_id": int(candidate_id), "user_id": owner,
+        "destination": target, "eligibility": saved_eligibility, "updated": now,
+    }
+
+
+def enqueue_ceipal_delivery(candidate_id: int, resume_id: int, user_id: str) -> dict:
+    """Persist one CEIPAL job per candidate and recruiter after resume storage."""
+    now = time.time()
+    with _conn() as connection:
+        connection.execute(
+            """INSERT INTO ceipal_deliveries(
+                 candidate_id,user_id,resume_id,status,created,updated
+               ) VALUES(?,?,?,'pending',?,?)
+               ON CONFLICT(candidate_id,user_id) DO UPDATE SET
+                 resume_id=excluded.resume_id,
+                 status=CASE WHEN ceipal_deliveries.status IN
+                   ('uploaded','already_in_ceipal','writing','indeterminate')
+                   THEN ceipal_deliveries.status ELSE 'pending' END,
+                 updated=excluded.updated""",
+            (int(candidate_id), str(user_id or "local")[:200], int(resume_id), now, now),
+        )
+        row = connection.execute(
+            "SELECT * FROM ceipal_deliveries WHERE candidate_id=? AND user_id=?",
+            (int(candidate_id), str(user_id or "local")[:200]),
+        ).fetchone()
+    return dict(row)
+
+
+def claim_ceipal_delivery(lease_seconds: float = 300) -> dict | None:
+    """Claim safely across workers; an expired in-flight call needs review."""
+    now = time.time()
+    lease_until = now + max(30.0, float(lease_seconds))
+    with _conn() as connection, connection.transaction():
+        connection.execute(
+            """UPDATE ceipal_deliveries
+               SET status='indeterminate',lease_until=0,
+                   last_error='CEIPAL request outcome unknown after worker interruption',updated=?
+               WHERE status IN ('processing','writing') AND lease_until<=?""",
+            (now, now),
+        )
+        query = (
+            "SELECT * FROM ceipal_deliveries WHERE status='pending' "
+            "ORDER BY created,id LIMIT 1"
+        )
+        if connection.postgres:
+            query += " FOR UPDATE SKIP LOCKED"
+        row = connection.execute(query).fetchone()
+        if not row:
+            return None
+        updated = connection.execute(
+            """UPDATE ceipal_deliveries SET status='processing',lease_until=?,updated=?
+               WHERE id=? AND status='pending'""",
+            (lease_until, now, int(row["id"])),
+        )
+        if updated.rowcount != 1:
+            return None
+        return {**dict(row), "status": "processing", "lease_until": lease_until}
+
+
+def mark_ceipal_delivery_writing(delivery_id: int, lease_until: float) -> bool:
+    with _conn() as connection:
+        updated = connection.execute(
+            """UPDATE ceipal_deliveries SET status='writing',updated=?
+               WHERE id=? AND status='processing' AND lease_until=?""",
+            (time.time(), int(delivery_id), float(lease_until)),
+        )
+    return updated.rowcount == 1
+
+
+def finish_ceipal_delivery(delivery_id: int, lease_until: float,
+                           status: str, error: str = "") -> bool:
+    allowed = {"uploaded", "already_in_ceipal", "failed", "indeterminate"}
+    if status not in allowed:
+        raise ValueError("Unsupported CEIPAL delivery status")
+    with _conn() as connection:
+        updated = connection.execute(
+            """UPDATE ceipal_deliveries SET status=?,lease_until=0,last_error=?,updated=?
+               WHERE id=? AND status='writing' AND lease_until=?""",
+            (status, str(error or "")[:240], time.time(), int(delivery_id), float(lease_until)),
+        )
+    return updated.rowcount == 1
+
+
+def get_ceipal_delivery(candidate_id: int, user_id: str) -> dict | None:
+    with _conn() as connection:
+        row = connection.execute(
+            "SELECT * FROM ceipal_deliveries WHERE candidate_id=? AND user_id=?",
+            (int(candidate_id), str(user_id or "local")[:200]),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def get_nexus_candidate_check(candidate_id: int):
+    with _conn() as connection:
+        row = connection.execute(
+            "SELECT * FROM nexus_candidate_checks WHERE candidate_id=?",
+            (int(candidate_id),),
+        ).fetchone()
+    if not row:
+        return None
+    data = dict(row)
+    try:
+        data["result"] = json.loads(data.get("result") or "{}")
+    except (TypeError, ValueError):
+        data["result"] = {}
+    data["blocked"] = bool(data.get("blocked"))
+    return data
+
+
+def save_nexus_candidate_check(
+    candidate_id: int, identity_key: str, result: dict, checked: float | None = None,
+):
+    checked_at = float(checked or time.time())
+    blocked = int(bool(result.get("blocked")))
+    payload = json.dumps(result, separators=(",", ":"))
+    with _conn() as connection:
+        connection.execute(
+            """INSERT INTO nexus_candidate_checks(
+                 candidate_id,identity_key,blocked,result,checked
+               ) VALUES(?,?,?,?,?)
+               ON CONFLICT(candidate_id) DO UPDATE SET
+                 identity_key=excluded.identity_key, blocked=excluded.blocked,
+                 result=excluded.result, checked=excluded.checked""",
+            (int(candidate_id), identity_key, blocked, payload, checked_at),
+        )
+    return {"candidate_id": int(candidate_id), "identity_key": identity_key,
+            "blocked": bool(blocked), "result": result, "checked": checked_at}
+
+
 def get_candidate_by_source(source, source_id):
     if not source or not source_id:
         return None
@@ -931,85 +1179,6 @@ def get_candidate_by_provider_person_id(provider_person_id: str, exclude_id: int
     with _conn() as connection:
         row = connection.execute(query, args).fetchone()
     return _row(row) if row else None
-
-
-def set_candidate_delivery_route(candidate_id, user_id, user_email="", *, ceipal=False, nexus=False):
-    now = time.time()
-    with _conn() as connection:
-        connection.execute(
-            """INSERT INTO candidate_delivery_routes(
-                   candidate_id,user_id,user_email,ceipal_enabled,nexus_enabled,created,updated
-               ) VALUES(?,?,?,?,?,?,?)
-               ON CONFLICT(candidate_id) DO UPDATE SET
-                   user_id=excluded.user_id,user_email=excluded.user_email,
-                   ceipal_enabled=excluded.ceipal_enabled,nexus_enabled=excluded.nexus_enabled,
-                   updated=excluded.updated""",
-            (
-                int(candidate_id), str(user_id or ''), str(user_email or ''),
-                int(bool(ceipal)), int(bool(nexus)), now, now,
-            ),
-        )
-    return get_candidate_delivery_route(candidate_id)
-
-
-def get_candidate_delivery_route(candidate_id):
-    with _conn() as connection:
-        row = connection.execute(
-            "SELECT * FROM candidate_delivery_routes WHERE candidate_id=?",
-            (int(candidate_id),),
-        ).fetchone()
-    return dict(row) if row else None
-
-
-def enqueue_ceipal_delivery(candidate_id):
-    now = time.time()
-    with _conn() as connection:
-        connection.execute(
-            """INSERT INTO ceipal_deliveries(candidate_id,status,created,updated)
-               VALUES(?,'pending',?,?) ON CONFLICT(candidate_id) DO NOTHING""",
-            (int(candidate_id), now, now),
-        )
-        row = connection.execute(
-            "SELECT * FROM ceipal_deliveries WHERE candidate_id=?", (int(candidate_id),),
-        ).fetchone()
-    return dict(row) if row else None
-
-
-def claim_ceipal_delivery(lease_seconds=90):
-    now, lease_until = time.time(), time.time() + max(15, float(lease_seconds))
-    with _conn() as connection:
-        with connection.transaction():
-            suffix = " FOR UPDATE SKIP LOCKED" if connection.postgres else ""
-            row = connection.execute(
-                """SELECT * FROM ceipal_deliveries
-                   WHERE (status IN ('pending','retry') AND next_attempt_at<=?)
-                      OR (status='processing' AND lease_until<=?)
-                   ORDER BY created LIMIT 1""" + suffix,
-                (now, now),
-            ).fetchone()
-            if not row:
-                return None
-            updated = connection.execute(
-                """UPDATE ceipal_deliveries SET status='processing',attempts=attempts+1,
-                   lease_until=?,updated=? WHERE candidate_id=?""",
-                (lease_until, now, int(row["candidate_id"])),
-            )
-            if updated.rowcount != 1:
-                return None
-            claimed = connection.execute(
-                "SELECT * FROM ceipal_deliveries WHERE candidate_id=?",
-                (int(row["candidate_id"]),),
-            ).fetchone()
-    return dict(claimed) if claimed else None
-
-
-def finish_ceipal_delivery(candidate_id, status, *, error="", retry_at=0):
-    with _conn() as connection:
-        connection.execute(
-            """UPDATE ceipal_deliveries SET status=?,next_attempt_at=?,lease_until=0,
-               last_error=?,updated=? WHERE candidate_id=?""",
-            (str(status), float(retry_at or 0), str(error)[:1000], time.time(), int(candidate_id)),
-        )
 
 
 # ---- provider lookup cache / credit accounting ----
@@ -1653,7 +1822,9 @@ def upsert_candidate_profiles(profiles, default_job_id=None):
                 identities.setdefault(identity_key, canonical)
             else:
                 merged = unique_profiles[canonical]
-                if len(profile["notes"]) > len(merged["notes"]):
+                if "Specialty:" in profile["notes"] and profile["notes"] not in merged["notes"]:
+                    merged["notes"] = (profile["notes"] + "\n" + merged["notes"])[:20000]
+                elif len(profile["notes"]) > len(merged["notes"]):
                     merged["notes"] = profile["notes"]
                 if profile["source_url"]:
                     merged["source_url"] = profile["source_url"]
@@ -1725,6 +1896,9 @@ def upsert_candidate_profiles(profiles, default_job_id=None):
                     ELSE c.name
                   END,
                   notes=CASE
+                    WHEN POSITION('Specialty:' IN m.notes)>0
+                      AND POSITION(m.notes IN COALESCE(c.notes,''))=0
+                    THEN LEFT(m.notes || CHR(10) || COALESCE(c.notes,''), 20000)
                     WHEN LENGTH(m.notes)>LENGTH(COALESCE(c.notes,'')) THEN m.notes
                     ELSE c.notes
                   END,
@@ -1949,7 +2123,10 @@ def upsert_candidate_profiles(profiles, default_job_id=None):
                 )
                 if matched_by_source_id and name and name != existing.get("name"):
                     updates["name"] = name
-                if notes and len(notes) > len(existing.get("notes") or ""):
+                existing_notes = existing.get("notes") or ""
+                if notes and "Specialty:" in notes and notes not in existing_notes:
+                    updates["notes"] = (notes + "\n" + existing_notes)[:20000]
+                elif notes and len(notes) > len(existing_notes):
                     updates["notes"] = notes
                 if location and (matched_by_source_id or not existing.get("location")):
                     updates["location"] = location
@@ -2280,29 +2457,29 @@ def _nexus_identity_key(connection, candidate_id: int) -> str:
     return f"master:{int(master_id)}"
 
 
-def _enqueue_nexus_delivery(connection, candidate_id, resume_id, resume_checksum=""):
+def _enqueue_nexus_delivery(connection, candidate_id, resume_id, resume_checksum="", requested_by=""):
     identity_key = _nexus_identity_key(connection, int(candidate_id))
     now = time.time()
     connection.execute(
         """INSERT INTO nexus_deliveries(
-             candidate_id,resume_id,identity_key,resume_checksum,status,
+             candidate_id,resume_id,identity_key,resume_checksum,requested_by,status,
              attempts,next_attempt_at,lease_until,created,updated
-           ) VALUES(?,?,?,?,'pending',0,0,0,?,?)
+           ) VALUES(?,?,?,?,?,'pending',0,0,0,?,?)
            ON CONFLICT(resume_id) DO NOTHING""",
         (
             int(candidate_id), int(resume_id), identity_key,
-            str(resume_checksum or "").strip().lower(), now, now,
+            str(resume_checksum or "").strip().lower(), str(requested_by or "")[:200], now, now,
         ),
     )
     return identity_key
 
 
-def enqueue_nexus_delivery(candidate_id, resume_id, resume_checksum=""):
+def enqueue_nexus_delivery(candidate_id, resume_id, resume_checksum="", requested_by=""):
     """Idempotently queue one stored resume for backend-only Nexus delivery."""
     with _conn() as connection:
         with connection.transaction():
             _enqueue_nexus_delivery(
-                connection, candidate_id, resume_id, resume_checksum,
+                connection, candidate_id, resume_id, resume_checksum, requested_by,
             )
     return get_nexus_delivery_for_resume(resume_id)
 
@@ -2537,6 +2714,460 @@ def list_nexus_deliveries(candidate_id=None):
         return [dict(row) for row in rows]
 
 
+def nexus_delivery_summary(candidate_ids, *, waiting_resume_ids=()):
+    """Return the latest durable Nexus outcome for each requested candidate."""
+    ordered_ids = list(dict.fromkeys(int(value) for value in candidate_ids or []))
+    waiting_resume_ids = {int(value) for value in waiting_resume_ids or []}
+    if not ordered_ids:
+        return {
+            "selected": 0, "uploaded": 0, "pending": 0,
+            "already_in_nexus": 0, "waiting_for_resume": 0,
+            "not_uploaded": 0, "items": [],
+        }
+    placeholders = ",".join("?" for _ in ordered_ids)
+    with _conn() as connection:
+        candidates = {
+            int(row["id"])
+            for row in connection.execute(
+                f"SELECT id FROM candidates WHERE id IN ({placeholders})", ordered_ids,
+            ).fetchall()
+        }
+        resumes = {
+            int(row["candidate_id"]): int(row["resume_count"] or 0)
+            for row in connection.execute(
+                f"""SELECT candidate_id,COUNT(*) AS resume_count FROM resumes
+                    WHERE candidate_id IN ({placeholders}) GROUP BY candidate_id""",
+                ordered_ids,
+            ).fetchall()
+        }
+        rows = connection.execute(
+            f"""SELECT * FROM nexus_deliveries
+                WHERE candidate_id IN ({placeholders}) ORDER BY created,id""",
+            ordered_ids,
+        ).fetchall()
+        check_rows = connection.execute(
+            f"""SELECT candidate_id,result FROM nexus_candidate_checks
+                WHERE candidate_id IN ({placeholders})""",
+            ordered_ids,
+        ).fetchall()
+    latest = {}
+    for row in rows:
+        latest[int(row["candidate_id"])] = dict(row)
+    blocked = set()
+    for row in check_rows:
+        try:
+            result = json.loads(row["result"] or "{}")
+        except (TypeError, ValueError):
+            result = {}
+        if result.get("blocked") is True and result.get("state") == "active_in_nexus":
+            blocked.add(int(row["candidate_id"]))
+    pending_states = {"pending", "processing", "writing", "retry"}
+    items = []
+    for candidate_id in ordered_ids:
+        delivery = latest.get(candidate_id)
+        status = str((delivery or {}).get("status") or "").casefold()
+        if candidate_id in blocked:
+            group, reason = "already_in_nexus", "active_in_nexus"
+        elif status == "succeeded":
+            group, reason = "uploaded", ""
+        elif status in pending_states:
+            group, reason = "pending", ""
+        elif not delivery and candidate_id in waiting_resume_ids:
+            group, reason = "waiting_for_resume", "resume_not_saved"
+        else:
+            group = "not_uploaded"
+            if delivery:
+                reason = status or "failed"
+            elif candidate_id not in candidates:
+                reason = "candidate_not_found"
+            elif not getattr(config, "NEXUS_SYNC_ENABLED", False):
+                reason = "nexus_disabled"
+            elif not resumes.get(candidate_id):
+                reason = "resume_not_saved"
+            else:
+                reason = "not_queued"
+        items.append({
+            "candidate_id": candidate_id,
+            "group": group,
+            "status": reason if group == "already_in_nexus" else (status or reason),
+            "reason": reason,
+        })
+    return {
+        "selected": len(ordered_ids),
+        "uploaded": sum(item["group"] == "uploaded" for item in items),
+        "pending": sum(item["group"] == "pending" for item in items),
+        "already_in_nexus": sum(item["group"] == "already_in_nexus" for item in items),
+        "waiting_for_resume": sum(item["group"] == "waiting_for_resume" for item in items),
+        "not_uploaded": sum(item["group"] == "not_uploaded" for item in items),
+        "enabled": bool(getattr(config, "NEXUS_SYNC_ENABLED", False)),
+        "items": items,
+    }
+
+
+def begin_api_request(provider: str, operation: str = "") -> str:
+    request_id = f"{time.time_ns():x}-{threading.get_ident():x}"
+    now = time.time()
+    with _conn() as connection:
+        connection.execute(
+            """INSERT INTO api_request_activity(
+                 request_id,provider,operation,status,started,finished
+               ) VALUES(?,?,?,'active',?,0)""",
+            (request_id, str(provider)[:80], str(operation)[:120], now),
+        )
+        connection.execute(
+            "DELETE FROM api_request_activity WHERE finished>0 AND finished<?",
+            (now - 604800,),
+        )
+    return request_id
+
+
+def finish_api_request(request_id: str, status: str = "completed") -> None:
+    with _conn() as connection:
+        connection.execute(
+            """UPDATE api_request_activity SET status=?,finished=?
+               WHERE request_id=? AND status='active'""",
+            (str(status or "completed")[:40], time.time(), request_id),
+        )
+
+
+def api_request_monitor(provider: str, stale_seconds: float = 240.0) -> dict:
+    now = time.time()
+    stale_before = now - max(30.0, float(stale_seconds))
+    recent_before = now - 300.0
+    with _conn() as connection:
+        connection.execute(
+            """UPDATE api_request_activity SET status='abandoned',finished=?
+               WHERE provider=? AND status='active' AND started<?""",
+            (now, provider, stale_before),
+        )
+        row = connection.execute(
+            """SELECT
+                 SUM(CASE WHEN status='active' THEN 1 ELSE 0 END) AS active,
+                 SUM(CASE WHEN started>=? THEN 1 ELSE 0 END) AS started_5m,
+                 SUM(CASE WHEN finished>=? AND status='completed' THEN 1 ELSE 0 END) AS completed_5m,
+                 SUM(CASE WHEN finished>=? AND status NOT IN ('active','completed') THEN 1 ELSE 0 END) AS failed_5m,
+                 MIN(CASE WHEN status='active' THEN started ELSE NULL END) AS oldest_active,
+                 AVG(CASE WHEN finished>=? AND finished>started
+                          AND status IN ('completed','failed')
+                     THEN (finished-started)*1000.0 ELSE NULL END) AS average_response_ms,
+                 SUM(CASE WHEN finished>=? AND finished>started
+                          AND status IN ('completed','failed') THEN 1 ELSE 0 END) AS measured_responses_5m
+               FROM api_request_activity WHERE provider=?""",
+            (recent_before, recent_before, recent_before, recent_before, recent_before, provider),
+        ).fetchone()
+    active = int((row and row["active"]) or 0)
+    oldest = float((row and row["oldest_active"]) or 0)
+    return {
+        "provider": provider,
+        "active": active,
+        "started_5m": int((row and row["started_5m"]) or 0),
+        "completed_5m": int((row and row["completed_5m"]) or 0),
+        "failed_5m": int((row and row["failed_5m"]) or 0),
+        "average_response_ms_5m": round(float(row["average_response_ms"]), 1)
+        if row and row["average_response_ms"] is not None else None,
+        "measured_responses_5m": int((row and row["measured_responses_5m"]) or 0),
+        "oldest_active_seconds": round(max(0.0, now - oldest), 1) if oldest else 0,
+        "measured_at": now,
+    }
+
+
+class ContactLookupQueueLimitError(ValueError):
+    def __init__(self, *, limit: int, active: int, requested: int):
+        self.limit = int(limit)
+        self.active = int(active)
+        self.requested = int(requested)
+        super().__init__(
+            f"You can have at most {self.limit} contact lookups queued or processing at one time."
+        )
+
+
+def contact_lookup_user_limit(
+    now: datetime | None = None, limit_override: int | None = None,
+) -> int | None:
+    """Return the configured cap, lifted after 4 p.m. and on Pacific weekends."""
+    pacific_now = (now or datetime.now(ZoneInfo("America/Los_Angeles")))
+    if pacific_now.tzinfo is None:
+        pacific_now = pacific_now.replace(tzinfo=ZoneInfo("America/Los_Angeles"))
+    else:
+        pacific_now = pacific_now.astimezone(ZoneInfo("America/Los_Angeles"))
+    if pacific_now.weekday() >= 5 or pacific_now.hour >= 16:
+        return None
+    limit = (
+        config.CONTACT_LOOKUP_MAX_OUTSTANDING_PER_USER
+        if limit_override is None else int(limit_override)
+    )
+    return max(1, min(80, int(limit)))
+
+
+def enqueue_contact_lookup_jobs(run_id: str, candidate_ids, requested_by: str = "",
+                                delivery_target: str = "nexus",
+                                per_user_limit: int | None = None, *,
+                                job_source: str = "extension", priority: int = 100,
+                                external_refs: dict[int, str] | None = None,
+                                bypass_user_limit: bool = False) -> list[dict]:
+    now = time.time()
+    normalized_run = str(run_id or "").strip()
+    ordered_ids = list(dict.fromkeys(int(value) for value in candidate_ids or []))
+    owner = str(requested_by or "")[:200]
+    target = "ceipal" if str(delivery_target or "").casefold() == "ceipal" else "nexus"
+    source = "halo_backfill" if str(job_source).casefold() == "halo_backfill" else "extension"
+    normalized_priority = max(0, min(1000, int(priority)))
+    refs = {int(key): str(value or "")[:200] for key, value in (external_refs or {}).items()}
+    limit = None if bypass_user_limit else contact_lookup_user_limit(limit_override=per_user_limit)
+    with _CONTACT_LOOKUP_ENQUEUE_LOCK:
+        with _conn() as connection:
+            if connection.postgres:
+                connection.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext(?))", (f"contact-lookup:{owner}",),
+                )
+            keys = [f"{owner}:{normalized_run}:{candidate_id}" for candidate_id in ordered_ids]
+            existing = set()
+            if keys:
+                placeholders = ",".join("?" for _ in keys)
+                existing = {
+                    str(row["job_key"])
+                    for row in connection.execute(
+                        f"SELECT job_key FROM contact_lookup_queue WHERE job_key IN ({placeholders})",
+                        keys,
+                    ).fetchall()
+                }
+            new_jobs = [
+                (candidate_id, job_key)
+                for candidate_id, job_key in zip(ordered_ids, keys)
+                if job_key not in existing
+            ]
+            active_row = connection.execute(
+                """SELECT COUNT(*) AS total FROM contact_lookup_queue
+                   WHERE requested_by=? AND status IN ('queued','retry','processing')""",
+                (owner,),
+            ).fetchone()
+            active = int((active_row and active_row["total"]) or 0)
+            if limit is not None and active + len(new_jobs) > limit:
+                raise ContactLookupQueueLimitError(
+                    limit=limit, active=active, requested=len(new_jobs),
+                )
+            for candidate_id, job_key in new_jobs:
+                connection.execute(
+                    """INSERT INTO contact_lookup_queue(
+                         job_key,run_id,candidate_id,requested_by,delivery_target,
+                         job_source,priority,external_ref,status,attempts,
+                         next_attempt_at,lease_until,result,last_error,created,updated
+                       ) VALUES(?,?,?,?,?,?,?,?,'queued',0,0,0,'{}','',?,?)
+                       ON CONFLICT(job_key) DO NOTHING""",
+                    (job_key, normalized_run, candidate_id, owner, target, source,
+                     normalized_priority, refs.get(candidate_id, ""), now, now),
+                )
+    return list_contact_lookup_jobs(
+        normalized_run, ordered_ids, requested_by=str(requested_by or ""),
+    )["items"]
+
+
+def contact_lookup_paused(requested_by: str) -> bool:
+    owner = str(requested_by or "")[:200]
+    with _conn() as connection:
+        row = connection.execute(
+            "SELECT paused FROM contact_lookup_controls WHERE requested_by=?", (owner,),
+        ).fetchone()
+    return bool(row and row["paused"])
+
+
+def set_contact_lookup_paused(requested_by: str, paused: bool) -> dict:
+    owner = str(requested_by or "")[:200]
+    now = time.time()
+    with _CONTACT_LOOKUP_CLAIM_LOCK:
+        with _conn() as connection:
+            if connection.postgres:
+                connection.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext(?))",
+                    ("contact-lookup-global-claim",),
+                )
+            connection.execute(
+                """INSERT INTO contact_lookup_controls(requested_by,paused,updated)
+                   VALUES(?,?,?)
+                   ON CONFLICT(requested_by) DO UPDATE
+                   SET paused=excluded.paused,updated=excluded.updated""",
+                (owner, 1 if paused else 0, now),
+            )
+    return {"paused": bool(paused), "updated": now}
+
+
+def defer_contact_lookup_job(job_id: int, reason: str = "user_paused") -> None:
+    with _conn() as connection:
+        connection.execute(
+            """UPDATE contact_lookup_queue
+               SET status='queued',attempts=CASE WHEN attempts>0 THEN attempts-1 ELSE 0 END,
+                   next_attempt_at=0,lease_until=0,last_error=?,updated=?
+               WHERE id=? AND status='processing'""",
+            (str(reason or "")[:1000], time.time(), int(job_id)),
+        )
+
+
+def list_contact_lookup_jobs(run_id: str, candidate_ids=None, requested_by: str = "") -> dict:
+    normalized_run = str(run_id or "").strip()
+    ids = list(dict.fromkeys(int(value) for value in candidate_ids or []))
+    where = "WHERE run_id=?"
+    args = [normalized_run]
+    if requested_by:
+        where += " AND requested_by=?"
+        args.append(str(requested_by))
+    if ids:
+        where += " AND candidate_id IN (" + ",".join("?" for _ in ids) + ")"
+        args.extend(ids)
+    with _conn() as connection:
+        rows = connection.execute(
+            f"SELECT * FROM contact_lookup_queue {where} ORDER BY created,id", args,
+        ).fetchall()
+        active_rows = connection.execute(
+            """SELECT id FROM contact_lookup_queue
+               WHERE status IN ('queued','retry','processing')
+               ORDER BY priority DESC,created,id"""
+        ).fetchall()
+    positions = {int(row["id"]): index for index, row in enumerate(active_rows)}
+    items = []
+    for row in rows:
+        item = dict(row)
+        try:
+            item["result"] = json.loads(item.get("result") or "{}")
+        except (TypeError, ValueError):
+            item["result"] = {}
+        item["position"] = positions.get(int(item["id"]), 0)
+        items.append(item)
+    return {
+        "run_id": normalized_run,
+        "items": items,
+        "queued": sum(item["status"] in {"queued", "retry"} for item in items),
+        "processing": sum(item["status"] == "processing" for item in items),
+        "complete": sum(item["status"] in {"succeeded", "not_found", "blocked", "failed"} for item in items),
+    }
+
+
+def claim_contact_lookup_jobs(
+    limit: int, lease_seconds: float = 210.0,
+) -> list[dict]:
+    """Claim extension work first and cap the lower-priority Halo backfill."""
+    now = time.time()
+    lease_until = now + max(30.0, float(lease_seconds))
+    concurrency_limit = int(config.CONTACT_LOOKUP_MAX_CONCURRENT)
+    requested = max(0, min(concurrency_limit, int(limit or 0)))
+    if not requested:
+        return []
+    with _CONTACT_LOOKUP_CLAIM_LOCK:
+        with _conn() as connection, connection.transaction():
+            if connection.postgres:
+                connection.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext(?))",
+                    ("contact-lookup-global-claim",),
+                )
+            connection.execute(
+                """UPDATE contact_lookup_queue
+                   SET status='retry',lease_until=0,next_attempt_at=?,updated=?,
+                       last_error='worker_restarted'
+                   WHERE status='processing' AND lease_until<=?""",
+                (now, now, now),
+            )
+            active_count = _scalar(connection.execute(
+                """SELECT COUNT(*) FROM contact_lookup_queue
+                   WHERE status='processing' AND lease_until>?""", (now,),
+            )) or 0
+            if int(active_count) >= concurrency_limit:
+                return []
+            capacity = min(requested, concurrency_limit - int(active_count))
+            active_backfill = _scalar(connection.execute(
+                """SELECT COUNT(*) FROM contact_lookup_queue
+                   WHERE status='processing' AND lease_until>?
+                     AND job_source='halo_backfill'""", (now,),
+            )) or 0
+            common = """q0.status IN ('queued','retry') AND q0.next_attempt_at<=?
+                     AND NOT EXISTS (
+                       SELECT 1 FROM contact_lookup_controls control
+                       WHERE control.requested_by=q0.requested_by AND control.paused=1
+                     )"""
+            extension_rows = connection.execute(
+                f"""SELECT q0.* FROM contact_lookup_queue q0
+                   WHERE {common} AND q0.job_source<>'halo_backfill'
+                   ORDER BY q0.priority DESC,q0.created,q0.id LIMIT ?""",
+                (now, capacity),
+            ).fetchall()
+            remaining = capacity - len(extension_rows)
+            backfill_capacity = min(
+                remaining,
+                max(0, int(config.CONTACT_LOOKUP_BACKFILL_MAX_CONCURRENT) - int(active_backfill)),
+            )
+            backfill_rows = connection.execute(
+                """SELECT q0.* FROM contact_lookup_queue q0
+                   WHERE q0.status IN ('queued','retry') AND q0.next_attempt_at<=?
+                     AND q0.job_source='halo_backfill'
+                     AND NOT EXISTS (
+                       SELECT 1 FROM contact_lookup_controls control
+                       WHERE control.requested_by=q0.requested_by AND control.paused=1
+                     )
+                   ORDER BY q0.priority DESC,q0.created,q0.id LIMIT ?""",
+                (now, backfill_capacity),
+            ).fetchall() if backfill_capacity else []
+            claimed = []
+            for row in [*extension_rows, *backfill_rows]:
+                updated = connection.execute(
+                    """UPDATE contact_lookup_queue
+                       SET status='processing',attempts=attempts+1,lease_until=?,updated=?
+                       WHERE id=? AND status IN ('queued','retry')""",
+                    (lease_until, now, int(row["id"])),
+                )
+                if updated.rowcount == 1:
+                    claimed.append({
+                        **dict(row), "status": "processing",
+                        "attempts": int(row["attempts"] or 0) + 1,
+                        "lease_until": lease_until, "updated": now,
+                    })
+            return claimed
+
+
+def claim_contact_lookup_job(lease_seconds: float = 210.0) -> dict | None:
+    claimed = claim_contact_lookup_jobs(1, lease_seconds=lease_seconds)
+    return claimed[0] if claimed else None
+
+
+def finish_contact_lookup_job(job_id: int, status: str, result=None, *, error: str = "", retry_at: float = 0) -> None:
+    allowed = {"succeeded", "not_found", "blocked", "failed", "retry"}
+    normalized = str(status or "").strip().casefold()
+    if normalized not in allowed:
+        raise ValueError("invalid contact lookup queue status")
+    with _conn() as connection:
+        connection.execute(
+            """UPDATE contact_lookup_queue
+               SET status=?,result=?,last_error=?,next_attempt_at=?,
+                   lease_until=0,updated=? WHERE id=? AND status='processing'""",
+            (
+                normalized, json.dumps(result or {}, separators=(",", ":")),
+                str(error or "")[:1000], max(0.0, float(retry_at or 0)),
+                time.time(), int(job_id),
+            ),
+        )
+
+
+def contact_lookup_queue_counts() -> dict:
+    now = time.time()
+    with _conn() as connection:
+        row = connection.execute(
+            """SELECT
+                 SUM(CASE WHEN status IN ('queued','retry') THEN 1 ELSE 0 END) AS queued,
+                 SUM(CASE WHEN status='processing' AND lease_until>? THEN 1 ELSE 0 END) AS processing,
+                 SUM(CASE WHEN job_source='halo_backfill' AND status IN ('queued','retry') THEN 1 ELSE 0 END) AS backfill_queued,
+                 SUM(CASE WHEN job_source='halo_backfill' AND status='processing' AND lease_until>? THEN 1 ELSE 0 END) AS backfill_processing
+               FROM contact_lookup_queue""", (now, now),
+        ).fetchone()
+        processing_row = connection.execute(
+            """SELECT job_key FROM contact_lookup_queue
+               WHERE status='processing' AND lease_until>?
+                 AND job_source<>'halo_backfill'
+               ORDER BY updated,id LIMIT 1""", (now,),
+        ).fetchone()
+    return {"queued": int((row and row["queued"]) or 0),
+            "processing": int((row and row["processing"]) or 0),
+            "backfill_queued": int((row and row["backfill_queued"]) or 0),
+            "backfill_processing": int((row and row["backfill_processing"]) or 0),
+            "processing_job_key": str((processing_row and processing_row["job_key"]) or "")}
+
+
 # ---- resumes ----
 def _save_resume_extraction(
     connection, resume_id, candidate_id, extraction, *, now=None,
@@ -2602,6 +3233,7 @@ def attach_resume(
     checksum_sha256="",
     etag="",
     queue_nexus=False,
+    requested_by="",
     extraction=None,
 ):
     if not get_candidate(candidate_id):
@@ -2659,7 +3291,9 @@ def attach_resume(
                     connection, resume_id, candidate_id, extraction, now=now,
                 )
             if queue_nexus and getattr(config, "NEXUS_SYNC_ENABLED", False):
-                _enqueue_nexus_delivery(connection, candidate_id, resume_id, checksum)
+                _enqueue_nexus_delivery(
+                    connection, candidate_id, resume_id, checksum, requested_by,
+                )
                 nexus_queued = True
     delivery = get_nexus_delivery_for_resume(resume_id) if nexus_queued else None
     if existing:
@@ -2750,7 +3384,7 @@ def mark_outreach(outreach_id, status):
         return cursor.rowcount > 0
 
 
-# ---- consent-gated SMS conversations ----
+# ---- SMS conversations and opt-out records ----
 def record_sms_consent(candidate_id, phone, status, source, evidence,
                        captured_by="", disclosure_version="v1"):
     normalized_status = str(status or "").strip().casefold()
@@ -2790,157 +3424,15 @@ def record_sms_consent(candidate_id, phone, status, source, evidence,
                    ON CONFLICT(value) DO NOTHING""",
                 (key, "SMS opt-out", now),
             )
-            connection.execute(
-                """INSERT INTO sms_phone_controls(
-                     phone_key,candidate_id,state,created,updated
-                   ) VALUES(?,?,'opted_out',?,?)
-                   ON CONFLICT(phone_key) DO UPDATE SET state='opted_out',updated=excluded.updated""",
-                (key, int(candidate_id), now, now),
-            )
-        elif source_value == "inbound_sms" and str(captured_by or "") in {"zoom", "twilio"}:
+        elif source_value == "inbound_sms" and str(captured_by or "") == "zoom":
             # Only an authenticated inbound carrier event may reverse a prior
             # SMS suppression. Manually entered records never clear DNC.
             connection.execute("DELETE FROM dnc WHERE value=?", (key,))
-            connection.execute(
-                """INSERT INTO sms_phone_controls(
-                     phone_key,candidate_id,state,created,updated
-                   ) VALUES(?,?,'opted_in',?,?)
-                   ON CONFLICT(phone_key) DO UPDATE SET state='opted_in',updated=excluded.updated""",
-                (key, int(candidate_id), now, now),
-            )
-        elif normalized_status == "opted_in":
-            # A documented permission record for any duplicate candidate record
-            # applies to the phone, while the evidence remains candidate-scoped.
-            suppressed = connection.execute(
-                "SELECT 1 FROM dnc WHERE value=?", (key,),
-            ).fetchone()
-            phone_state = "opted_out" if suppressed else "opted_in"
-            connection.execute(
-                """INSERT INTO sms_phone_controls(
-                     phone_key,candidate_id,state,created,updated
-                   ) VALUES(?,?,?,?,?)
-                   ON CONFLICT(phone_key) DO UPDATE SET state=excluded.state,updated=excluded.updated""",
-                (key, int(candidate_id), phone_state, now, now),
-            )
         row = connection.execute(
             "SELECT * FROM sms_consents WHERE candidate_id=? AND phone_key=?",
             (int(candidate_id), key),
         ).fetchone()
         return dict(row)
-
-
-def get_sms_phone_control(phone):
-    key = contact_key(phone)
-    if not key:
-        return None
-    with _conn() as connection:
-        row = connection.execute(
-            "SELECT * FROM sms_phone_controls WHERE phone_key=?", (key,),
-        ).fetchone()
-        return dict(row) if row else None
-
-
-def claim_sms_opt_in(phone, candidate_id, *, candidate_name="", initiated_by="",
-                     sender_number="", sender_user_id="", request_id=""):
-    """Atomically claim the one-per-phone opt-in request and conversation.
-
-    A claim is intentionally retained after a provider error: the request may
-    have reached the carrier despite a timeout, so retrying automatically could
-    send a duplicate. Admins can reconcile that state before any manual retry.
-    """
-    phone_value = str(phone or "").strip()
-    key = contact_key(phone_value)
-    if not key:
-        raise ValueError("A valid phone number is required")
-    now = time.time()
-    with _conn() as connection:
-        cursor = connection.execute(
-            """INSERT INTO sms_phone_controls(
-                 phone_key,candidate_id,state,request_id,created,updated
-               ) VALUES(?,?,'sending',?,?,?) ON CONFLICT(phone_key) DO NOTHING""",
-            (key, int(candidate_id), str(request_id or "")[:200], now, now),
-        )
-        created = cursor.rowcount > 0
-        control = connection.execute(
-            "SELECT * FROM sms_phone_controls WHERE phone_key=?", (key,),
-        ).fetchone()
-        if not created:
-            row = dict(control) if control else None
-            conversation = None
-            if row and row.get("conversation_id"):
-                found = connection.execute(
-                    "SELECT * FROM sms_conversations WHERE id=?",
-                    (row["conversation_id"],),
-                ).fetchone()
-                conversation = dict(found) if found else None
-            return {"created": False, "control": row, "conversation": conversation}
-        existing = connection.execute(
-            "SELECT * FROM sms_conversations WHERE phone_key=? ORDER BY updated DESC LIMIT 1",
-            (key,),
-        ).fetchone()
-        if existing:
-            prior_opt_in = connection.execute(
-                """SELECT 1 FROM sms_messages WHERE conversation_id=?
-                   AND direction='outbound' AND body LIKE '%Reply START to opt in%'
-                   LIMIT 1""", (int(existing["id"]),),
-            ).fetchone()
-            if prior_opt_in:
-                connection.execute(
-                    """UPDATE sms_phone_controls SET conversation_id=?,state='pending',updated=?
-                       WHERE phone_key=?""", (int(existing["id"]), now, key),
-                )
-                control = connection.execute(
-                    "SELECT * FROM sms_phone_controls WHERE phone_key=?", (key,),
-                ).fetchone()
-                return {"created": False, "control": dict(control),
-                        "conversation": dict(existing)}
-        if existing:
-            conversation_id = int(existing["id"])
-        else:
-            conversation_id = _insert_id(
-                connection,
-                """INSERT INTO sms_conversations(
-                     candidate_id,nexus_candidate_id,candidate_name,candidate_phone,phone_key,
-                     initiated_by,zoom_sender_number,zoom_sender_user_id,status,created,updated,last_message_at
-                   ) VALUES(?,?,?,?,?,?,?,?,'open',?,?,?)""",
-                (int(candidate_id), candidate_nexus_id(candidate_id),
-                 str(candidate_name or "")[:320], phone_value, key,
-                 str(initiated_by or "")[:320], str(sender_number or "")[:50],
-                 str(sender_user_id or "")[:80],
-                 now, now, now),
-            )
-        connection.execute(
-            """UPDATE sms_phone_controls SET conversation_id=?,updated=?
-               WHERE phone_key=?""", (conversation_id, now, key),
-        )
-        conversation = connection.execute(
-            "SELECT * FROM sms_conversations WHERE id=?", (conversation_id,),
-        ).fetchone()
-        control = connection.execute(
-            "SELECT * FROM sms_phone_controls WHERE phone_key=?", (key,),
-        ).fetchone()
-        return {"created": True, "control": dict(control),
-                "conversation": dict(conversation) if conversation else None}
-
-
-def update_sms_phone_control(phone, state, *, request_id=None):
-    key = contact_key(phone)
-    if not key:
-        return None
-    now = time.time()
-    with _conn() as connection:
-        if request_id is None:
-            connection.execute(
-                "UPDATE sms_phone_controls SET state=?,updated=? WHERE phone_key=?",
-                (str(state), now, key),
-            )
-        else:
-            connection.execute(
-                """UPDATE sms_phone_controls SET state=?,request_id=?,updated=?
-                   WHERE phone_key=?""",
-                (str(state), str(request_id or "")[:200], now, key),
-            )
-    return get_sms_phone_control(phone)
 
 
 def get_sms_consent(candidate_id, phone):
@@ -2951,18 +3443,6 @@ def get_sms_consent(candidate_id, phone):
         row = connection.execute(
             "SELECT * FROM sms_consents WHERE candidate_id=? AND phone_key=?",
             (int(candidate_id), key),
-        ).fetchone()
-        return dict(row) if row else None
-
-
-def get_sms_phone_consent(phone):
-    key = contact_key(phone)
-    if not key:
-        return None
-    with _conn() as connection:
-        row = connection.execute(
-            """SELECT * FROM sms_consents WHERE phone_key=?
-               ORDER BY updated DESC LIMIT 1""", (key,),
         ).fetchone()
         return dict(row) if row else None
 
@@ -3042,6 +3522,17 @@ def create_sms_message(conversation_id, direction, body, request_id="", status="
         return dict(row), True
 
 
+def get_sms_message_by_request_id(request_id):
+    request_key = str(request_id or "").strip()
+    if not request_key:
+        return None
+    with _conn() as connection:
+        row = connection.execute(
+            "SELECT * FROM sms_messages WHERE request_id=?", (request_key,)
+        ).fetchone()
+        return dict(row) if row else None
+
+
 def update_sms_message(message_id, *, status, zoom_message_id="", failure_reason=""):
     now = time.time()
     with _conn() as connection:
@@ -3087,28 +3578,6 @@ def get_sms_conversation(conversation_id):
         return result
 
 
-def find_sms_candidate_conversation(candidate_id):
-    """Return the most recent outreach thread for a candidate, regardless of phone changes."""
-    with _conn() as connection:
-        row = connection.execute(
-            "SELECT id FROM sms_conversations WHERE candidate_id=? ORDER BY updated DESC LIMIT 1",
-            (int(candidate_id),),
-        ).fetchone()
-        conversation_id = int(row["id"]) if row else 0
-    return get_sms_conversation(conversation_id) if conversation_id else None
-
-
-def candidate_sms_opted_out(candidate_id) -> bool:
-    """Treat the latest explicit candidate consent event as applying across phone updates."""
-    with _conn() as connection:
-        row = connection.execute(
-            "SELECT status FROM sms_consents WHERE candidate_id=? "
-            "ORDER BY updated DESC, id DESC LIMIT 1",
-            (int(candidate_id),),
-        ).fetchone()
-        return bool(row and str(row["status"] or "").casefold() == "opted_out")
-
-
 def list_sms_conversations(user_id="", *, user_ids=None, include_all=False):
     projection = """SELECT c.*,
         EXISTS(SELECT 1 FROM sms_messages m WHERE m.conversation_id=c.id
@@ -3138,12 +3607,6 @@ def list_sms_conversations(user_id="", *, user_ids=None, include_all=False):
                 " ORDER BY c.updated DESC",
                 (*scoped_ids, *scoped_ids),
             ).fetchall()
-        elif user_id:
-            rows = connection.execute(
-                projection + " WHERE c.initiated_by=? OR c.assigned_recruiter_id=?"
-                " ORDER BY c.updated DESC",
-                (str(user_id), str(user_id)),
-            ).fetchall()
         else:
             rows = connection.execute(
                 projection + " WHERE c.initiated_by=? OR c.assigned_recruiter_id=?"
@@ -3155,82 +3618,12 @@ def list_sms_conversations(user_id="", *, user_ids=None, include_all=False):
 
 def claim_sms_webhook(event_key, event_type):
     with _conn() as connection:
-        connection.execute(
+        cursor = connection.execute(
             """INSERT INTO sms_webhook_events(event_key,event_type,created)
                VALUES(?,?,?) ON CONFLICT(event_key) DO NOTHING""",
             (str(event_key), str(event_type), time.time()),
         )
-        row = connection.execute(
-            "SELECT processed FROM sms_webhook_events WHERE event_key=?",
-            (str(event_key),),
-        ).fetchone()
-        return bool(row and not row["processed"])
-
-
-def complete_sms_webhook(event_key):
-    with _conn() as connection:
-        connection.execute(
-            "UPDATE sms_webhook_events SET processed=1 WHERE event_key=?",
-            (str(event_key),),
-        )
-
-
-def claim_sms_outreach(candidate_id, phone, request_id):
-    """Atomically reserve the one initial recruiting SMS allowed per candidate/phone."""
-    now = time.time()
-    key = contact_key(phone)
-    with _conn() as connection:
-        inserted = connection.execute(
-            """INSERT INTO sms_outreach_claims(
-                 candidate_id,phone_key,request_id,status,created,updated
-               ) VALUES(?,?,?,'sending',?,?) ON CONFLICT DO NOTHING""",
-            (int(candidate_id), key, str(request_id), now, now),
-        )
-        row = connection.execute(
-            """SELECT * FROM sms_outreach_claims
-               WHERE candidate_id=? OR phone_key=? ORDER BY created LIMIT 1""",
-            (int(candidate_id), key),
-        ).fetchone()
-        return {"created": inserted.rowcount == 1, "claim": dict(row) if row else None}
-
-
-def update_sms_outreach_claim(candidate_id, *, status, message_id=None):
-    # Update one claimed outreach after the provider accepts or rejects it.
-    with _conn() as connection:
-        connection.execute(
-            """UPDATE sms_outreach_claims SET status=?,message_id=COALESCE(?,message_id),
-               updated=? WHERE candidate_id=?""",
-            (str(status), message_id, time.time(), int(candidate_id)),
-        )
-        row = connection.execute(
-            "SELECT * FROM sms_outreach_claims WHERE candidate_id=?",
-            (int(candidate_id),),
-        ).fetchone()
-        return dict(row) if row else None
-
-
-def get_sms_outreach_claim(candidate_id, phone):
-    key = contact_key(phone)
-    with _conn() as connection:
-        row = connection.execute(
-            'SELECT * FROM sms_outreach_claims WHERE candidate_id=? OR phone_key=? ORDER BY created LIMIT 1',
-            (int(candidate_id), key),
-        ).fetchone()
-        return dict(row) if row else None
-
-
-def sms_candidate_contacted(candidate_id, phone) -> bool:
-    key = contact_key(phone)
-    with _conn() as connection:
-        row = connection.execute(
-            "SELECT 1 FROM sms_messages m "
-            "JOIN sms_conversations c ON c.id=m.conversation_id "
-            "WHERE m.direction='outbound' "
-            "AND m.status IN ('accepted','sent','delivered') "
-            "AND (c.candidate_id=? OR c.phone_key=?) LIMIT 1",
-            (int(candidate_id), key),
-        ).fetchone()
-        return bool(row)
+        return cursor.rowcount > 0
 
 
 def find_sms_conversation(*, session_id="", phone=""):
@@ -3241,23 +3634,52 @@ def find_sms_conversation(*, session_id="", phone=""):
                    ORDER BY updated DESC LIMIT 1""", (str(session_id),)
             ).fetchone()
         else:
-            control = connection.execute(
-                "SELECT conversation_id FROM sms_phone_controls WHERE phone_key=?",
-                (contact_key(phone),),
-            ).fetchone()
-            row = None
-            if control and control["conversation_id"]:
-                row = connection.execute(
-                    "SELECT * FROM sms_conversations WHERE id=?",
-                    (control["conversation_id"],),
-                ).fetchone()
-            if row:
-                return dict(row)
             row = connection.execute(
                 """SELECT * FROM sms_conversations WHERE phone_key=?
                    ORDER BY updated DESC LIMIT 1""", (contact_key(phone),)
             ).fetchone()
         return dict(row) if row else None
+
+
+def sms_candidate_contacted(candidate_id, phone="") -> bool:
+    """Whether any outbound SMS already exists for this candidate/number."""
+    params = [int(candidate_id)]
+    phone_clause = ""
+    if phone:
+        phone_clause = " AND c.phone_key=?"
+        params.append(contact_key(phone))
+    with _conn() as connection:
+        row = connection.execute(
+            """SELECT 1 FROM sms_messages m
+               JOIN sms_conversations c ON c.id=m.conversation_id
+               WHERE c.candidate_id=? AND m.direction='outbound' AND m.status<>'failed'""" + phone_clause +
+            " LIMIT 1",
+            tuple(params),
+        ).fetchone()
+        return bool(row)
+
+
+def claim_sms_outreach(candidate_id, phone):
+    """Atomically reserve first outbound SMS for a candidate across workers."""
+    now = time.time()
+    with _conn() as connection:
+        cursor = connection.execute(
+            """INSERT INTO sms_outreach_claims(candidate_id,phone_key,status,created,updated)
+               VALUES(?,?,'sending',?,?)
+               ON CONFLICT(candidate_id) DO UPDATE SET
+                 phone_key=excluded.phone_key,status='sending',updated=excluded.updated
+               WHERE sms_outreach_claims.status='failed'""",
+            (int(candidate_id), contact_key(phone), now, now),
+        )
+        return cursor.rowcount > 0
+
+
+def update_sms_outreach_claim(candidate_id, status):
+    with _conn() as connection:
+        connection.execute(
+            "UPDATE sms_outreach_claims SET status=?,updated=? WHERE candidate_id=?",
+            (str(status), time.time(), int(candidate_id)),
+        )
 
 
 def reconcile_outbound_sms(conversation_id, *, zoom_message_id="", status="sent",
@@ -3401,6 +3823,12 @@ def _blocked_contact_keys(connection) -> set[str]:
     }
 
 
+def dnc_contact_keys() -> set[str]:
+    """Load the suppression set once for a batch contact projection."""
+    with _conn() as connection:
+        return _blocked_contact_keys(connection)
+
+
 def add_dnc(value, reason=""):
     key = contact_key(value)
     if not key:
@@ -3451,8 +3879,8 @@ def dnc_blocked(values):
     return set(normalized) & blocked
 
 
-def filter_dnc_groups(groups):
-    """Filter several contact groups with one database query."""
+def filter_dnc_groups(groups, *, blocked_keys=None):
+    """Filter contact groups, optionally using a preloaded suppression set."""
     cleaned_groups = {}
     all_normalized = []
     for group, values in (groups or {}).items():
@@ -3463,8 +3891,11 @@ def filter_dnc_groups(groups):
     normalized = list(dict.fromkeys(all_normalized))
     if not normalized:
         return cleaned_groups
-    with _conn() as connection:
-        blocked = _blocked_contact_keys(connection)
+    if blocked_keys is None:
+        with _conn() as connection:
+            blocked = _blocked_contact_keys(connection)
+    else:
+        blocked = set(blocked_keys)
     return {
         group: [value for value in values if contact_key(value) not in blocked]
         for group, values in cleaned_groups.items()
@@ -3523,435 +3954,17 @@ def upsert_user(auth0_sub: str, *, email: str = "", name: str = "") -> dict:
     return dict(row)
 
 
-def _device_event(connection, user_id: str, installation_id: str, event_type: str,
-                  *, actor_user_id: str = "", details: dict | None = None) -> None:
-    connection.execute(
-        """INSERT INTO extension_device_events(
-             user_id,installation_id,event_type,actor_user_id,details,created
-           ) VALUES(?,?,?,?,?,?)""",
-        (
-            user_id, installation_id, str(event_type or "unknown")[:80],
-            str(actor_user_id or "")[:255], json.dumps(details or {}), time.time(),
-        ),
-    )
-
-
-def _device_row(row, *, current_installation_id: str = "") -> dict | None:
-    if row is None:
-        return None
-    result = dict(row)
-    result["current"] = bool(
-        current_installation_id
-        and result.get("installation_id") == current_installation_id
-    )
-    # Installation identifiers are bearer-like local secrets. Only expose a
-    # short display suffix to account-management screens and logs.
-    installation_id = str(result.pop("installation_id", ""))
-    result["installation_suffix"] = installation_id[-6:] if installation_id else ""
-    return result
-
-
-def register_extension_device(user_id: str, installation_id: str, *,
-                              device_name: str = "", user_agent: str = "") -> dict:
-    """Register a device after a successful Healthcareboard email challenge.
-
-    Every non-revoked installation is approved after the email challenge.
-    A manually revoked installation never self-reactivates.
-    """
-    subject = str(user_id or "").strip()[:255]
-    device = str(installation_id or "").strip()[:100]
-    if not subject or not device:
-        raise ValueError("user_id and installation_id are required")
-    name = str(device_name or "Medhunt browser")[:200]
-    agent = str(user_agent or "")[:500]
-    now = time.time()
-    with _conn() as connection:
-        with connection.transaction():
-            # Transparently carry forward the strict 3.26.5 binding if that
-            # short-lived release was ever deployed before this workflow.
-            legacy = connection.execute(
-                "SELECT installation_id,bound_at,last_seen FROM extension_devices WHERE user_id=?",
-                (subject,),
-            ).fetchone()
-            existing_count = int(_scalar(connection.execute(
-                "SELECT COUNT(*) FROM extension_device_registrations WHERE user_id=?",
-                (subject,),
-            )) or 0)
-            if legacy and existing_count == 0:
-                legacy_data = dict(legacy)
-                connection.execute(
-                    """INSERT INTO extension_device_registrations(
-                         user_id,installation_id,device_name,user_agent,status,
-                         requested_at,approved_at,approved_by,last_seen
-                       ) VALUES(?,?,?,?,?,?,?,?,?)""",
-                    (
-                        subject, legacy_data["installation_id"], "Existing Medhunt installation",
-                        "", "approved", float(legacy_data.get("bound_at") or now),
-                        float(legacy_data.get("bound_at") or now), "migration",
-                        float(legacy_data.get("last_seen") or now),
-                    ),
-                )
-            row = connection.execute(
-                """SELECT * FROM extension_device_registrations
-                   WHERE user_id=? AND installation_id=?""",
-                (subject, device),
-            ).fetchone()
-            if row:
-                current = dict(row)
-                status = str(current.get("status") or "pending")
-                if status in {"expired", "pending", "revoked"}:
-                    status = "approved"
-                    connection.execute(
-                        """UPDATE extension_device_registrations SET
-                             status='approved',device_name=?,user_agent=?,approved_at=?,
-                             approved_by=?,last_seen=?,revoked_at=0,revocation_reason=''
-                           WHERE id=?""",
-                        (name, agent, now, subject, now, current["id"]),
-                    )
-                    _device_event(
-                        connection, subject, device, "device_auto_approved",
-                        actor_user_id=subject,
-                    )
-                else:
-                    connection.execute(
-                        """UPDATE extension_device_registrations
-                           SET device_name=?,user_agent=?,last_seen=? WHERE id=?""",
-                        (name, agent, now, current["id"]),
-                    )
-                row = connection.execute(
-                    "SELECT * FROM extension_device_registrations WHERE id=?",
-                    (current["id"],),
-                ).fetchone()
-                return _device_row(row, current_installation_id=device)
-
-            status = "approved"
-            approved_at = now
-            approved_by = subject
-            row = connection.execute(
-                """INSERT INTO extension_device_registrations(
-                     user_id,installation_id,device_name,user_agent,status,
-                     requested_at,approved_at,approved_by,last_seen
-                   ) VALUES(?,?,?,?,?,?,?,?,?) RETURNING *""",
-                (
-                    subject, device, name, agent, status, now, approved_at,
-                    approved_by, now,
-                ),
-            ).fetchone()
-            _device_event(
-                connection, subject, device,
-                "device_registered",
-                actor_user_id=subject,
-            )
-    return _device_row(row, current_installation_id=device)
-
-
-def authorize_extension_device(user_id: str, installation_id: str) -> dict | None:
-    """Validate an approved installation and refresh its throttled heartbeat."""
-    subject = str(user_id or "").strip()[:255]
-    device = str(installation_id or "").strip()[:100]
-    if not subject or not device:
-        return None
-    now = time.time()
-    cutoff = now - (config.MEDHUNT_DEVICE_IDLE_DAYS * 86400)
-    with _conn() as connection:
-        with connection.transaction():
-            row = connection.execute(
-                """SELECT * FROM extension_device_registrations
-                   WHERE user_id=? AND installation_id=?""",
-                (subject, device),
-            ).fetchone()
-            if not row:
-                # Seamlessly migrate users who already had a valid Healthboard
-                # session before device registration shipped. Only the first
-                # installation can take this path; an account with any device
-                # history must complete email verification and approval.
-                registered_count = int(_scalar(connection.execute(
-                    "SELECT COUNT(*) FROM extension_device_registrations WHERE user_id=?",
-                    (subject,),
-                )) or 0)
-                if registered_count:
-                    return None
-                legacy = connection.execute(
-                    "SELECT installation_id,bound_at,last_seen FROM extension_devices WHERE user_id=?",
-                    (subject,),
-                ).fetchone()
-                legacy_data = dict(legacy) if legacy else {}
-                # If the previous strict binding exists, only that same
-                # installation may migrate silently. A different browser must
-                # complete email verification and enter the approval flow.
-                if legacy_data and legacy_data.get("installation_id") != device:
-                    return None
-                bound_at = float(legacy_data.get("bound_at") or now)
-                status = "approved"
-                requested_at = bound_at if legacy else now
-                row = connection.execute(
-                    """INSERT INTO extension_device_registrations(
-                         user_id,installation_id,device_name,user_agent,status,
-                         requested_at,approved_at,approved_by,last_seen
-                       ) VALUES(?,?,?,?,?,?,?,?,?) RETURNING *""",
-                    (
-                        subject, device,
-                        "Existing Medhunt installation" if legacy else "Existing signed-in installation",
-                        "", status, requested_at, bound_at, "migration",
-                        float(legacy_data.get("last_seen") or now),
-                    ),
-                ).fetchone()
-                connection.execute(
-                    """INSERT INTO extension_devices(user_id,installation_id,bound_at,last_seen)
-                       VALUES(?,?,?,?)
-                       ON CONFLICT(user_id) DO UPDATE SET
-                         installation_id=excluded.installation_id,
-                         last_seen=excluded.last_seen""",
-                    (subject, device, bound_at, now),
-                )
-                _device_event(
-                    connection, subject, device,
-                    "existing_installation_migrated" if legacy else "first_installation_registered",
-                    actor_user_id=subject,
-                )
-                data = dict(row)
-            data = dict(row)
-            if data.get("status") in {"pending", "revoked"}:
-                # Existing sessions from before automatic device approval may
-                # already have a pending registration. Let the authenticated
-                # user continue without waiting for an administrator.
-                last_event = connection.execute(
-                    """SELECT event_type FROM extension_device_events
-                       WHERE user_id=? AND installation_id=?
-                       ORDER BY created DESC,id DESC LIMIT 1""",
-                    (subject, device),
-                ).fetchone()
-                connection.execute(
-                    """UPDATE extension_device_registrations SET
-                         status='approved',approved_at=?,approved_by=?,last_seen=?,
-                         revoked_at=0,revocation_reason=''
-                       WHERE id=?""",
-                    (now, subject, now, data["id"]),
-                )
-                _device_event(
-                    connection, subject, device, "device_auto_approved",
-                    actor_user_id=subject,
-                )
-                data.update({"status": "approved", "approved_at": now,
-                             "approved_by": subject, "last_seen": now})
-            if data.get("status") != "approved":
-                return _device_row(row, current_installation_id=device)
-            last_seen = float(data.get("last_seen") or 0)
-            if last_seen and last_seen < cutoff:
-                connection.execute(
-                    "UPDATE extension_device_registrations SET status='expired' WHERE id=?",
-                    (data["id"],),
-                )
-                _device_event(connection, subject, device, "expired")
-                data["status"] = "expired"
-                return _device_row(data, current_installation_id=device)
-            if last_seen < now - 300:
-                connection.execute(
-                    "UPDATE extension_device_registrations SET last_seen=? WHERE id=?",
-                    (now, data["id"]),
-                )
-                data["last_seen"] = now
-    return _device_row(data, current_installation_id=device)
-
-
-def extension_device_status(user_id: str, installation_id: str) -> dict | None:
-    subject = str(user_id or "").strip()[:255]
-    device = str(installation_id or "").strip()[:100]
-    with _conn() as connection:
-        row = connection.execute(
-            """SELECT * FROM extension_device_registrations
-               WHERE user_id=? AND installation_id=?""",
-            (subject, device),
-        ).fetchone()
-    return _device_row(row, current_installation_id=device)
-
-
-def auto_approve_pending_extension_device(user_id: str, installation_id: str) -> dict | None:
-    """Release legacy pending installs after a successful email-code sign-in.
-
-    Existing installations no longer need an approval step.
-    """
-    subject = str(user_id or "").strip()[:255]
-    device = str(installation_id or "").strip()[:100]
-    if not subject or not device:
-        return None
-    now = time.time()
-    with _conn() as connection:
-        with connection.transaction():
-            row = connection.execute(
-                """SELECT * FROM extension_device_registrations
-                   WHERE user_id=? AND installation_id=?""",
-                (subject, device),
-            ).fetchone()
-            if not row or row["status"] not in {"pending", "revoked"}:
-                return _device_row(row, current_installation_id=device)
-            connection.execute(
-                """UPDATE extension_device_registrations SET
-                     status='approved',approved_at=?,approved_by=?,last_seen=?,
-                     revoked_at=0,revocation_reason=''
-                   WHERE id=?""",
-                (now, subject, now, row["id"]),
-            )
-            _device_event(
-                connection, subject, device, "device_auto_approved",
-                actor_user_id=subject,
-            )
-            approved = connection.execute(
-                "SELECT * FROM extension_device_registrations WHERE id=?",
-                (row["id"],),
-            ).fetchone()
-    return _device_row(approved, current_installation_id=device)
-
-
-def list_extension_devices(user_id: str, *, current_installation_id: str = "",
-                           include_all_users: bool = False) -> list[dict]:
-    subject = str(user_id or "").strip()[:255]
-    with _conn() as connection:
-        if include_all_users:
-            rows = connection.execute(
-                """SELECT d.*,u.email AS user_email,u.name AS user_name
-                   FROM extension_device_registrations d
-                   LEFT JOIN users u ON u.auth0_sub=d.user_id
-                   ORDER BY d.user_id,d.requested_at DESC""",
-            ).fetchall()
-        else:
-            rows = connection.execute(
-                """SELECT d.*,u.email AS user_email,u.name AS user_name
-                   FROM extension_device_registrations d
-                   LEFT JOIN users u ON u.auth0_sub=d.user_id
-                   WHERE d.user_id=? ORDER BY d.requested_at DESC""",
-                (subject,),
-            ).fetchall()
-    devices = [
-        _device_row(row, current_installation_id=current_installation_id)
-        for row in rows
-    ]
-    counts: dict[str, int] = {}
-    approved_counts: dict[str, int] = {}
-    for device in devices:
-        owner = str(device.get("user_id") or "")
-        counts[owner] = counts.get(owner, 0) + 1
-        if device.get("status") == "approved":
-            approved_counts[owner] = approved_counts.get(owner, 0) + 1
-    for device in devices:
-        device["registered_device_count"] = counts.get(
-            str(device.get("user_id") or ""), 0,
-        )
-        device["approved_device_count"] = approved_counts.get(
-            str(device.get("user_id") or ""), 0,
-        )
-    return devices
-
-
-def approve_extension_device(device_id: int, *, actor_user_id: str,
-                             actor_is_admin: bool = False) -> dict:
-    actor = str(actor_user_id or "").strip()[:255]
-    with _conn() as connection:
-        with connection.transaction():
-            row = connection.execute(
-                "SELECT * FROM extension_device_registrations WHERE id=?",
-                (int(device_id),),
-            ).fetchone()
-            if not row:
-                raise LookupError("Device request not found")
-            target = dict(row)
-            if not actor_is_admin:
-                raise PermissionError("Only a Healthcareboard administrator can approve devices")
-            if target.get("status") == "revoked":
-                raise ValueError("A revoked device cannot be approved; request access again from a new installation")
-            now = time.time()
-            connection.execute(
-                """UPDATE extension_device_registrations SET
-                     status='approved',approved_at=?,approved_by=?,last_seen=?,
-                     revoked_at=0,revocation_reason='' WHERE id=?""",
-                (now, actor, now, int(device_id)),
-            )
-            _device_event(
-                connection, target["user_id"], target["installation_id"],
-                "approved", actor_user_id=actor,
-            )
-            row = connection.execute(
-                "SELECT * FROM extension_device_registrations WHERE id=?",
-                (int(device_id),),
-            ).fetchone()
-    return _device_row(row)
-
-
-def revoke_extension_device(device_id: int, *, actor_user_id: str,
-                            actor_is_admin: bool = False, reason: str = "") -> dict:
-    actor = str(actor_user_id or "").strip()[:255]
-    with _conn() as connection:
-        with connection.transaction():
-            row = connection.execute(
-                "SELECT * FROM extension_device_registrations WHERE id=?",
-                (int(device_id),),
-            ).fetchone()
-            if not row:
-                raise LookupError("Device not found")
-            target = dict(row)
-            if not actor_is_admin and target.get("user_id") != actor:
-                raise PermissionError("Device revocation is not permitted")
-            now = time.time()
-            connection.execute(
-                """UPDATE extension_device_registrations SET
-                     status='revoked',revoked_at=?,revocation_reason=? WHERE id=?""",
-                (now, str(reason or "Revoked by account owner")[:500], int(device_id)),
-            )
-            _device_event(
-                connection, target["user_id"], target["installation_id"],
-                "revoked", actor_user_id=actor,
-                details={"reason": str(reason or "")[:500]},
-            )
-            row = connection.execute(
-                "SELECT * FROM extension_device_registrations WHERE id=?",
-                (int(device_id),),
-            ).fetchone()
-    return _device_row(row)
-
-
 def record_enrichment_event(auth0_sub: str, candidate_id: int, status: str,
-                            *, provider: str = "", run_id: str = "",
-                            halo_pending: bool = False) -> dict:
+                            *, provider: str = "", run_id: str = "") -> None:
     """Attribute one enrichment attempt to the authenticated user."""
     subject = str(auth0_sub or "local").strip()[:255] or "local"
     with _conn() as connection:
-        created = time.time()
-        candidate = connection.execute(
-            "SELECT source FROM candidates WHERE id=?", (int(candidate_id),),
-        ).fetchone()
-        platform = str(candidate["source"] or "").strip().lower()[:80] if candidate else ""
-        event_id = _insert_id(connection,
-            """INSERT INTO enrichment_events(
-                 auth0_sub,candidate_id,status,provider,run_id,platform,created,halo_status
-               ) VALUES(?,?,?,?,?,?,?,?)""",
-            (subject, int(candidate_id), str(status or "unknown")[:80],
-             str(provider or "")[:80], str(run_id or "")[:120], platform, created,
-             "pending" if halo_pending else "delivered"),
-        )
-    return {"id": event_id, "auth0_sub": subject, "candidate_id": int(candidate_id),
-            "status": str(status or "unknown")[:80], "provider": str(provider or "")[:80],
-            "run_id": str(run_id or "")[:120], "platform": platform,
-            "created": created}
-
-
-def pending_halo_enrichment_events(limit: int = 50) -> list[dict]:
-    with _conn() as connection:
-        rows = connection.execute(
-            """SELECT e.*
-               FROM enrichment_events e
-               LEFT JOIN candidates c ON c.id=e.candidate_id
-               WHERE e.halo_status='pending'
-               ORDER BY e.id LIMIT ?""",
-            (max(1, min(int(limit), 200)),),
-        ).fetchall()
-    return [dict(row) for row in rows]
-
-
-def mark_halo_enrichment_delivered(event_id: int) -> None:
-    with _conn() as connection:
         connection.execute(
-            "UPDATE enrichment_events SET halo_status='delivered' WHERE id=?",
-            (int(event_id),),
+            """INSERT INTO enrichment_events(
+                 auth0_sub,candidate_id,status,provider,run_id,created
+               ) VALUES(?,?,?,?,?,?)""",
+            (subject, int(candidate_id), str(status or "unknown")[:80],
+             str(provider or "")[:80], str(run_id or "")[:120], time.time()),
         )
 
 

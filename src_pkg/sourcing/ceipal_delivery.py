@@ -1,135 +1,139 @@
-"""Durable delivery of routed Medhunt candidates to CEIPAL Candidate Pass."""
+"""Deliver Ceipal-assigned, verified contacts through the Halo service channel."""
 from __future__ import annotations
 
-import re
+import logging
 import threading
-import time
 
-import httpx
+from . import config, contact_access, healthboard_auth, store
 
-from . import config, contact_access, store
 
 _STOP = threading.Event()
 _THREAD: threading.Thread | None = None
-_LOCK = threading.Lock()
+_THREAD_LOCK = threading.Lock()
 
 
-def _first(values) -> str:
-    if isinstance(values, str):
-        return values.strip()
-    return str(next((item for item in values or [] if item), "")).strip()
+def queue_resume(candidate_id: int, resume_id: int, user_id: str) -> str:
+    """Queue only a stored resume with trusted contact details."""
+    owner = str(user_id or "local")
+    route = store.get_candidate_ats_route(candidate_id, owner) or {}
+    if route.get("destination") != "ceipal":
+        return "disabled"
+    eligibility = dict(route.get("eligibility") or {})
+    previous = eligibility.get("ceipal_upload") or {}
+    if previous.get("state") in {"uploaded_to_ceipal", "already_in_ceipal"}:
+        return "uploaded" if previous["state"] == "uploaded_to_ceipal" else "already_in_ceipal"
+    candidate = store.get_candidate(candidate_id)
+    projected = contact_access.project_candidate(candidate or {})
+    if not projected.get("contacts_trusted") or not (
+        projected.get("emails") or projected.get("phones")
+    ):
+        return "waiting_for_contact"
+    existing = store.get_ceipal_delivery(candidate_id, owner) or {}
+    if existing.get("status") in {"uploaded", "already_in_ceipal", "indeterminate"}:
+        return str(existing["status"])
+    if existing.get("status") in {"processing", "writing"}:
+        return "queued"
+    eligibility["ceipal_upload"] = {"state": "queued", "checked": False}
+    store.set_candidate_ats_route(candidate_id, owner, "ceipal", eligibility)
+    store.enqueue_ceipal_delivery(candidate_id, resume_id, owner)
+    return "queued"
 
 
-def _note(candidate: dict, label: str) -> str:
-    match = re.search(
-        rf"(?im)^\s*{re.escape(label)}\s*:\s*([^\r\n]+)",
-        str(candidate.get("notes") or ""),
-    )
-    return " ".join(match.group(1).split()) if match else ""
+def upload_candidate(candidate_id: int, user_id: str) -> str:
+    candidate = store.get_candidate(candidate_id)
+    if not candidate:
+        return "failed"
+    owner = str(user_id or "local")
+    route = store.get_candidate_ats_route(candidate_id, owner) or {}
+    if route.get("destination") != "ceipal":
+        return "disabled"
+    eligibility = dict(route.get("eligibility") or {})
+    previous = eligibility.get("ceipal_upload") or {}
+    if previous.get("state") in {"uploaded_to_ceipal", "already_in_ceipal"}:
+        return "uploaded" if previous.get("state") == "uploaded_to_ceipal" else "already_in_ceipal"
 
-
-def _payload(candidate: dict) -> list[dict]:
     projected = contact_access.project_candidate(candidate)
-    parts = str(candidate.get("name") or "").strip().split()
-    location = str(candidate.get("location") or "").split(",", 1)
-    first_name = parts[0] if parts else ""
-    last_name = parts[-1] if len(parts) > 1 else ""
-    middle_name = " ".join(parts[1:-1]) if len(parts) > 2 else ""
-    return [{
-        "first_name": first_name,
-        "middle_name": middle_name,
-        "last_name": last_name,
-        "email_address": _first(projected.get("emails")),
-        "mobile_number": _first(projected.get("phones")),
-        "address": _first(projected.get("addresses")),
-        "city": location[0].strip() if location else "",
-        "state": location[1].strip() if len(location) > 1 else "",
-        "source": "Medhunt",
-        "job_title": _note(candidate, "Role") or _note(candidate, "Headline"),
-        "skills": _note(candidate, "Specialty"),
-        "primary_skills": _note(candidate, "Specialty"),
-        "additional_comments": f"Enriched by Medhunt; source: {candidate.get('source') or ''}",
-        "filename": "",
-        "resume_content": "",
-    }]
-
-
-def _token() -> str:
-    response = httpx.post(
-        config.CEIPAL_AUTH_URL,
-        json={
-            "email": config.CEIPAL_EMAIL,
-            "password": config.CEIPAL_PASSWORD,
-            "api_key": config.CEIPAL_API_KEY,
-            "json": 1,
-        },
-        timeout=config.CEIPAL_TIMEOUT,
-    )
-    response.raise_for_status()
-    body = response.json()
-    for source in (body, body.get("data") if isinstance(body, dict) else None):
-        if isinstance(source, dict):
-            for key in ("access_token", "token", "auth_token"):
-                if source.get(key):
-                    return str(source[key])
-    raise RuntimeError("CEIPAL authentication returned no token")
+    if not projected.get("contacts_trusted") or not (
+        projected.get("emails") or projected.get("phones")
+    ):
+        return "waiting_for_contact"
+    wireless_phones = [
+        str(item.get("value") or "").strip()
+        for item in projected.get("phone_contacts") or []
+        if isinstance(item, dict)
+        and str(item.get("kind") or "").casefold() in {"wireless", "mobile"}
+    ]
+    payload = {
+        "candidate_id": str(candidate_id),
+        "name": str(candidate.get("canonical_name") or candidate.get("name") or "").strip(),
+        "location": str(candidate.get("location") or "").strip(),
+        "emails": list(projected.get("emails") or []),
+        "phones": list(projected.get("phones") or []),
+        "wireless_phones": list(dict.fromkeys(wireless_phones)),
+    }
+    try:
+        result = healthboard_auth.medhunt_ceipal_candidate(
+            user_id=owner, candidate=payload,
+        )
+        state = str(result.get("state") or "uploaded_to_ceipal")
+        eligibility["ceipal_upload"] = {
+            "state": state,
+            "applicant_id": str(result.get("applicant_id") or ""),
+            "checked": bool(result.get("checked", True)),
+        }
+        store.set_candidate_ats_route(candidate_id, owner, "ceipal", eligibility)
+        return "uploaded" if state == "uploaded_to_ceipal" else state
+    except Exception as exc:
+        eligibility["ceipal_upload"] = {
+            "state": "indeterminate",
+            "error": str(exc)[:240],
+            "checked": False,
+        }
+        store.set_candidate_ats_route(candidate_id, owner, "ceipal", eligibility)
+        logging.getLogger("medhunt.ceipal").warning(
+            "Ceipal upload failed for candidate %s: %s", candidate_id,
+            str(exc)[:240],
+        )
+        return "indeterminate"
 
 
 def process_once() -> dict | None:
-    if not config.CEIPAL_CONFIGURED:
-        return None
     delivery = store.claim_ceipal_delivery()
     if not delivery:
         return None
-    candidate_id = int(delivery["candidate_id"])
-    attempts = int(delivery.get("attempts") or 1)
+    delivery_id = int(delivery["id"])
+    lease_until = float(delivery["lease_until"])
+    if not store.mark_ceipal_delivery_writing(delivery_id, lease_until):
+        return {"status": "indeterminate", "delivery_id": delivery_id}
     try:
-        candidate = store.get_candidate(candidate_id)
-        route = store.get_candidate_delivery_route(candidate_id)
-        if not candidate or not route or not route.get("ceipal_enabled"):
-            store.finish_ceipal_delivery(candidate_id, "cancelled")
-            return {"status": "cancelled", "candidate_id": candidate_id}
-        response = httpx.post(
-            config.CEIPAL_CANDIDATE_URL,
-            json=_payload(candidate),
-            headers={"Authorization": f"Bearer {_token()}"},
-            timeout=config.CEIPAL_TIMEOUT,
-        )
-        response.raise_for_status()
-        store.finish_ceipal_delivery(candidate_id, "succeeded")
-        return {"status": "succeeded", "candidate_id": candidate_id}
+        result = upload_candidate(int(delivery["candidate_id"]), str(delivery["user_id"]))
+        status = result if result in {"uploaded", "already_in_ceipal"} else "indeterminate"
+        store.finish_ceipal_delivery(delivery_id, lease_until, status)
+        return {"status": status, "delivery_id": delivery_id}
     except Exception as exc:
-        if attempts >= config.CEIPAL_MAX_ATTEMPTS:
-            status, retry_at = "failed", 0
-        else:
-            status = "retry"
-            retry_at = time.time() + min(300.0, float(2 ** min(attempts, 8)))
         store.finish_ceipal_delivery(
-            candidate_id, status, error=f"{type(exc).__name__}: {exc}", retry_at=retry_at,
+            delivery_id, lease_until, "indeterminate", type(exc).__name__,
         )
-        return {"status": status, "candidate_id": candidate_id}
-
-
-def queue_candidate(candidate_id: int) -> dict | None:
-    if not config.CEIPAL_CONFIGURED:
-        return None
-    route = store.get_candidate_delivery_route(candidate_id)
-    if not route or not route.get("ceipal_enabled"):
-        return None
-    return store.enqueue_ceipal_delivery(candidate_id)
+        logging.getLogger("medhunt.ceipal").exception("CEIPAL delivery worker failed")
+        return {"status": "indeterminate", "delivery_id": delivery_id}
 
 
 def _run() -> None:
     while not _STOP.is_set():
-        if process_once() is None:
-            _STOP.wait(config.CEIPAL_WORKER_INTERVAL_SECONDS)
+        try:
+            processed = process_once()
+        except Exception:
+            logging.getLogger("medhunt.ceipal").exception("CEIPAL delivery dispatcher failed")
+            processed = None
+        if processed is None:
+            _STOP.wait(3.0)
 
 
 def start() -> None:
     global _THREAD
-    if not config.CEIPAL_CONFIGURED:
+    if not (config.MEDHUNT_HEALTHBOARD_SERVICE_TOKEN and healthboard_auth.enabled()):
         return
-    with _LOCK:
+    with _THREAD_LOCK:
         if _THREAD and _THREAD.is_alive():
             return
         _STOP.clear()
@@ -139,9 +143,11 @@ def start() -> None:
 
 def stop(timeout: float = 5.0) -> None:
     global _THREAD
-    with _LOCK:
+    with _THREAD_LOCK:
         thread = _THREAD
         _STOP.set()
     if thread and thread.is_alive():
-        thread.join(timeout)
-    _THREAD = None
+        thread.join(max(0.0, float(timeout)))
+    with _THREAD_LOCK:
+        if _THREAD is thread and (not thread or not thread.is_alive()):
+            _THREAD = None

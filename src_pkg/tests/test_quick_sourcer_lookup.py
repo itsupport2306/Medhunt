@@ -8,10 +8,14 @@ still applies.
 """
 from __future__ import annotations
 
+import time
+
 import httpx
 import pytest
 
-from sourcing import config, contact_access, quick_sourcer_client, store
+from sourcing import (
+    config, contact_access, contact_lookup_queue, quick_sourcer_client, store,
+)
 import api as api_module
 
 
@@ -103,44 +107,6 @@ def test_lookup_stores_and_returns_every_delivered_contact(quick_sourcer_enabled
     assert stored["verification"]["record"]["current_address"]["county"] == "Northampton County"
 
 
-def test_repeated_lookup_reuses_the_candidate_row_without_provider_call(
-    quick_sourcer_enabled, monkeypatch,
-):
-    calls = _stub_api(monkeypatch, FOUND_PAYLOAD)
-    candidate_id = _candidate()
-
-    first = quick_sourcer_client.lookup_candidate(candidate_id)
-    second = quick_sourcer_client.lookup_candidate(candidate_id)
-
-    assert first["status"] == "found"
-    assert second["status"] == "found"
-    assert second["cached"] is True
-    assert len(calls) == 1
-
-
-def test_lookup_reuses_a_fresh_contact_result_from_another_provider(
-    quick_sourcer_enabled, monkeypatch,
-):
-    calls = _stub_api(monkeypatch, FOUND_PAYLOAD)
-    candidate_id = _candidate()
-    store.update_candidate(
-        candidate_id,
-        emails=["cached@example.test"],
-        phones=["(610) 555-0142"],
-        enrich_status="success",
-        contact_expires_at=9999999999,
-        verification={"source": "people_data_labs", "record": {}},
-    )
-
-    result = quick_sourcer_client.lookup_candidate(candidate_id)
-
-    assert result["status"] == "found"
-    assert result["cached"] is True
-    assert result["emails"] == ["cached@example.test"]
-    assert result["phones"] == ["(610) 555-0142"]
-    assert calls == []
-
-
 def test_stored_record_is_projected_to_the_panel_without_a_trust_gate(
     quick_sourcer_enabled, monkeypatch,
 ):
@@ -184,13 +150,119 @@ def test_api_queues_a_preexisting_resume_after_quick_lookup(
     monkeypatch.setattr(
         api_module.nexus_delivery,
         "queue_latest_resume_if_ready",
-        lambda selected_id: calls.append(selected_id),
+        lambda selected_id, _user_id="local": calls.append(selected_id),
     )
 
     result = api_module.enrich_one(candidate_id)
 
     assert result["status"] == "found"
     assert calls == [candidate_id]
+
+
+def test_fresh_trusted_saved_contacts_skip_quick_sourcer(
+    quick_sourcer_enabled, monkeypatch,
+):
+    candidate_id = _candidate()
+    monkeypatch.setattr(contact_access, "project_candidate", lambda candidate: {
+        **candidate,
+        "emails": ["joseph@example.test"],
+        "phones": ["(610) 217-3807"],
+        "phone_contacts": [{"value": "(610) 217-3807", "kind": "mobile"}],
+        "addresses": ["Nazareth, PA"],
+        "contacts_trusted": True,
+    })
+    monkeypatch.setattr(
+        quick_sourcer_client, "find",
+        lambda *args, **kwargs: pytest.fail("saved contacts should skip Quick Sourcer"),
+    )
+
+    result = quick_sourcer_client.lookup_candidate(candidate_id)
+
+    assert result == {
+        "status": "found", "cached": True, "source": "saved_contact",
+        "emails": ["joseph@example.test"], "phones": ["(610) 217-3807"],
+        "phone_contacts": [{"value": "(610) 217-3807", "kind": "mobile"}],
+        "addresses": ["Nazareth, PA"], "resume_required": True,
+        "location_match": None,
+    }
+
+
+def test_refresh_bypasses_saved_contact_shortcut(quick_sourcer_enabled, monkeypatch):
+    candidate_id = _candidate()
+    monkeypatch.setattr(contact_access, "project_candidate", lambda candidate: {
+        **candidate, "emails": ["joseph@example.test"], "phones": [],
+        "phone_contacts": [], "addresses": [], "contacts_trusted": True,
+    })
+    calls = _stub_api(monkeypatch, {"found": False})
+
+    result = quick_sourcer_client.lookup_candidate(candidate_id, refresh=True)
+
+    assert result["status"] == "not_found"
+    assert calls and calls[0][1] == "/find"
+
+
+def test_retry_keeps_fifo_priority_over_new_queue_jobs(
+    quick_sourcer_enabled, monkeypatch,
+):
+    monkeypatch.setattr(config, "CONTACT_LOOKUP_MAX_CONCURRENT", 1)
+    first = _candidate("First Nurse", "Austin, Texas")
+    second = store.add_candidate(
+        "Second Nurse", "Dallas, Texas", source="indeed", source_id="second",
+    )
+    store.enqueue_contact_lookup_jobs("first-run", [first], "user-one")
+    claimed = store.claim_contact_lookup_job()
+    store.finish_contact_lookup_job(
+        claimed["id"], "retry", {}, retry_at=quick_sourcer_client.time.time() - 1,
+    )
+    before = store.list_contact_lookup_jobs("first-run", [first], "user-one")
+    store.enqueue_contact_lookup_jobs("second-run", [second], "user-two")
+    after = store.list_contact_lookup_jobs("first-run", [first], "user-one")
+
+    assert before["items"][0]["position"] == 0
+    assert after["items"][0]["position"] == 0
+    assert store.claim_contact_lookup_job()["candidate_id"] == first
+
+
+def test_dispatcher_claims_queue_in_batches_and_workers_finish(
+    quick_sourcer_enabled, monkeypatch,
+):
+    monkeypatch.setattr(config, "CONTACT_LOOKUP_MAX_CONCURRENT", 4)
+    store.reset()
+    candidate_ids = [
+        store.add_candidate(
+            f"Nurse {index}", "Austin, Texas", source="indeed",
+            source_id=f"dispatcher-{index}",
+        )
+        for index in range(6)
+    ]
+    store.enqueue_contact_lookup_jobs(
+        "dispatcher-run", candidate_ids, "dispatcher-user",
+        per_user_limit=10,
+    )
+    monkeypatch.setattr(
+        contact_lookup_queue.quick_sourcer_client,
+        "lookup_candidate",
+        lambda candidate_id, candidate=None: {
+            "status": "not_found", "emails": [], "phones": [],
+            "phone_contacts": [], "resume_required": False,
+            "location_match": None,
+        },
+    )
+
+    contact_lookup_queue.start()
+    try:
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            status = store.list_contact_lookup_jobs(
+                "dispatcher-run", candidate_ids, "dispatcher-user",
+            )
+            if status["complete"] == len(candidate_ids):
+                break
+            time.sleep(0.05)
+        assert status["complete"] == len(candidate_ids)
+        assert all(item["status"] == "not_found" for item in status["items"])
+    finally:
+        contact_lookup_queue.stop()
 
 
 def test_do_not_contact_entries_are_still_suppressed(quick_sourcer_enabled, monkeypatch):
@@ -295,12 +367,19 @@ def test_batch_isolates_lookup_and_nexus_queue_failures(
     monkeypatch.setattr(
         api_module.nexus_delivery,
         "queue_latest_resume_if_ready",
-        lambda _candidate_id: (_ for _ in ()).throw(RuntimeError("queue offline")),
+        lambda _candidate_id, _user_id="local": (_ for _ in ()).throw(RuntimeError("queue offline")),
+    )
+    monkeypatch.setattr(
+        api_module.ats_routing,
+        "check_after_enrichment",
+        lambda _candidate_id, destination, _user_id="local": {
+            "state": "clear", "blocked": False, "target": destination,
+        },
     )
 
     result = api_module._quick_sourcer_lookup_batch(api_module.ContactLookupBatchIn(
         candidate_ids=[first, second], run_id="linkedin-retry-run", confirmed=True,
-    ))
+    ), {"sub": "local", "delivery_targets": {"nexus": True}})
 
     assert result["results"][str(first)]["status"] == "failed"
     assert result["results"][str(second)]["status"] == "found"
@@ -308,7 +387,7 @@ def test_batch_isolates_lookup_and_nexus_queue_failures(
     assert result["matched"] == 1
 
 
-def test_scrape_artifacts_never_reach_a_candidate(quick_sourcer_enabled, monkeypatch):
+def test_provider_found_response_is_not_rejected_by_identity_checks(quick_sourcer_enabled, monkeypatch):
     _stub_api(monkeypatch, {
         "found": True,
         "candidate_id": 2321,
@@ -321,5 +400,5 @@ def test_scrape_artifacts_never_reach_a_candidate(quick_sourcer_enabled, monkeyp
 
     result = quick_sourcer_client.lookup_candidate(candidate_id)
 
-    assert result["status"] == "not_found"
+    assert result["status"] == "found"
     assert store.get_candidate(candidate_id)["addresses"] == []

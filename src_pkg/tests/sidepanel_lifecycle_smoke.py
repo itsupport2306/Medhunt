@@ -33,13 +33,7 @@ MOCK_SCRIPT = r"""() => {
   const state = window.__panelTest = {
     activeId: 1,
     instanceId: `panel-${Date.now()}-${Math.random()}`,
-    local: {
-      medhuntProfileDataConsentV1: true,
-      medhuntHealthBoardSession: {
-        extension_token: 'offline-test-token',
-        user: { id: 'offline-user', name: 'Offline Tester', email: 'offline@example.test' },
-      },
-    },
+    local: { medhuntProfileDataConsentV1: true },
     sentRuntime: [],
     scanCalls: {},
     fetchPaths: [],
@@ -221,7 +215,7 @@ MOCK_SCRIPT = r"""() => {
     if (!callback) throw new Error('No pending resume request');
     callback({
       ok: true,
-      adapter_revision: 'indeed-capture-v6',
+      adapter_revision: 'indeed-capture-v5',
       base64: 'JVBERi0xLjQKJSVFT0YK',
       contentType: 'application/pdf',
       candidate: 'Riley Resume',
@@ -232,11 +226,7 @@ MOCK_SCRIPT = r"""() => {
     const url = new URL(String(input), 'http://127.0.0.1');
     state.fetchPaths.push(url.pathname);
     let payload = {};
-    if (url.pathname === '/auth/config') {
-      payload = { enabled: true, provider: 'healthboard' };
-    } else if (url.pathname === '/auth/me') {
-      payload = { user: { id: 'offline-user', name: 'Offline Tester', email: 'offline@example.test' } };
-    } else if (url.pathname === '/health') {
+    if (url.pathname === '/health') {
       payload = { status: 'ok', mode: 'live', database: 'sqlite' };
     } else if (url.pathname === '/session') {
       payload = { status: 'ok' };

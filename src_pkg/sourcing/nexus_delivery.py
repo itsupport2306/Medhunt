@@ -7,8 +7,10 @@ import threading
 import time
 
 from . import (
+    ats_routing,
     config,
     contact_access,
+    healthboard_auth,
     nexus_sync,
     phone_policy,
     resume_enrichment,
@@ -40,7 +42,24 @@ _CLINICAL_ROLE_RE = re.compile(
 )
 
 
-def queue_latest_resume_if_ready(candidate_id: int) -> dict | None:
+def worker_enabled() -> bool:
+    return bool(
+        config.NEXUS_SYNC_ENABLED
+        or (healthboard_auth.enabled() and config.MEDHUNT_HEALTHBOARD_SERVICE_TOKEN)
+    )
+
+
+def enabled_for(user_id: str) -> bool:
+    if config.NEXUS_SYNC_ENABLED:
+        return True
+    try:
+        values = healthboard_auth.organization_ats_configuration(user_id, "nexus")
+        return bool(values and values.get("_configured", True))
+    except Exception:
+        return False
+
+
+def queue_latest_resume_if_ready(candidate_id: int, user_id: str = "local") -> dict | None:
     """Queue a pre-existing latest resume after contacts become deliverable.
 
     Indeed normally captures the resume after enrichment, but recruiter uploads
@@ -48,20 +67,23 @@ def queue_latest_resume_if_ready(candidate_id: int) -> dict | None:
     without sending every historical version or weakening the trusted-contact
     gate used by normal capture-time delivery.
     """
-    if not config.NEXUS_SYNC_ENABLED:
+    if not enabled_for(user_id):
         return None
-    route = store.get_candidate_delivery_route(int(candidate_id))
-    if not route or not bool(route.get("nexus_enabled")):
+    # New extension lookups normally capture the resume after enrichment. Most
+    # candidates therefore have no stored resume at this point; check that in
+    # one query before doing route, contact-trust, and DNC work.
+    resumes = store.list_resumes(int(candidate_id))
+    if not resumes:
         return None
     candidate = store.get_candidate(int(candidate_id))
+    route = ats_routing.stored(candidate or {}, user_id)
+    if route.get("destination") != "nexus":
+        return None
     projected = contact_access.project_candidate(candidate)
     if not (
         projected.get("contacts_trusted") is True
         and (projected.get("emails") or projected.get("phones"))
     ):
-        return None
-    resumes = store.list_resumes(int(candidate_id))
-    if not resumes:
         return None
     latest = resumes[0]
     if int(latest.get("size") or 0) > config.NEXUS_MAX_RESUME_BYTES:
@@ -70,10 +92,11 @@ def queue_latest_resume_if_ready(candidate_id: int) -> dict | None:
         int(candidate_id),
         int(latest["id"]),
         str(latest.get("checksum_sha256") or ""),
+        requested_by=user_id,
     )
 
 
-def _role(candidate: dict) -> str:
+def _role(candidate: dict, extraction: dict | None = None) -> str:
     """Choose a clinical role without mistaking an employer for a title.
 
     Platform markup occasionally labels the employer as both ``Headline`` and
@@ -83,8 +106,14 @@ def _role(candidate: dict) -> str:
     last resort; Nexus will map an unrecognized value to its tenant-approved
     Unknown classification rather than guessing.
     """
+    accepted = (
+        extraction.get("accepted")
+        if isinstance(extraction, dict) and isinstance(extraction.get("accepted"), dict)
+        else {}
+    )
     values = [
         candidate.get("job_title"), candidate.get("role"), candidate.get("title"),
+        accepted.get("job_title"),
         *(source_context.extract(candidate).get("roles") or []),
     ]
     cleaned = []
@@ -126,9 +155,6 @@ def _payload(delivery: dict, candidate: dict, resume: dict) -> dict:
     latest = phone_policy.latest_phone_detail(projected)
     if latest:
         projected["latest_phone"] = latest["value"]
-    role = _role(candidate)
-    if role:
-        projected["job_title"] = role
     link = store.get_nexus_candidate_link(delivery.get("identity_key") or "")
     extraction_row = store.get_resume_extraction(
         resume.get("id"), candidate.get("id"),
@@ -137,6 +163,9 @@ def _payload(delivery: dict, candidate: dict, resume: dict) -> dict:
         extraction_row.get("extraction")
         if isinstance(extraction_row, dict) else {}
     )
+    role = _role(candidate, extraction)
+    if role:
+        projected["job_title"] = role
     return {
         "candidate": projected,
         # This is the local parser's bounded structured projection, never the
@@ -161,9 +190,38 @@ def _retry_at(delivery: dict, error: nexus_sync.NexusRetryableError) -> float:
     return time.time() + min(300.0, float(2 ** min(attempts, 8)))
 
 
+def _delivery_settings(user_id: str) -> nexus_sync.NexusSettings:
+    """Prefer the recruiter's organization connection, then backend defaults."""
+    values = healthboard_auth.organization_ats_configuration(user_id, "nexus")
+    if values.get("_managed") and not values.get("_configured"):
+        return nexus_sync.NexusSettings(enabled=False)
+    if not values:
+        return nexus_sync.NexusSettings.from_config()
+    return nexus_sync.NexusSettings(
+        enabled=True,
+        base_url=str(values.get("base_url") or "").rstrip("/"),
+        auth_method=str(values.get("auth_method") or "password").casefold(),
+        token_url=str(values.get("token_url") or ""),
+        token_payload_style=str(values.get("token_payload_style") or "form").casefold(),
+        client_id=str(values.get("client_id") or ""),
+        client_secret=str(values.get("client_secret") or ""),
+        username=str(values.get("username") or ""),
+        password=str(values.get("password") or ""),
+        static_token=str(values.get("static_token") or ""),
+        org_code=str(values.get("org_code") or ""),
+        token_basic=str(values.get("token_basic") or ""),
+        resume_doc_type_id=str(values.get("resume_doc_type_id") or ""),
+        default_profile=dict(values.get("default_profile") or {}),
+        timeout_seconds=config.NEXUS_TIMEOUT,
+        connect_timeout_seconds=config.NEXUS_CONNECT_TIMEOUT,
+        master_cache_seconds=config.NEXUS_MASTER_CACHE_SECONDS,
+        max_resume_bytes=config.NEXUS_MAX_RESUME_BYTES,
+    )
+
+
 def process_once() -> dict | None:
     """Process at most one leased outbox row; return a non-PII status summary."""
-    if not config.NEXUS_SYNC_ENABLED:
+    if not worker_enabled():
         return None
     delivery = store.claim_nexus_delivery(
         lease_seconds=config.NEXUS_LEASE_SECONDS,
@@ -184,29 +242,19 @@ def process_once() -> dict | None:
                 operation="local_storage",
                 code="local_record_missing",
             )
-        source_pdf = _resume_bytes(resume)
-        extraction_row = store.get_resume_extraction(
-            int(resume["id"]), int(candidate["id"]),
+        route = ats_routing.stored(
+            candidate, str(delivery.get("requested_by") or "local"),
         )
-        try:
-            source_pdf, extraction, _resume_name = resume_enrichment.prepare_candidate_resume(
-                source_pdf, candidate,
-                extraction_row.get("extraction") if extraction_row else None,
-            )
-        except resume_enrichment.ContactSheetRefreshError as exc:
+        if route.get("destination") != "nexus":
             raise nexus_sync.NexusPermanentError(
-                "Stored contact page could not be removed safely.",
-                operation="payload_validation",
-                code="resume_contact_refresh_failed",
-            ) from exc
-        if not extraction_row or extraction_row.get("extraction") != extraction:
-            store.save_resume_extraction(
-                int(resume["id"]), int(candidate["id"]), extraction,
+                "Candidate is assigned to Ceipal.",
+                operation="ats_routing",
+                code="candidate_assigned_to_ceipal",
             )
         payload = _payload(delivery, candidate, resume)
         try:
             resume_pdf, _ = resume_enrichment.refresh_contact_sheet(
-                source_pdf, payload["candidate"],
+                _resume_bytes(resume), payload["candidate"],
             )
         except resume_enrichment.ContactSheetRefreshError as exc:
             raise nexus_sync.NexusPermanentError(
@@ -228,7 +276,9 @@ def process_once() -> dict | None:
                 )
 
         result = nexus_sync.process_delivery(
-            payload, resume_pdf, before_write=before_write,
+            payload, resume_pdf,
+            settings=_delivery_settings(str(delivery.get("requested_by") or "")),
+            before_write=before_write,
         )
         nexus_candidate_id = str(result.get("nexus_candidate_id") or "").strip()
         if not nexus_candidate_id:
@@ -313,7 +363,7 @@ def _run() -> None:
 
 def start() -> None:
     global _THREAD
-    if not config.NEXUS_SYNC_ENABLED:
+    if not worker_enabled():
         return
     with _THREAD_LOCK:
         if _THREAD and _THREAD.is_alive():

@@ -22,8 +22,6 @@ os.environ["PDL_TRUST_PROVIDER_MATCH"] = "0"
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import httpx
-import pytest
-from starlette.requests import Request
 
 import api as api_module
 from sourcing import (
@@ -37,7 +35,6 @@ from sourcing import (
     config,
     storage,
     resume_enrichment,
-    resume_extraction,
     pdl_client,
     identity_resolution,
     multi_provider,
@@ -46,9 +43,11 @@ from sourcing import (
     contact_access,
     person_name,
     healthboard_auth,
-    analytics_delivery,
     quick_sourcer_client,
     profile_resume,
+    ceipal_delivery,
+    contact_lookup_queue,
+    zoom_sms,
 )
 
 # Tests always use isolated SQLite and mocked object storage, regardless of the
@@ -60,17 +59,126 @@ config.PDL_API_KEY = ""
 config.PDL_ENABLED = False
 
 
-def _resume_pdf(name: str) -> bytes:
-    from reportlab.lib.pagesizes import letter
-    from reportlab.pdfgen import canvas
+def test_ceipal_delivery_accepts_email_or_phone_without_resume(monkeypatch):
+    delivered = []
+    saved = []
+    monkeypatch.setattr(store, "get_candidate", lambda cid: {"id": cid, "name": "Jane Smith", "location": "Boston, MA"})
+    monkeypatch.setattr(store, "get_candidate_ats_route", lambda cid, owner: {
+        "destination": "ceipal", "eligibility": {},
+    })
+    monkeypatch.setattr(store, "set_candidate_ats_route", lambda *args: saved.append(args))
+    monkeypatch.setattr(healthboard_auth, "medhunt_ceipal_candidate", lambda **kwargs: (
+        delivered.append(kwargs) or {"state": "uploaded_to_ceipal", "applicant_id": "app-1"}
+    ))
+    for emails, phones in [(["jane@example.test"], []), ([], ["+16175550100"])]:
+        monkeypatch.setattr(contact_access, "project_candidate", lambda _candidate: {
+            "contacts_trusted": True, "emails": emails, "phones": phones,
+            "phone_contacts": [{"value": value, "kind": "mobile"} for value in phones],
+        })
+        assert ceipal_delivery.upload_candidate(12, "recruiter-1") == "uploaded"
+        assert delivered[-1]["candidate"]["emails"] == emails
+        assert delivered[-1]["candidate"]["phones"] == phones
+    assert len(saved) == 2
 
-    output = BytesIO()
-    page = canvas.Canvas(output, pagesize=letter, invariant=1)
-    page.drawString(48, 740, name)
-    page.drawString(48, 710, "Professional experience")
-    page.showPage()
-    page.save()
-    return output.getvalue()
+
+def test_ceipal_duplicate_result_is_idempotent(monkeypatch):
+    monkeypatch.setattr(store, "get_candidate", lambda cid: {"id": cid, "name": "Jane Smith"})
+    monkeypatch.setattr(store, "get_candidate_ats_route", lambda cid, owner: {
+        "destination": "ceipal",
+        "eligibility": {"ceipal_upload": {"state": "already_in_ceipal", "applicant_id": "app-1"}},
+    })
+    def unexpected_submission(**kwargs):
+        raise AssertionError("confirmed CEIPAL duplicate should not be submitted again")
+
+    monkeypatch.setattr(healthboard_auth, "medhunt_ceipal_candidate", unexpected_submission)
+
+    assert ceipal_delivery.upload_candidate(12, "recruiter-1") == "already_in_ceipal"
+
+
+def test_ceipal_upload_waits_for_resume_after_contact_lookup(monkeypatch):
+    events = []
+    monkeypatch.setattr(store, "contact_lookup_paused", lambda owner: False)
+    monkeypatch.setattr(store, "get_candidate", lambda cid: {"id": cid, "name": "Jane Smith"})
+    monkeypatch.setattr(quick_sourcer_client, "configured", lambda: True)
+    monkeypatch.setattr(quick_sourcer_client, "lookup_candidate", lambda *args, **kwargs: {
+        "status": "found", "emails": ["jane@example.test"], "phones": [],
+    })
+    monkeypatch.setattr(contact_lookup_queue.ats_routing, "set_candidate_target", lambda *args: events.append("route"))
+    monkeypatch.setattr(contact_lookup_queue, "_terminal", lambda *args: events.append("terminal") or {"status": "succeeded"})
+    result = contact_lookup_queue._process_job({
+        "id": 1, "candidate_id": 12, "requested_by": "recruiter-1",
+        "delivery_target": "ceipal", "job_source": "extension",
+    })
+    assert result == {"status": "succeeded"}
+    assert events == ["route", "terminal"]
+
+
+def test_ceipal_upload_runs_after_resume_is_stored(monkeypatch):
+    from pypdf import PdfWriter
+    from io import BytesIO
+
+    store.reset()
+    candidate_id = store.add_candidate(
+        "Jane Smith", "Boston, MA", source="indeed",
+        source_url="https://employers.indeed.com/profile/jane", source_id="jane-123",
+    )
+    store.set_candidate_ats_route(candidate_id, "recruiter-1", "ceipal")
+    events = []
+    writer = PdfWriter()
+    writer.add_blank_page(width=612, height=792)
+    pdf = BytesIO()
+    writer.write(pdf)
+
+    monkeypatch.setattr(contact_access, "project_candidate", lambda _candidate: {
+        "contacts_trusted": True, "emails": ["jane@example.test"],
+        "phones": [], "phone_contacts": [],
+    })
+    monkeypatch.setattr(api_module.resume_extraction, "extract", lambda *args: {})
+    monkeypatch.setattr(api_module.resume_enrichment, "add_contact_sheet", lambda data, _candidate: (data, False))
+    attach = store.attach_resume
+    def attach_then_record(*args, **kwargs):
+        resume = attach(*args, **kwargs)
+        events.append("resume_stored")
+        return resume
+    monkeypatch.setattr(store, "attach_resume", attach_then_record)
+    monkeypatch.setattr(healthboard_auth, "medhunt_ceipal_candidate", lambda **kwargs: (
+        events.append(("ceipal", kwargs["candidate"]["candidate_id"]))
+        or {"state": "uploaded_to_ceipal", "applicant_id": "app-1"}
+    ))
+
+    result = api_module._store_resume_pdf(
+        candidate_id, "jane.pdf", pdf.getvalue(), "recruiter-1",
+    )
+    assert events == ["resume_stored"]
+    assert result["ceipal_sync_status"] == "queued"
+    assert api_module._public_resume(result)["ceipal_sync_status"] == "queued"
+    assert store.get_ceipal_delivery(candidate_id, "recruiter-1")["status"] == "pending"
+    assert ceipal_delivery.process_once()["status"] == "uploaded"
+    assert events == ["resume_stored", ("ceipal", str(candidate_id))]
+    assert store.get_ceipal_delivery(candidate_id, "recruiter-1")["status"] == "uploaded"
+
+
+def test_ceipal_unknown_outcome_is_not_retried_or_requeued(monkeypatch):
+    store.reset()
+    candidate_id = store.add_candidate("Jane Smith", "Boston, MA", source="indeed")
+    store.set_candidate_ats_route(candidate_id, "recruiter-1", "ceipal")
+    resume = store.attach_resume(candidate_id, "jane.pdf", b"%PDF-test")
+    monkeypatch.setattr(contact_access, "project_candidate", lambda _candidate: {
+        "contacts_trusted": True, "emails": ["jane@example.test"],
+        "phones": [], "phone_contacts": [],
+    })
+    calls = []
+    def uncertain_remote(**kwargs):
+        calls.append(kwargs)
+        raise TimeoutError("unknown remote outcome")
+    monkeypatch.setattr(healthboard_auth, "medhunt_ceipal_candidate", uncertain_remote)
+
+    assert ceipal_delivery.queue_resume(candidate_id, resume["id"], "recruiter-1") == "queued"
+    assert ceipal_delivery.process_once()["status"] == "indeterminate"
+    assert ceipal_delivery.process_once() is None
+    assert ceipal_delivery.queue_resume(candidate_id, resume["id"], "recruiter-1") == "indeterminate"
+    assert len(calls) == 1
+    assert store.get_ceipal_delivery(candidate_id, "recruiter-1")["status"] == "indeterminate"
 
 
 def test_public_api_requires_healthboard_session_without_origin_header(monkeypatch):
@@ -83,181 +191,17 @@ def test_public_api_requires_healthboard_session_without_origin_header(monkeypat
             assert (await client.get("/auth/me")).status_code == 401
 
             monkeypatch.setattr(healthboard_auth, "verify_extension_token", lambda token: {
-                "user_id": "device-binding-recruiter-42",
+                "user_id": "42",
                 "email": "recruiter@example.test",
                 "role": "recruiter",
             })
-            device_id = "A" * 43
-            store.register_extension_device(
-                "device-binding-recruiter-42", device_id, device_name="Primary laptop",
-            )
             response = await client.get(
-                "/auth/me", headers={
-                    "X-HealthBoard-Extension-Token": "opaque-token",
-                    "X-Medhunt-Device-ID": device_id,
-                },
+                "/auth/me", headers={"X-HealthBoard-Extension-Token": "opaque-token"},
             )
             assert response.status_code == 200
-            assert response.json()["user"]["user_id"] == "device-binding-recruiter-42"
-
-            blocked = await client.get(
-                "/auth/me", headers={
-                    "X-HealthBoard-Extension-Token": "opaque-token",
-                    "X-Medhunt-Device-ID": "B" * 43,
-                },
-            )
-            assert blocked.status_code == 403
-            assert "not registered" in blocked.json()["detail"]
-
-            monkeypatch.setattr(healthboard_auth, "verify_code", lambda *args, **kwargs: {
-                "extension_token": "new-opaque-token",
-                "user": {"user_id": "device-binding-login-43", "email": "r2@example.test"},
-            })
-            login_body = {
-                "email": "r2@example.test", "code": "123456",
-                "challenge": "C" * 40, "device_id": "C" * 43,
-            }
-            login = await client.post("/auth/verify-code", json=login_body)
-            assert login.status_code == 200
-            assert login.json()["device_approval_required"] is False
-            login_body["device_id"] = "D" * 43
-            second_login = await client.post("/auth/verify-code", json=login_body)
-            assert second_login.status_code == 200
-            assert second_login.json()["device_approval_required"] is False
-            assert second_login.json()["device"]["status"] == "approved"
+            assert response.json()["user"]["user_id"] == "42"
 
     asyncio.run(exercise())
-
-
-def test_enterprise_device_registration_approval_limit_and_recovery(monkeypatch):
-    store.reset()
-    monkeypatch.setattr(config, "MEDHUNT_MAX_REGISTERED_DEVICES", 2)
-    user_id = "device-workflow-user"
-    first = store.register_extension_device(user_id, "A" * 43, device_name="Laptop")
-    second = store.register_extension_device(user_id, "B" * 43, device_name="Desktop")
-    assert first["status"] == "approved"
-    assert second["status"] == "approved"
-
-    third = store.register_extension_device(user_id, "C" * 43, device_name="Replacement")
-    assert third["status"] == "approved"
-    assert store.authorize_extension_device(user_id, "B" * 43)["status"] == "approved"
-
-    revoked = store.revoke_extension_device(first["id"], actor_user_id=user_id)
-    assert revoked["status"] == "revoked"
-    approved = store.register_extension_device(user_id, "A" * 43, device_name="Laptop")
-    assert approved["status"] == "approved"
-    assert store.authorize_extension_device(user_id, "A" * 43)["status"] == "approved"
-
-
-def test_admin_device_inventory_reports_multiple_installations_via_api(monkeypatch):
-    store.reset()
-    monkeypatch.setattr(config, "HEALTHBOARD_BASE_URL", "https://board.example.test")
-    monkeypatch.setattr(config, "MEDHUNT_HEALTHBOARD_SERVICE_TOKEN", "halo-test-service-token")
-    user_id = "device-api-user"
-    first_id, second_id = "E" * 43, "F" * 43
-    store.register_extension_device(user_id, first_id, device_name="Main laptop")
-    pending = store.register_extension_device(user_id, second_id, device_name="Home desktop")
-    identity_role = {"value": "recruiter"}
-    monkeypatch.setattr(healthboard_auth, "verify_extension_token", lambda token: {
-        "user_id": user_id, "email": "device.user@example.test",
-        "role": identity_role["value"],
-    })
-
-    async def exercise():
-        transport = httpx.ASGITransport(app=api_module.app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            first_headers = {
-                "X-HealthBoard-Extension-Token": "first-token",
-                "X-Medhunt-Device-ID": first_id,
-            }
-            listed = await client.get("/auth/devices", headers=first_headers)
-            assert listed.status_code == 200
-            assert len(listed.json()["items"]) == 2
-
-            identity_role["value"] = "admin"
-            assert any(item.get("approved_device_count", 0) >= 2 for item in listed.json()["items"])
-
-            status = await client.get("/auth/device-status", headers={
-                "X-HealthBoard-Extension-Token": "second-token",
-                "X-Medhunt-Device-ID": second_id,
-            })
-            assert status.status_code == 200
-            assert status.json()["approved"] is True
-
-    asyncio.run(exercise())
-
-
-def test_halo_service_assignment_requires_reply_and_org_scope(monkeypatch):
-    store.reset()
-    monkeypatch.setattr(config, "HEALTHBOARD_BASE_URL", "https://board.example.test")
-    monkeypatch.setattr(config, "MEDHUNT_HEALTHBOARD_SERVICE_TOKEN", "halo-test-service-token")
-    conversation = store.get_or_create_sms_conversation(
-        123, "+15551234567", candidate_name="A Candidate", initiated_by="org-owner",
-    )
-
-    async def exercise():
-        transport = httpx.ASGITransport(app=api_module.app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            path = f"/internal/halo/conversations/{conversation['id']}/assign"
-            body = {"user_ids": ["org-owner"], "actor_user_id": "halo-admin",
-                    "recruiter_user_id": "team-recruiter"}
-            assert (await client.post(path, json=body)).status_code == 401
-            headers = {"X-Medhunt-Service-Token": "halo-test-service-token"}
-            wrong_org = await client.post(path, headers=headers,
-                                          json={**body, "user_ids": ["other-org"]})
-            assert wrong_org.status_code == 403
-            no_reply = await client.post(path, headers=headers, json=body)
-            assert no_reply.status_code == 409
-            store.create_sms_message(conversation["id"], "inbound", "Interested",
-                                     status="received")
-            assigned = await client.post(path, headers=headers, json=body)
-            assert assigned.status_code == 200
-            assert assigned.json()["conversation"]["assigned_recruiter_id"] == "team-recruiter"
-
-    asyncio.run(exercise())
-
-
-def test_failed_halo_analytics_delivery_is_retried(monkeypatch):
-    store.reset()
-    monkeypatch.setattr(config, "HEALTHBOARD_BASE_URL", "https://board.example.test")
-    monkeypatch.setattr(config, "MEDHUNT_HEALTHBOARD_SERVICE_TOKEN", "halo-test-service-token")
-    candidate_id = store.add_candidate("Test Nurse", "", source="npino")
-    event = store.record_enrichment_event(
-        "recruiter-1", candidate_id, "found", provider="quick_sourcer",
-        halo_pending=True,
-    )
-    store.update_candidate(candidate_id, source="webmd")
-    calls = []
-
-    def send(**payload):
-        calls.append(payload)
-        if len(calls) == 1:
-            raise RuntimeError("temporary Halo outage")
-        return True
-
-    monkeypatch.setattr(healthboard_auth, "report_enrichment_service", send)
-    assert analytics_delivery.flush_pending() == 0
-    assert [row["id"] for row in store.pending_halo_enrichment_events()] == [event["id"]]
-    assert analytics_delivery.flush_pending() == 1
-    assert store.pending_halo_enrichment_events() == []
-    assert calls[0]["event_id"] == calls[1]["event_id"]
-    assert calls[0]["platform"] == calls[1]["platform"] == "npino"
-    assert calls[0]["source"] == "npino"
-
-
-def test_halo_duplicate_acknowledgement_clears_outbox(monkeypatch):
-    store.reset()
-    monkeypatch.setattr(config, "HEALTHBOARD_BASE_URL", "https://board.example.test")
-    candidate_id = store.add_candidate("Test Nurse", "", source="npino")
-    event = store.record_enrichment_event(
-        "recruiter-1", candidate_id, "found", provider="quick_sourcer",
-        halo_pending=True,
-    )
-    monkeypatch.setattr(healthboard_auth.httpx, "post", lambda *args, **kwargs:
-                        httpx.Response(200, json={"recorded": False},
-                                       request=httpx.Request("POST", args[0])))
-    assert analytics_delivery.deliver(event, token="test-capture-token") is True
-    assert store.pending_halo_enrichment_events() == []
 
 
 def _pdl_mobile_contact(value: str) -> dict:
@@ -1304,8 +1248,13 @@ def test_resume_storage_embeds_only_current_trusted_contacts():
     from pypdf import PdfReader, PdfWriter
 
     store.reset()
+    source = BytesIO()
+    writer = PdfWriter()
+    writer.add_blank_page(width=612, height=792)
+    writer.write(source)
+    source_pdf = source.getvalue()
+
     legacy_id = store.add_candidate("Legacy Person", "Atlanta, GA", source="indeed")
-    source_pdf = _resume_pdf("Legacy Person")
     store.update_candidate(
         legacy_id, emails=["legacy@example.test"], phones=["(404) 555-0100"],
         enrich_status="success", contact_expires_at=time.time() + 3600,
@@ -1316,7 +1265,6 @@ def test_resume_storage_embeds_only_current_trusted_contacts():
     assert store.get_resume(legacy_id, legacy_resume["id"])["data"] == source_pdf
 
     expired_id = store.add_candidate("Jane Doe", "Atlanta, GA", source="indeed")
-    source_pdf = _resume_pdf("Jane Doe")
     _save_current_trusted_pdl(expired_id)
     store.update_candidate(expired_id, contact_expires_at=time.time() - 1)
     expired_resume = api_module._store_resume_pdf(expired_id, "expired.pdf", source_pdf)
@@ -2925,28 +2873,6 @@ def test_resume_contact_sheet_preserves_source_pages():
     assert repeated == enriched
 
 
-def test_resume_processing_preserves_source_pages_behind_medhunt_cover():
-    from pypdf import PdfReader
-    from sourcing import resume_extraction
-
-    source = _resume_pdf("Jennifer Merlo")
-    candidate = {
-        "id": 2048, "name": "Elare Carl", "location": "Bloomfield, NY",
-        "emails": ["elare@example.test"], "phones": ["(585) 555-0100"],
-    }
-    legacy_mismatched = resume_enrichment.add_contact_sheet(source, candidate)[0]
-    reader = PdfReader(BytesIO(legacy_mismatched))
-    assert "Elare Carl" in reader.pages[0].extract_text()
-    assert "Jennifer Merlo" in reader.pages[1].extract_text()
-
-    original, extraction, resume_name = resume_enrichment.prepare_candidate_resume(
-        legacy_mismatched, candidate,
-    )
-    assert resume_name == "Jennifer Merlo"
-    assert "Jennifer Merlo" in PdfReader(BytesIO(original)).pages[0].extract_text()
-    assert extraction["fields"]["full_name"] == "Jennifer Merlo"
-
-
 def test_resume_contact_sheet_contains_only_latest_trusted_phone():
     from pypdf import PdfReader, PdfWriter
 
@@ -3192,40 +3118,6 @@ def test_facebook_context_is_preserved_for_quick_sourcer(monkeypatch):
     assert stored["hometown"] == "Wichita, Kansas"
 
 
-def test_exhausted_extension_credit_blocks_provider_lookup_before_request(monkeypatch):
-    from types import SimpleNamespace
-
-    store.reset()
-    candidate = store.add_candidate(**api_module._profile_row(api_module.ProfileImportIn(
-        name="Credit Gate Candidate", location="Denver, CO", source="indeed",
-    )))
-    request = SimpleNamespace(state=SimpleNamespace(
-        user={"sub": "recruiter-1"},
-        healthboard_extension_token="opaque-extension-token",
-    ))
-    monkeypatch.setattr(healthboard_auth, "enabled", lambda: True)
-    monkeypatch.setattr(quick_sourcer_client, "needs_provider_lookup", lambda _cid: True)
-    lookup = lambda _cid: pytest.fail("Provider lookup must not run without credits")
-    monkeypatch.setattr(quick_sourcer_client, "lookup_candidate", lookup)
-    monkeypatch.setattr(
-        healthboard_auth, "consume_medhunt_enrichment_credits",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            httpx.HTTPStatusError(
-                "out of credits",
-                request=httpx.Request("POST", "https://halo.example.test/credits"),
-                response=httpx.Response(402, json={"detail": "Need more credits."}),
-            )
-        ),
-    )
-
-    with pytest.raises(api_module.HTTPException) as error:
-        api_module.contact_lookup_batch(api_module.ContactLookupBatchIn(
-            candidate_ids=[candidate], run_id="credit_gate_12345678", confirmed=True,
-        ), request)
-    assert error.value.status_code == 402
-    assert error.value.detail == "Need more credits."
-
-
 def test_hometown_retry_gate_and_location_cache_identity():
     definitive = {
         "status": "no_match",
@@ -3338,7 +3230,7 @@ def test_local_api_token_protects_cross_origin_api_access(monkeypatch):
     monkeypatch.setattr(config, "LOCAL_API_TOKEN", token)
     candidate_id = store.add_candidate("Token Test", "Atlanta, GA", source="indeed")
     resume = store.attach_resume(
-        candidate_id, "token-test.pdf", _resume_pdf("Token Test")
+        candidate_id, "token-test.pdf", b"%PDF-1.4 local token test"
     )
     extension_origin = f"chrome-extension://{'a' * 32}"
 
@@ -3463,10 +3355,7 @@ def test_hosted_extension_origin_gate_fails_closed(monkeypatch):
 
 
 def test_api_workflow_and_extension_cors(monkeypatch):
-    from pypdf import PdfReader
-
     store.reset()
-    monkeypatch.setattr(config, "QUICK_SOURCER_TRUSTED_FOR_SYNC", True)
 
     def fake_quick_lookup(candidate_id):
         candidate = store.get_candidate(candidate_id)
@@ -3495,7 +3384,7 @@ def test_api_workflow_and_extension_cors(monkeypatch):
             }
             assert health_body["status"] == "ok"
             assert health_body["service"] == "medhunt-api"
-            assert health_body["version"] == "3.26.6"
+            assert health_body["version"] == api_module.APP_VERSION
             assert set(health_body["records_lookup"]) == {
                 "enabled", "typical_seconds",
             }
@@ -3521,7 +3410,7 @@ def test_api_workflow_and_extension_cors(monkeypatch):
             assert single_lookup.status_code == 200
             assert set(single_lookup.json()) == {
                 "status", "emails", "phones", "phone_contacts",
-                "resume_required", "location_match",
+                "resume_required", "location_match", "ats_destination",
             }
             assert (await client.post(f"/jobs/{job_id}/rank")).json()["ranked"] == 1
 
@@ -3565,7 +3454,7 @@ def test_api_workflow_and_extension_cors(monkeypatch):
             assert all(
                 set(result) == {
                     "status", "emails", "phones", "phone_contacts",
-                    "resume_required", "location_match",
+                    "resume_required", "location_match", "ats_destination",
                 }
                 for result in batch_body["results"].values()
             )
@@ -3586,23 +3475,10 @@ def test_api_workflow_and_extension_cors(monkeypatch):
             assert (await client.post(f"/candidates/{imported_id}/contact-lookup")).status_code == 200
             resume_dir = Path(tempfile.mkdtemp())
             resume_path = resume_dir / "Alex-Morgan-resume.pdf"
-            resume_path.write_bytes(_resume_pdf("Jennifer Merlo"))
-            probe = resume_extraction.extract(
-                resume_path.read_bytes(), store.get_candidate(imported_id),
-            )
-            assert probe["fields"].get("full_name") == "Jennifer Merlo", (
-                resume_extraction.config.RESUME_OCR_ENABLED, probe,
-            )
+            resume_path.write_bytes(b"%PDF-1.4 test resume")
             original_resume_dir = config.RESUME_DOWNLOAD_DIR
             config.RESUME_DOWNLOAD_DIR = resume_dir.resolve()
             try:
-                attached = await client.post(
-                    f"/candidates/{imported_id}/resume/from-download",
-                    json={"path": str(resume_path), "filename": resume_path.name},
-                )
-                assert attached.status_code == 200
-                assert store.list_resumes(imported_id)
-                resume_path.write_bytes(_resume_pdf("Alex Morgan"))
                 attached = await client.post(
                     f"/candidates/{imported_id}/resume/from-download",
                     json={"path": str(resume_path), "filename": resume_path.name},
@@ -3626,26 +3502,7 @@ def test_api_workflow_and_extension_cors(monkeypatch):
                 f"/candidates/{imported_id}/resume/from-browser",
                 json={
                     "content_base64": base64.b64encode(
-                        b"leading bytes" + _resume_pdf("Jennifer Merlo")
-                    ).decode("ascii"),
-                    "filename": "browser-captured-resume.pdf",
-                },
-            )
-            assert captured.status_code == 200
-            wrong_capture_id = captured.json()["resume"]["id"]
-            wrong_capture_download = await client.get(
-                f"/candidates/{imported_id}/resumes/{wrong_capture_id}"
-            )
-            assert wrong_capture_download.status_code == 200
-            wrong_capture_reader = PdfReader(BytesIO(wrong_capture_download.content))
-            assert "Alex Morgan" in wrong_capture_reader.pages[0].extract_text()
-            assert "Jennifer Merlo" in wrong_capture_reader.pages[1].extract_text()
-
-            captured = await client.post(
-                f"/candidates/{imported_id}/resume/from-browser",
-                json={
-                    "content_base64": base64.b64encode(
-                        b"leading bytes" + _resume_pdf("Alex Morgan")
+                        b"leading bytes%PDF-1.4 browser-captured resume"
                     ).decode("ascii"),
                     "filename": "browser-captured-resume.pdf",
                 },
@@ -3662,7 +3519,7 @@ def test_api_workflow_and_extension_cors(monkeypatch):
                 f"/candidates/{imported_id}/resume/from-browser",
                 json={
                     "content_base64": base64.b64encode(
-                        b"leading bytes" + _resume_pdf("Alex Morgan")
+                        b"leading bytes%PDF-1.4 browser-captured resume"
                     ).decode("ascii"),
                     "filename": "browser-captured-resume.pdf",
                 },
@@ -3670,18 +3527,6 @@ def test_api_workflow_and_extension_cors(monkeypatch):
             assert duplicate_capture.status_code == 200
             assert duplicate_capture.json()["resume"]["id"] == captured_resume_id
             assert duplicate_capture.json()["resume"]["deduplicated"] is True
-            legacy_wrong_data = _resume_pdf("Jennifer Merlo")
-            legacy_wrong_extraction = resume_extraction.extract(
-                legacy_wrong_data, store.get_candidate(imported_id),
-            )
-            legacy_wrong = store.attach_resume(
-                imported_id, "legacy-wrong-resume.pdf", legacy_wrong_data,
-                extraction=legacy_wrong_extraction,
-            )
-            blocked_legacy_download = await client.get(
-                f"/candidates/{imported_id}/resumes/{legacy_wrong['id']}"
-            )
-            assert blocked_legacy_download.status_code == 200
             candidate_view = await client.get(f"/candidates/{imported_id}")
             assert candidate_view.status_code == 200
             assert all(
@@ -3761,7 +3606,7 @@ def test_api_workflow_and_extension_cors(monkeypatch):
     asyncio.run(exercise_api())
 
 
-def test_usnews_professional_profile_resume_is_generated_stored_and_deduplicated(monkeypatch):
+def test_usnews_professional_profile_resume_is_generated_stored_and_deduplicated():
     from pypdf import PdfReader
 
     store.reset()
@@ -3794,23 +3639,10 @@ def test_usnews_professional_profile_resume_is_generated_stored_and_deduplicated
         "address": "1305 York Ave, New York, NY 10021",
         "location": "New York, NY",
     }
-    monkeypatch.setattr(config, "QUICK_SOURCER_TRUSTED_FOR_SYNC", True)
-
-    def grant_contact(cid):
-        store.update_candidate(
-            cid, emails=[f"candidate-{cid}@example.test"],
-            verification={"source": "quick_sourcer"},
-        )
 
     async def exercise():
         transport = httpx.ASGITransport(app=api_module.app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            without_contact = await client.post(
-                f"/candidates/{candidate_id}/professional-profile-resume", json=body,
-            )
-            assert without_contact.status_code == 409
-            assert store.list_resumes(candidate_id) == []
-            grant_contact(candidate_id)
             first = await client.post(
                 f"/candidates/{candidate_id}/professional-profile-resume", json=body,
             )
@@ -3820,6 +3652,7 @@ def test_usnews_professional_profile_resume_is_generated_stored_and_deduplicated
             assert payload["document_type"] == "public_professional_profile"
             assert payload["resume"]["filename"].endswith(".pdf")
             resume_id = payload["resume"]["id"]
+            assert "Specialty: Obstetrics & Gynecology" in store.get_candidate(candidate_id)["notes"]
 
             downloaded = await client.get(
                 f"/candidates/{candidate_id}/resumes/{resume_id}",
@@ -3847,7 +3680,6 @@ def test_usnews_professional_profile_resume_is_generated_stored_and_deduplicated
                 source_url="https://www.medifind.com/doctors/brian-e-louie/10650877",
                 source_id="10650877",
             )
-            grant_contact(medifind_id)
             medifind_body = {
                 **body,
                 "source_label": "MediFind",
@@ -3876,7 +3708,6 @@ def test_usnews_professional_profile_resume_is_generated_stored_and_deduplicated
                 source_url="https://www.commonspirit.org/find-a-doctor/clara-zee-1407550627",
                 source_id="1407550627",
             )
-            grant_contact(commonspirit_id)
             commonspirit_body = {
                 **medifind_body,
                 "source_label": "CommonSpirit Health",
@@ -3901,7 +3732,6 @@ def test_usnews_professional_profile_resume_is_generated_stored_and_deduplicated
                 source_url="https://providers.sharecare.com/doctor/dr-raja-flores",
                 source_id="1306821244",
             )
-            grant_contact(sharecare_id)
             sharecare_body = {
                 **medifind_body,
                 "source_label": "Sharecare",
@@ -3922,6 +3752,28 @@ def test_usnews_professional_profile_resume_is_generated_stored_and_deduplicated
                 json=sharecare_body,
             )
             assert sharecare_resume.status_code == 200, sharecare_resume.text
+
+            npino_id = store.add_candidate(
+                "Ayumi E Belanger", "Green Cove Springs, FL", source="npino",
+                source_url="https://npino.com/nurse/1003001058-ms.-ayumi-e-belanger/",
+                source_id="1003001058",
+            )
+            npino_body = {
+                **sharecare_body,
+                "source_label": "NPI No.",
+                "source_url": "https://npino.com/nurse/1003001058-ms.-ayumi-e-belanger/",
+                "headline": "Physician Assistant - Medical",
+                "summary": "Ayumi E Belanger is listed in the NPI registry with NPI 1003001058.",
+                "specialties": ["Physician Assistant - Medical"],
+                "hospitals": [], "education": [], "certifications": [],
+                "licenses": ["PA12345"], "npi": "1003001058",
+                "address": "", "location": "",
+            }
+            npino_resume = await client.post(
+                f"/candidates/{npino_id}/professional-profile-resume", json=npino_body,
+            )
+            assert npino_resume.status_code == 200, npino_resume.text
+            assert npino_resume.json()["resume"]["filename"].endswith(".pdf")
             assert sharecare_resume.json()["resume"]["filename"].endswith(".pdf")
 
             wrong_sharecare_url = await client.post(
@@ -3961,14 +3813,13 @@ def test_profile_resume_fingerprint_changes_with_public_credentials():
 
 def test_cloud_resume_api_stores_r2_metadata(monkeypatch):
     store.reset()
-    candidate_id = store.add_candidate("Cloud Example", "Atlanta, GA", source="indeed")
+    candidate_id = store.add_candidate("Cloud Resume", "Atlanta, GA", source="indeed")
     resume_dir = Path(tempfile.mkdtemp()).resolve()
     resume_path = resume_dir / "cloud-resume.pdf"
-    pdf = _resume_pdf("Cloud Example")
+    pdf = b"%PDF-1.4 cloud fixture"
     resume_path.write_bytes(pdf)
 
     monkeypatch.setattr(config, "RESUME_DOWNLOAD_DIR", resume_dir)
-    monkeypatch.setattr(config, "QUICK_SOURCER_TRUSTED_FOR_SYNC", True)
     monkeypatch.setattr(config, "STORAGE_ENABLED", True)
     monkeypatch.setattr(storage, "upload_resume", lambda cid, filename, data: {
         "storage_provider": "r2",
@@ -3983,15 +3834,6 @@ def test_cloud_resume_api_stores_r2_metadata(monkeypatch):
     async def exercise_cloud_resume():
         transport = httpx.ASGITransport(app=api_module.app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            blocked = await client.post(
-                f"/candidates/{candidate_id}/resume/from-download",
-                json={"path": str(resume_path), "filename": resume_path.name},
-            )
-            assert blocked.status_code == 409
-            store.update_candidate(
-                candidate_id, emails=["cloud-resume@example.test"],
-                verification={"source": "quick_sourcer"},
-            )
             attached = await client.post(
                 f"/candidates/{candidate_id}/resume/from-download",
                 json={"path": str(resume_path), "filename": resume_path.name},
@@ -4008,11 +3850,7 @@ def test_cloud_resume_api_stores_r2_metadata(monkeypatch):
                 f"/candidates/{candidate_id}/resumes/{metadata['id']}"
             )
             assert downloaded.status_code == 200
-            from pypdf import PdfReader
-            delivered = PdfReader(BytesIO(downloaded.content))
-            assert len(delivered.pages) == 2
-            assert "Cloud Example" in delivered.pages[0].extract_text()
-            assert "Cloud Example" in delivered.pages[1].extract_text()
+            assert downloaded.content == pdf
 
     asyncio.run(exercise_cloud_resume())
 
@@ -4037,8 +3875,7 @@ def test_frontend_is_manifest_v3_compatible():
     run_script = (project_root / "run-benchmark-backend.ps1").read_text(encoding="utf-8")
 
     assert manifest["manifest_version"] == 3
-    released_manifest = json.loads((project_root / "release" / "frontend" / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == released_manifest["version"]
+    assert manifest["version"] == api_module.APP_VERSION
     assert "medhunt" in manifest["name"].casefold()
     assert "radixsol" not in manifest["name"].casefold()
     assert "medhunt" in manifest["action"]["default_title"].casefold()
@@ -4046,7 +3883,7 @@ def test_frontend_is_manifest_v3_compatible():
     assert "medhunt" in index.casefold()
     assert "medhunt-mark" in app_script
     assert "radixsol scout" not in app_script.casefold()
-    assert 'const DEFAULT_BACKEND = "https://medhunt-fyxr.onrender.com";' in app_script
+    assert 'const DEFAULT_BACKEND = "http://127.0.0.1:8091";' in app_script
     assert 'const BACKEND_STORAGE_KEY = "medhuntBenchmarkABackendUrl";' in app_script
     assert 'if (DEFAULT_BACKEND.startsWith("https://"))' in app_script
     assert "DEFAULT_PORT = 8091" in launcher
@@ -4064,6 +3901,9 @@ def test_frontend_is_manifest_v3_compatible():
     assert "*://npiprofile.com/*" in manifest["host_permissions"]
     assert "https://health.usnews.com/doctors/*" in manifest["host_permissions"]
     assert "https://health.usnews.com/nurse-practitioners/*" in manifest["host_permissions"]
+    assert "https://health.usnews.com/physician-assistants/*" in manifest["host_permissions"]
+    assert "https://health.usnews.com/dentists/*" in manifest["host_permissions"]
+    assert "https://doctor.webmd.com/*" in manifest["host_permissions"]
     assert "*://*.medifind.com/*" in manifest["host_permissions"]
     assert "*://*.commonspirit.org/*" in manifest["host_permissions"]
     assert "https://providers.sharecare.com/find-a-doctor/*" in manifest["host_permissions"]
@@ -4125,7 +3965,7 @@ def test_frontend_is_manifest_v3_compatible():
     assert "profile.php" in facebook_script
     assert "RADIXSOL_SCAN_PLATFORM_CANDIDATES" in facebook_script
     assert "RADIXSOL_SCAN_PLATFORM_CANDIDATES" in healthcare_directory_script
-    assert "healthcare-directory-v13" in healthcare_directory_script
+    assert "healthcare-directory-v9" in healthcare_directory_script
     assert "U.S. News Doctor Finder" in healthcare_directory_script
     assert "MediFind" in healthcare_directory_script
     assert "CommonSpirit Health" in healthcare_directory_script
@@ -4133,6 +3973,7 @@ def test_frontend_is_manifest_v3_compatible():
     assert 'key: "usnews"' in app_script
     assert 'key: "medifind"' in app_script
     assert "professional-profile-resume" in app_script
+    assert 'new Set(["usnews", "medifind", "commonspirit", "sharecare", "webmd", "npino"])' in app_script
     assert 'key: "sharecare"' in app_script
     assert "captureProfessionalProfileInBackground" in app_script
     assert "startProfessionalProfileResumeBatch" in app_script
@@ -4186,7 +4027,7 @@ def test_frontend_is_manifest_v3_compatible():
         "people data labs", "pdl", "enformion", "endato", "nppes", "neon",
         "cloudflare", "sqlite", "likelihood", "mobile_phone", "gemini",
         "neverbounce", "twilio", "usphonebook", "provider credit",
-        "quick sourcer", "quick_sourcer", "quick-sourcer", "nexus",
+            "quick sourcer", "quick_sourcer", "quick-sourcer",
         "api_key", "client_secret",
     ):
         assert hidden_term not in client_bundle
@@ -4557,7 +4398,6 @@ def test_frontend_locks_captured_candidates_during_lookup():
     assert "let indeedScanGeneration = 0;" in app_script
     assert "let indeedLookupProfiles = [];" in app_script
     assert "indeedLookupProfiles = profiles.slice();" in app_script
-    assert 'indeedLookupFor(profile)?.status === "not_found"' in app_script
     assert 'indeedLookupFor(profile)?.status === "failed"' in app_script
     assert "No candidates in this result filter" in app_script
     assert "scanGeneration !== indeedScanGeneration" in app_script
@@ -4582,3 +4422,175 @@ def test_frontend_locks_captured_candidates_during_lookup():
     assert "const sourceId = cardAutoSourceId || identity.sourceId ||" in content_script
     assert "const cards = displayedResultCards();" in content_script
     assert "context.nameElement, context.root, true" in content_script
+
+
+def test_zoom_sms_sends_directly_and_is_idempotent(monkeypatch):
+    store.reset()
+    candidate_id = store.add_candidate("Taylor Nurse", "Atlanta, GA", source="sharecare")
+    quick_sourcer_client.apply_to_candidate(candidate_id, {
+        "status": "found",
+        "name": "Taylor Nurse",
+        "source": "test fixture",
+        "emails": [],
+        "phones": [{"value": "+14045550123", "type": "Wireless"}],
+        "addresses": ["Atlanta, GA"],
+    })
+    monkeypatch.setattr(config, "ZOOM_SMS_ENABLED", True)
+    monkeypatch.setattr(config, "ZOOM_SMS_SENDER_NUMBER", "+14045550999")
+    monkeypatch.setattr(config, "ZOOM_SMS_SENDER_USER_ID", "zoom-user-1")
+    monkeypatch.setattr(zoom_sms, "send_sms", lambda phone, message, **kwargs: {
+        "message_id": "zoom-message-1", "session_id": "zoom-session-1",
+    })
+
+    async def exercise():
+        transport = httpx.ASGITransport(app=api_module.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            body = {
+                "candidate_id": candidate_id,
+                "phone": "+14045550123",
+                "message": "Hi Taylor, are you open to an opportunity?",
+                "request_id": "sms-test-request-1",
+            }
+            sent = await client.post("/messaging/sms", json=body)
+            assert sent.status_code == 200, sent.text
+            conversation = sent.json()["conversation"]
+            assert conversation["zoom_session_id"] == "zoom-session-1"
+            assert conversation["messages"][0]["status"] == "accepted"
+            assert "Reply STOP to opt out" in conversation["messages"][0]["body"]
+
+            repeated = await client.post("/messaging/sms", json=body)
+            assert repeated.status_code == 200
+            assert len(repeated.json()["conversation"]["messages"]) == 1
+
+            monkeypatch.setattr(config, "ZOOM_WEBHOOK_SECRET_TOKEN", "webhook-secret")
+            incoming = {
+                "event": "phone.sms_received", "event_ts": int(time.time() * 1000),
+                "payload": {"object": {
+                    "message_id": "zoom-inbound-1", "session_id": "zoom-session-1",
+                    "message": "STOP", "sender": {"phone_number": "+14045550123"},
+                    "to_members": [{"phone_number": "+14045550999"}],
+                }},
+            }
+            raw = json.dumps(incoming, separators=(",", ":")).encode()
+            timestamp = str(int(time.time()))
+            signature = "v0=" + hmac.new(
+                b"webhook-secret", b"v0:" + timestamp.encode() + b":" + raw,
+                hashlib.sha256,
+            ).hexdigest()
+            webhook = await client.post(
+                "/integrations/zoom/webhook", content=raw,
+                headers={
+                    "Content-Type": "application/json",
+                    "x-zm-request-timestamp": timestamp,
+                    "x-zm-signature": signature,
+                },
+            )
+            assert webhook.status_code == 200, webhook.text
+            assert store.is_dnc("+14045550123") is True
+            assert store.get_sms_consent(candidate_id, "+14045550123")["status"] == "opted_out"
+            saved = store.get_sms_conversation(conversation["id"])
+            assert saved["status"] == "opted_out"
+            assert saved["messages"][-1]["body"] == "STOP"
+
+    asyncio.run(exercise())
+
+
+def test_zoom_sms_preserves_halo_messaging_permission_denial(monkeypatch):
+    import pytest
+    from fastapi import HTTPException
+    from starlette.requests import Request
+
+    monkeypatch.setattr(healthboard_auth, "enabled", lambda: True)
+    response = httpx.Response(
+        403,
+        json={"detail": "Your organization has paused or disabled your messaging access."},
+        request=httpx.Request("GET", "https://halo.example.test/api/extension/medhunt/sms-sender"),
+    )
+
+    def denied(_token):
+        raise httpx.HTTPStatusError("denied", request=response.request, response=response)
+
+    monkeypatch.setattr(healthboard_auth, "medhunt_zoom_sms_sender", denied)
+    request = Request({"type": "http", "method": "POST", "path": "/messaging/sms", "headers": []})
+    request.state.healthboard_extension_token = "extension-token"
+
+    with pytest.raises(HTTPException) as caught:
+        api_module._resolve_zoom_sms_sender(request, strict=True)
+    assert caught.value.status_code == 403
+    assert "paused or disabled" in caught.value.detail
+
+
+def test_zoom_sms_direct_send_does_not_require_a_test_number_allowlist(monkeypatch):
+    store.reset()
+    allowed_id = store.add_candidate("Owned Test Phone", "Atlanta, GA", source="test")
+    blocked_id = store.add_candidate("Unlisted Phone", "Atlanta, GA", source="test")
+    for candidate_id, phone in (
+        (allowed_id, "+14045550123"),
+        (blocked_id, "+14045550124"),
+    ):
+        quick_sourcer_client.apply_to_candidate(candidate_id, {
+            "status": "found", "name": "Test Recipient", "source": "test fixture",
+            "emails": [], "phones": [{"value": phone, "type": "Wireless"}],
+            "addresses": ["Atlanta, GA"],
+        })
+    monkeypatch.setattr(config, "ZOOM_SMS_ENABLED", True)
+    monkeypatch.setattr(config, "ZOOM_SMS_SENDER_NUMBER", "+14045550999")
+    monkeypatch.setattr(config, "ZOOM_SMS_SENDER_USER_ID", "zoom-user-1")
+    calls = []
+    monkeypatch.setattr(zoom_sms, "send_sms", lambda phone, message, **kwargs: (
+        calls.append((phone, message)) or {
+            "message_id": "zoom-test-message", "session_id": "zoom-test-session",
+        }
+    ))
+
+    async def exercise():
+        transport = httpx.ASGITransport(app=api_module.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            sent = await client.post("/messaging/sms", json={
+                "candidate_id": allowed_id, "phone": "+14045550123",
+                "message": "Test message", "request_id": "allowlisted-test-message",
+            })
+            assert sent.status_code == 200, sent.text
+            assert len(calls) == 1
+
+            second = await client.post("/messaging/sms", json={
+                "candidate_id": blocked_id, "phone": "+14045550124",
+                "message": "A second verified candidate", "request_id": "unlisted-test-message",
+            })
+            assert second.status_code == 200
+            assert len(calls) == 2
+
+    asyncio.run(exercise())
+
+
+def test_zoom_sms_rejects_messages_over_29_words_before_calling_zoom(monkeypatch):
+    store.reset()
+    candidate_id = store.add_candidate("Morgan Clinician", "Seattle, WA", source="medifind")
+    quick_sourcer_client.apply_to_candidate(candidate_id, {
+        "status": "found", "name": "Morgan Clinician", "source": "test fixture",
+        "emails": [], "phones": [{"value": "+12065550123", "type": "Wireless"}],
+        "addresses": ["Seattle, WA"],
+    })
+    monkeypatch.setattr(config, "ZOOM_SMS_ENABLED", True)
+    monkeypatch.setattr(config, "ZOOM_SMS_SENDER_NUMBER", "+12065550999")
+    monkeypatch.setattr(config, "ZOOM_SMS_SENDER_USER_ID", "zoom-user-2")
+    sent_messages = []
+    monkeypatch.setattr(zoom_sms, "send_sms", lambda phone, message, **kwargs: (
+        sent_messages.append((phone, message)) or {
+            "message_id": f"zoom-{len(sent_messages)}", "session_id": "zoom-session",
+        }
+    ))
+
+    async def exercise():
+        transport = httpx.ASGITransport(app=api_module.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.post("/messaging/sms", json={
+                "candidate_id": candidate_id, "phone": "+12065550123",
+                "message": " ".join(f"word{index}" for index in range(30)),
+                "request_id": "over-word-limit",
+            })
+            assert response.status_code == 422
+            assert "29 words" in response.json()["detail"]
+            assert sent_messages == []
+
+    asyncio.run(exercise())

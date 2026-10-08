@@ -226,7 +226,7 @@ def test_tahoe_identifier_matching_is_exact_not_case_or_whitespace_normalized():
 def test_public_batch_uses_only_quick_sourcer(monkeypatch):
     captured = []
 
-    def fake_lookup(body):
+    def fake_lookup(body, _actor=None):
         captured.append(list(body.candidate_ids))
         return {
             "status": "ok",

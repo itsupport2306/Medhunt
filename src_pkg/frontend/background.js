@@ -57,7 +57,7 @@ function sourcingPlatformForUrl(value) {
     )) return "webmd";
     if (
       host === "health.usnews.com" &&
-      /^\/(?:doctors|nurse-practitioners)(?:\/|$)/i.test(url.pathname)
+      /^\/(?:doctors|nurse-practitioners|physician-assistants|dentists)(?:\/|$)/i.test(url.pathname)
     ) return "usnews";
   } catch {
     // Browser-internal and partially loaded URLs are intentionally unsupported.

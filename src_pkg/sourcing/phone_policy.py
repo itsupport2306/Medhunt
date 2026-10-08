@@ -369,6 +369,87 @@ def latest_phone_detail(record: dict | None) -> dict | None:
     }
 
 
+def messaging_phone_detail(record: dict | None) -> dict | None:
+    """Choose the SMS destination using the product's explicit priority.
+
+    Use the most recently reported wireless number when recency is available,
+    otherwise the first wireless number supplied by the provider. If the
+    candidate has no accepted wireless number, use the first callable phone.
+    """
+    source = record or {}
+    selected = preferred_phone_details(source)
+    if not selected:
+        candidate_keys = {
+            _phone_key(value) for value in source.get("phones") or [] if _phone_key(value)
+        }
+        projected, seen = [], set()
+        for item in source.get("phone_contacts") or []:
+            if not isinstance(item, dict):
+                continue
+            value = str(item.get("value") or "").strip()
+            key = _phone_key(value)
+            kind = "mobile" if str(item.get("kind") or "").casefold() == "mobile" else "other"
+            if not value or key not in candidate_keys or key in seen:
+                continue
+            seen.add(key)
+            projected.append({
+                "value": value,
+                "kind": kind,
+                "label": "Mobile" if kind == "mobile" else "Other phone",
+            })
+        wireless = [item for item in projected if item["kind"] == "mobile"]
+        selected = wireless or projected
+    if not selected:
+        first = next(
+            (str(value or "").strip() for value in source.get("phones") or []
+             if str(value or "").strip()),
+            "",
+        )
+        if not first:
+            return None
+        return {
+            "value": first,
+            "kind": "other",
+            "label": "Phone",
+            "reported_at": 0.0,
+            "has_reported_recency": False,
+        }
+
+    # Callable fallback numbers retain provider order. Recency only selects
+    # among wireless numbers, matching the SMS priority promised to users.
+    if selected[0].get("kind") != "mobile":
+        return {**selected[0], "reported_at": 0.0, "has_reported_recency": False}
+
+    verification_record = (source.get("verification") or {}).get("record") or {}
+    groups = [*_phone_evidence_groups(source), verification_record.get("phones") or []]
+    reported_by_key: dict[str, float] = {}
+    for group in groups:
+        for item in group or []:
+            if not isinstance(item, dict):
+                continue
+            key = _phone_key(item.get("value") or item.get("number") or item.get("phone"))
+            if not key:
+                continue
+            reported_by_key[key] = max(
+                reported_by_key.get(key, 0.0),
+                _reported_timestamp(item.get("last_seen")),
+                _reported_timestamp(item.get("last_reported")),
+                _reported_timestamp(item.get("lastReportedDate")),
+            )
+
+    best_index, best_reported = 0, 0.0
+    for index, detail in enumerate(selected):
+        reported = reported_by_key.get(_phone_key(detail.get("value")), 0.0)
+        if reported > best_reported:
+            best_index, best_reported = index, reported
+    detail = selected[best_index] if best_reported else selected[0]
+    return {
+        **detail,
+        "reported_at": best_reported,
+        "has_reported_recency": bool(best_reported),
+    }
+
+
 def selected_phone_policy(record: dict | None) -> str:
     details = preferred_phone_details(record)
     if details and details[0]["kind"] == "other":

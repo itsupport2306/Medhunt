@@ -1,8 +1,8 @@
-(() => {
+﻿(() => {
   "use strict";
 
-  const ADAPTER_REVISION = "healthcare-directory-v13";
-  const ADAPTER_REQUEST = "RADIXSOL_HEALTHCARE_DIRECTORY_V13_REQUEST";
+  const ADAPTER_REVISION = "healthcare-directory-v9";
+  const ADAPTER_REQUEST = "RADIXSOL_HEALTHCARE_DIRECTORY_V9_REQUEST";
   if (window.__radixsolHealthcareDirectoryAdapterRevision === ADAPTER_REVISION) return;
   window.__radixsolHealthcareDirectoryAdapterRevision = ADAPTER_REVISION;
 
@@ -24,7 +24,7 @@
                 ? { key: "sharecare", label: "Sharecare" }
                 : host === "doctor.webmd.com"
                   ? { key: "webmd", label: "WebMD" }
-                  : null;
+              : null;
   if (!PLATFORM) return;
 
   let lastProfiles = [];
@@ -72,15 +72,11 @@
     }
   }
 
-  // NPINO appends many valid nursing credentials to the provider link text.
-  // Keep them out of the candidate name so the card is still recognized as
-  // an individual provider (for example "Jane Doe, AGACNP-BC" or
-  // "Jane Doe, C.P.N.P.").
-  const PROVIDER_CREDENTIAL = /^(?:M\.?D\.?|D\.?O\.?|M\.?P\.?H\.?|Ph\.?D\.?|DNP|APRN(?:-(?:C|BC|CNP))?|APN|ANP|NP(?:-(?:C|BC))?|FNP(?:-(?:C|BC))?|PNP(?:-(?:AC|PC|C|BC))?|C\.?P\.?N\.?P(?:-(?:AC|PC|C|BC))?|ACNP(?:-BC)?|AGNP(?:-(?:C|BC))?|AGACNP(?:-BC)?|AGPCNP(?:-(?:C|BC))?|WHNP(?:-(?:C|BC))?|NNP(?:-(?:C|BC))?|PMHNP(?:-(?:C|BC))?|CRNP|CNP|CNM|CRNA|CNS|CCRN|PA-C|R\.?\s*N\.?(?:-BC)?|LPN|LVN|MSN|B\.?\s*S\.?\s*N\.?|BSNRN|LCCE|REGISTERED NURSE|NURSE PRACTITIONER|DDS|DMD|FACP|FACOG)\.?$/i;
+  const PROVIDER_CREDENTIAL = /^(?:M\.?D\.?|D\.?O\.?|M\.?P\.?H\.?|Ph\.?D\.?|DNP|APRN(?:-C)?|NP|FNP(?:-(?:C|BC))?|PMHNP(?:-(?:C|BC))?|AGNP(?:-(?:C|BC))?|CRNP|CNP|CNM|(?:R?PA-C|PAC|P\.?A\.?|PHYSICIAN ASSISTANT)|RN|LPN|MSN|BSN|MS|SCD|DDS|DMD|FACP|FACOG)\.?$/i;
 
   function providerCredentials(value) {
     const parts = clean(value, 240)
-      .replace(/^(?:dr\.?|doctor)\s+/i, "")
+      .replace(/^(?:dr\.?|doctor|mr\.?|mrs\.?|ms\.?|miss)\s+/i, "")
       .split(",")
       .map((part) => clean(part, 60));
     return unique(parts.slice(1).filter((part) => PROVIDER_CREDENTIAL.test(part)));
@@ -89,19 +85,17 @@
   function providerProfession(credentials) {
     const values = unique(credentials).join(" ");
     if (/\b(?:M\.?D\.?|D\.?O\.?)\b/i.test(values)) return "Physician";
-    if (/\bCRNA\b/i.test(values)) return "Nurse Anesthetist";
-    if (/\b(?:DNP|APRN(?:-(?:C|BC|CNP))?|NP(?:-(?:C|BC))?|FNP(?:-(?:C|BC))?|ACNP(?:-BC)?|AGACNP(?:-BC)?|AGPCNP(?:-(?:C|BC))?|PNP(?:-(?:AC|PC|C|BC))?|CPNP(?:-(?:AC|PC|C|BC))?|WHNP(?:-(?:C|BC))?|NNP(?:-(?:C|BC))?|PMHNP(?:-(?:C|BC))?|AGNP(?:-(?:C|BC))?|CRNP|CNP|CNM)\b/i.test(values)) {
+    if (/\b(?:DNP|APRN(?:-C)?|NP|FNP(?:-(?:C|BC))?|PMHNP(?:-(?:C|BC))?|AGNP(?:-(?:C|BC))?|CRNP|CNP|CNM)\b/i.test(values)) {
       return "Nurse Practitioner";
     }
     if (/\bPA-C\b/i.test(values)) return "Physician Assistant";
-    if (/\b(?:DDS|DMD)\b/i.test(values)) return "Dentist";
-    if (/\b(?:RN(?:-BC)?|LPN|LVN|CNS|CCRN)\b/i.test(values)) return "Nurse";
+    if (/\b(?:RN|LPN)\b/i.test(values)) return "Nurse";
     return "Healthcare Provider";
   }
 
   function cleanProviderName(value) {
     const parts = clean(value, 240)
-      .replace(/^(?:dr\.?|doctor|mr\.?|mrs\.?|ms\.?)\s+/i, "")
+      .replace(/^(?:dr\.?|doctor|mr\.?|mrs\.?|ms\.?|miss)\s+/i, "")
       .replace(/\s*\((?:individual|person)\)\s*$/i, "")
       .split(",")
       .map((part) => clean(part, 180));
@@ -207,30 +201,19 @@
   }
 
   function schemaName(value) {
-    const raw = typeof value === "string" ? value : value?.name;
-    const text = clean(raw, 180);
-    if (!text) return "";
-    // JSON-LD commonly uses Schema.org URLs for medicalSpecialty values.
-    // Keep the rendered PDF and the Nexus mapping human-readable.
-    try {
-      const parsed = new URL(text);
-      if (parsed.hostname.toLowerCase() === "schema.org") {
-        const tail = decodeURIComponent(parsed.pathname.split("/").filter(Boolean).pop() || "");
-        if (tail) return clean(tail.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[_-]+/g, " "), 180);
-      }
-    } catch { /* retain non-URL labels */ }
-    return text;
+    if (typeof value === "string") return clean(value, 180);
+    return clean(value?.name, 180);
   }
 
   function schemaNames(value) {
     const names = [];
     for (const item of schemaValues(value)) {
       if (typeof item === "string") {
-        names.push(schemaName(item));
+        names.push(item);
       } else if (Array.isArray(item?.name)) {
-        names.push(...item.name.map((entry) => schemaName(entry)));
+        names.push(...item.name);
       } else if (item?.name) {
-        names.push(schemaName(item));
+        names.push(item.name);
       }
     }
     return unique(names);
@@ -276,7 +259,7 @@
   }
 
   function exactUsNewsProfilePath() {
-    return /^\/(?:doctors|nurse-practitioners)\/[^/?#]+-\d+\/?$/i.test(location.pathname);
+    return /^\/(?:doctors|nurse-practitioners|physician-assistants|dentists)\/[^/?#]+-\d+\/?$/i.test(location.pathname);
   }
 
   function exactMediFindProfilePath(value = location.pathname) {
@@ -895,38 +878,16 @@
       absoluteUrl(physician.url || ""), physician,
     ]));
     const cards = all("article.ProviderCardAlternative");
-    const linksByUrl = new Map();
-    for (const link of all('a[href*="/doctor/"]')) {
-      const url = absoluteUrl(link.getAttribute("href"));
-      const current = linksByUrl.get(url);
-      if (!current || looksLikePersonName(link.textContent)) linksByUrl.set(url, link);
-    }
-    const entries = cards.map((card) => {
-      const link = card.querySelector('a[href*="/doctor/"]');
-      const url = absoluteUrl(link?.getAttribute("href") || card.getAttribute("data-href") || "");
-      return { card, link, physician: byUrl.get(url) || null };
-    });
-    const includedUrls = new Set(entries.map((entry) => absoluteUrl(
-      entry.link?.getAttribute("href") || entry.card?.getAttribute("data-href") || "",
-    )));
-    // CRNA result cards can use a different component than Sharecare's
-    // PhysicianCardAlternative. Include every actual doctor-profile link in
-    // the document, even if its surrounding card uses another class.
-    for (const [url, link] of linksByUrl) {
-      if (!url || includedUrls.has(url)) continue;
-      const card = link.closest("article, li, [class*='ProviderCard'], [class*='provider-card'], [class*='result']");
-      entries.push({ card, link, physician: byUrl.get(url) || null });
-      includedUrls.add(url);
-    }
-    // SearchResultsPage JSON-LD can contain more results than the cards that
-    // the current viewport has hydrated. Merge those providers instead of
-    // treating the presence of a few cards as a complete result list.
-    for (const physician of physicians) {
-      const url = absoluteUrl(physician.url || "");
-      if (!url || includedUrls.has(url)) continue;
-      entries.push({ card: null, link: linksByUrl.get(url) || null, physician });
-      includedUrls.add(url);
-    }
+    const entries = cards.length ? cards.map((card) => ({
+      card,
+      link: card.querySelector('a[href*="/doctor/"]'),
+    })) : physicians.map((physician) => ({
+      card: null,
+      link: all('a[href*="/doctor/"]').find((link) => (
+        absoluteUrl(link.getAttribute("href")) === absoluteUrl(physician.url || "")
+      )),
+      physician,
+    }));
     for (const entry of entries) {
       const card = entry.card;
       const link = entry.link;
@@ -961,7 +922,7 @@
             .filter(Boolean).join(", ")
         : locationFromAddress(address);
       const specialties = unique([
-        visibleText(card?.querySelector?.(".ProviderCardAlternative-meta, [class*='specialty'], [class*='Specialty']")),
+        visibleText(card?.querySelector?.(".ProviderCardAlternative-meta")),
         ...schemaNames(physician?.medicalSpecialty),
         visibleText(document.querySelector('[data-qa-target="qa-southpaw-search"]')),
       ]);
@@ -1105,9 +1066,11 @@
       || visibleText(document.querySelector("#experience")),
     );
 
-    // Wait for the experience block to hydrate before creating a document.
-    // This avoids saving a second, incomplete PDF while the React page loads.
-    if (!education.length && !licenses.length && !certifications.length) return null;
+    // Some provider categories omit the experience block entirely. A named
+    // specialty, overview, or affiliation is enough to create an attributed
+    // public profile; the API still validates that professional details exist.
+    if (!specialties.length && !subspecialties.length && !hospitals.length
+      && !education.length && !licenses.length && !certifications.length && !overview) return null;
     return {
       kind: "public_professional_profile",
       source_label: "U.S. News Doctor Finder",
@@ -1133,11 +1096,22 @@
     const profiles = [];
     const elements = new Map();
     const seen = new Set();
-    const cards = all('[data-test-id="DetailCardDoctor"]');
-    const roots = cards.length ? cards : [document];
+    const cards = all('[data-test-id="DetailCardDoctor"], [data-test-id*="DetailCard"], article:has(a[href^="/physician-assistants/"]), article:has(a[href^="/dentists/"])');
+    const profileLinks = all('a[href^="/doctors/"], a[href^="/nurse-practitioners/"], a[href^="/physician-assistants/"], a[href^="/dentists/"]')
+      .filter((link) => /^\/(?:doctors|nurse-practitioners|physician-assistants|dentists)\/[^/?#]+-\d+\/?$/i.test(new URL(link.href).pathname));
+    const roots = cards.length ? cards : (profileLinks.length
+      ? Array.from(new Set(profileLinks.map((link) => link.closest("article, li") || link.parentElement)))
+      : [document]);
 
     for (const root of roots) {
-      let physicians = jsonLdObjects(root).filter((value) => hasSchemaType(value, "Physician"));
+      let physicians = jsonLdObjects(root).filter((value) =>
+        hasSchemaType(value, "Physician") || hasSchemaType(value, "Dentist")
+        || hasSchemaType(value, "Person"));
+      if (!physicians.length && root !== document) {
+        const nameLink = root.querySelector('a[href^="/doctors/"], a[href^="/nurse-practitioners/"], a[href^="/physician-assistants/"], a[href^="/dentists/"]');
+        const name = cleanProviderName(nameLink?.textContent || root.querySelector("h2, h3")?.textContent);
+        if (nameLink && looksLikePersonName(name)) physicians = [{ name, url: nameLink.href }];
+      }
       if (!physicians.length && root === document && exactUsNewsProfilePath()) {
         const heroName = visibleText(document.querySelector('[data-test-id^="HeroGraphic"] h1, .hero h1, main h1'));
         if (looksLikePersonName(cleanProviderName(heroName))) {
@@ -1149,7 +1123,7 @@
         if (!looksLikePersonName(name)) continue;
 
         const sourceUrl = absoluteUrl(physician.url || root.querySelector?.(
-          'a[href^="/doctors/"], a[href^="/nurse-practitioners/"]'
+          'a[href^="/doctors/"], a[href^="/nurse-practitioners/"], a[href^="/physician-assistants/"], a[href^="/dentists/"]'
         )?.getAttribute("href") || location.href);
         let sourcePath = "";
         try { sourcePath = new URL(sourceUrl).pathname; } catch { /* absoluteUrl already supplied a safe fallback. */ }
@@ -1176,8 +1150,9 @@
           ...(profileDocument?.hospitals || []),
         ]);
         const profession = /\/nurse-practitioners(?:\/|$)/i.test(sourcePath)
-          ? "Nurse Practitioner"
-          : "Physician";
+          ? "Nurse Practitioner" : /\/physician-assistants(?:\/|$)/i.test(sourcePath)
+            ? "Physician Assistant" : /\/dentists(?:\/|$)/i.test(sourcePath)
+              ? "Dentist" : "Physician";
         const extra = unique([
           ...employers.map((employer) => `Employer: ${employer}`),
           ...(profileDocument?.subspecialties || []).map((value) => `Subspecialty: ${value}`),
@@ -1218,41 +1193,64 @@
     const profiles = [];
     const elements = new Map();
     const seen = new Set();
-    for (const link of all("a[href]")) {
-      const href = absoluteUrl(link.getAttribute("href"));
-      let profileUrl;
-      try { profileUrl = new URL(href); } catch { continue; }
-      if (!/^(?:www\.)?npino\.com$/i.test(profileUrl.hostname)) continue;
-      // NPINO uses /npi/ for doctors and profession-specific paths such as
-      // /nurse/ and /dentist/ for other individual providers.
-      const npi = profileUrl.pathname.match(/^\/[a-z][a-z-]*\/(\d{10})(?:-[^/]*)?\/?$/i)?.[1];
-      if (!npi || seen.has(npi)) continue;
-      let card = null;
-      for (let node = link; node; node = node.parentElement) {
-        if (visibleText(node).length > 3000) break;
-        // Do not let an organization card inherit a person's name from an
-        // adjacent result when their common listing container is small.
-        const otherProfile = all("a[href]", node).some((anchor) => {
-          const path = absoluteUrl(anchor.getAttribute("href"));
-          const linkedNpi = path.match(/\/[a-z][a-z-]*\/(\d{10})(?:-[^/?#]*)?\/?(?:[?#]|$)/i)?.[1];
-          return linkedNpi && linkedNpi !== npi;
-        });
-        if (otherProfile) break;
-        const text = visibleText(node);
-        const hasThisNpi = text.includes(npi) || /\bNPI Number\s*:/i.test(text);
-        const hasPersonName = all("h1, h2, h3, h4, [itemprop='name'], .provider-name", node)
-          .some((element) => looksLikePersonName(element.textContent));
-        if (hasThisNpi && hasPersonName) {
-          card = node;
-          if (node.matches?.("article, li, tr, [class*='card'], [class*='result']")) break;
+    const detailNpi = location.pathname.match(/^\/[^/]+\/(\d{10})(?:-[^/]*)?\/?$/i)?.[1] || "";
+    if (detailNpi) {
+      const fields = new Map();
+      for (const row of all("tr")) {
+        const cells = all("th, td", row).map(visibleText);
+        if (cells.length === 2 && cells[0] && !fields.has(cells[0].toLowerCase())) {
+          fields.set(cells[0].toLowerCase(), cells[1]);
         }
-        // Unlike the former smallestContainer helper, keep walking above li
-        // and table-row boundaries: nurse cards commonly wrap those nodes.
-        if (node === document.body) break;
       }
-      if (!card) card = smallestContainer(link, /\bNPI Number\s*:/i);
-      const nameLink = card.querySelector?.("h2 a[href], h3 a[href]") || link;
-      const name = candidateName(card, nameLink, npi) || cleanProviderName(nameLink.textContent);
+      const field = (...labels) => labels.map((label) => fields.get(label.toLowerCase()) || "").find(Boolean) || "";
+      const rawName = field("Nurse Name", "Doctor Name", "Dentist Name", "Provider Name", "Name")
+        || visibleText(document.querySelector("main h2, h2")).replace(/\s*-\s*\d{10}\s+Profile Details.*$/i, "");
+      const name = cleanProviderName(rawName);
+      if (looksLikePersonName(name) && !/organization/i.test(field("Provider Entity Type", "Enumeration Type"))) {
+        const specialty = clean(field("Specialization", "Speciality", "Specialty"), 180);
+        const credential = clean(field("Credential"), 80);
+        const license = clean(field("Licence No.", "License No."), 180);
+        const sourceUrl = `${location.origin}${location.pathname}`;
+        const documentProfile = specialty || license ? {
+          kind: "public_professional_profile",
+          source_label: "NPI No.",
+          source_url: sourceUrl,
+          headline: specialty,
+          summary: `${name} is listed in the NPI registry with NPI ${detailNpi}${specialty ? ` and specialty ${specialty}` : ""}.`,
+          credentials: credential ? [credential] : [],
+          specialties: specialty ? [specialty] : [],
+          subspecialties: [], hospitals: [], education: [],
+          licenses: license ? [license] : [], certifications: [], languages: [],
+          npi: detailNpi,
+          address: "",
+          location: "",
+        } : null;
+        const profile = {
+          name,
+          location: "",
+          headline: specialty || providerProfession(credential ? [credential] : []),
+          notes: profileNotes({ npi: detailNpi, specialty, license }),
+          roles: specialty ? [specialty] : [],
+          employers: [], schools: [], licenses: license ? [license] : [], certifications: [],
+          profile_document: documentProfile || undefined,
+          source: PLATFORM.key, source_url: sourceUrl, source_id: detailNpi,
+          captured_at: new Date().toISOString(),
+        };
+        profiles.push(profile);
+        elements.set(detailNpi, document.documentElement);
+      }
+      return { profiles, elements };
+    }
+    for (const link of all('h2 a[href], h3 a[href]')) {
+      const href = absoluteUrl(link.getAttribute("href"));
+      let parsed;
+      try { parsed = new URL(href); } catch { continue; }
+      if (parsed.hostname !== "npino.com" && !parsed.hostname.endsWith(".npino.com")) continue;
+      const npi = parsed.pathname.match(/^\/(?!npi\/)[^/]+\/(\d{10})(?:-|\/|$)/i)?.[1]
+        || parsed.pathname.match(/^\/npi\/(\d{10})(?:-|\/|$)/i)?.[1];
+      if (!npi || seen.has(npi)) continue;
+      const card = smallestContainer(link, /\bNPI Number\s*:/i);
+      const name = cleanProviderName(link.textContent);
       if (!looksLikePersonName(name)) continue;
       const text = visibleText(card);
       const address = clean(text.match(/\bAddress\s*:\s*(.*?)(?=\s+(?:Phone|Fax)\s*:|$)/i)?.[1] || "", 500);
@@ -1401,12 +1399,13 @@
       const documentProfile = profilePath ? webmdProfileDocument(physician, {
         name, source_url: sourceUrl, source_id: sourceId, specialty, headline: specialty,
       }) : null;
+      const resolvedSpecialty = documentProfile?.specialties?.[0] || specialty;
       const profile = {
         name,
         location: documentProfile?.location || providerLocation,
-        headline: specialty || providerProfession(credentials),
+        headline: resolvedSpecialty || providerProfession(credentials),
         notes: profileNotes({
-          npi, specialty, address: documentProfile?.address || "",
+          npi, specialty: resolvedSpecialty, address: documentProfile?.address || "",
           extra: documentProfile?.summary || cardText.slice(0, 800),
         }),
         roles: [providerProfession(credentials)],
@@ -1526,10 +1525,10 @@
             : PLATFORM.key === "commonspirit"
               ? commonSpiritProfiles()
               : PLATFORM.key === "sharecare"
-                ? sharecareProfiles()
-                : PLATFORM.key === "webmd"
-                  ? webmdProfiles()
-                  : usNewsProfiles();
+              ? sharecareProfiles()
+              : PLATFORM.key === "webmd"
+                ? webmdProfiles()
+                : usNewsProfiles();
     lastProfiles = result.profiles;
     lastElements = result.elements;
     return {
@@ -1565,11 +1564,9 @@
     const profile = lastProfiles[Number(index)];
     if (!profile) return { ok: false, error: "That displayed provider is no longer available." };
     const element = lastElements.get(profile.source_id);
-    const link = element?.matches?.("a[href]") ? element : (PLATFORM.key === "npino"
-      ? element?.querySelector?.("h2 a[href], h3 a[href]")
-      : element?.querySelector?.(
-        'a[href*="/npi/"], a[href*="/doctors/"], a[href*="/nurse-practitioners/"], a[href*="/find-a-doctor/"], a.prov-name, a[href*="-overview"], a.information'
-      ));
+    const link = element?.matches?.("a[href]") ? element : element?.querySelector?.(
+      'h2 a[href], h3 a[href], a[href*="/npi/"], a[href*="/doctors/"], a[href*="/nurse-practitioners/"], a[href*="/physician-assistants/"], a[href*="/dentists/"], a[href*="/find-a-doctor/"], a.information'
+    );
     if (link) {
       link.scrollIntoView({ block: "center", behavior: "auto" });
       link.click();

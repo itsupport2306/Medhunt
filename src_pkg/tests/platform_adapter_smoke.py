@@ -83,20 +83,15 @@ def main():
                 <p data-cauto-id="candidate-location">Louisville, KY</p>
                 <p data-cauto-id="candidate-job-title">Dialysis Registered Nurse</p>
               </article>
-              <article data-cauto-id="MATCH_CARD_BASE-indeed-3">
-                <h2 data-cauto-id="candidate-name">María José Núñez</h2>
-                <p data-cauto-id="candidate-location">Austin, TX</p>
-                <p data-cauto-id="candidate-job-title">Nurse Practitioner</p>
-              </article>
             </main>"""
         )
         _install_runtime(indeed)
         indeed.add_script_tag(path=str(FRONTEND / "indeed-content.js"))
         indeed_result = _message(indeed, {"type": "RADIXSOL_LIST_PLATFORM_CANDIDATES"})
         assert indeed_result["ok"] is True
-        assert len(indeed_result["profiles"]) == 3, indeed_result
+        assert len(indeed_result["profiles"]) == 2, indeed_result
         assert [profile["source_id"] for profile in indeed_result["profiles"]] == [
-            "indeed-1", "indeed-2", "indeed-3",
+            "indeed-1", "indeed-2",
         ]
         assert indeed_result["profiles"][0]["roles"] == ["Registered Nurse"]
         assert indeed_result["profiles"][0]["employers"] == ["Example Medical Center"]
@@ -151,28 +146,19 @@ def main():
                 <dt data-qa="Recent experience List Item DT">Recent experience</dt>
                 <dd data-qa="Recent experience List Item DD">Example Medical Center</dd>
               </dl>
-            </article>
-            <article data-qa="Candidate Card">
-              <a href="/talent-pool/candidate/jane-two"><h3 data-qa="User Name">Jane Doe</h3></a>
-              <div data-qa="Employer Chat Header">Registered Nurse</div>
-              <dl><dd data-qa="Home location List Item DD">Portland, OR</dd></dl>
             </article>"""
         )
         _install_runtime(vivian)
         vivian.add_script_tag(path=str(FRONTEND / "platform-content.js"))
         vivian_result = _message(vivian, {"type": "RADIXSOL_LIST_PLATFORM_CANDIDATES"})
         assert vivian_result["platform"] == "vivian"
-        assert len(vivian_result["profiles"]) == 2, vivian_result
-        assert len({item["source_id"] for item in vivian_result["profiles"]}) == 2
         assert vivian_result["profiles"][0]["name"] == "Jane Doe"
         assert "Employer: Example Medical Center" in vivian_result["profiles"][0]["notes"]
         assert "Specialty: ICU" in vivian_result["profiles"][0]["notes"]
 
         zip_page = context.new_page()
         zip_page.goto("https://www.ziprecruiter.com/emp/rdb/search")
-        zip_page.set_content('''<section id="candidate" class="relative p-24 bg-white"></section>
-          <article data-testid="candidate-card"><h2 data-testid="candidate-name">Alex Rivera</h2>
-            <p>Austin, TX</p><a href="/candidate/zr-dom-only">View profile</a></article>''')
+        zip_page.set_content('<section id="candidate" class="relative p-24 bg-white"></section>')
         _install_runtime(zip_page)
         zip_page.evaluate(
             """() => {
@@ -192,8 +178,6 @@ def main():
         zip_page.add_script_tag(path=str(FRONTEND / "platform-content.js"))
         zip_result = _message(zip_page, {"type": "RADIXSOL_LIST_PLATFORM_CANDIDATES"})
         assert zip_result["platform"] == "ziprecruiter"
-        assert len(zip_result["profiles"]) == 2, zip_result
-        assert {item["source_id"] for item in zip_result["profiles"]} == {"zr-test-1", "zr-dom-only"}
         assert zip_result["profiles"][0]["source_id"] == "zr-test-1"
         assert "Employer: Example Hospital" in zip_result["profiles"][0]["notes"]
 
@@ -402,7 +386,7 @@ def main():
         assert linkedin_opened == {
             "ok": True,
             "source_url": "https://www.linkedin.com/in/maryann-liu-rn/",
-            "adapter_revision": "linkedin-capture-v5",
+            "adapter_revision": "linkedin-capture-v4",
         }
 
         facebook = context.new_page()

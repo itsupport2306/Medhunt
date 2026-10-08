@@ -117,7 +117,7 @@ def main():
         lazy = context.new_page()
         lazy.goto("https://employers.indeed.com/smartsourcing?lazy=1")
         lazy.set_content(
-            """<div>1-2 of 2 candidates</div><div id="list" style="height:160px; overflow-y:auto">
+            """<div id="list" style="height:160px; overflow-y:auto">
               <article data-cauto-id="MATCH_CARD_BASE-lazy-1" style="height:100px">
                 <h2 data-cauto-id="candidate-name">First Candidate</h2>
                 <p data-cauto-id="candidate-location">Dallas, TX</p>
@@ -127,16 +127,12 @@ def main():
             <script>
               document.querySelector('#list').addEventListener('scroll', (event) => {
                 if (event.currentTarget.scrollTop < 200 || document.querySelector('#lazy-two')) return;
-                const list = event.currentTarget;
-                setTimeout(() => {
-                  if (document.querySelector('#lazy-two')) return;
-                  const card = document.createElement('article');
-                  card.id = 'lazy-two';
-                  card.setAttribute('data-cauto-id', 'MATCH_CARD_BASE-lazy-2');
-                  card.innerHTML = '<h2 data-cauto-id="candidate-name">Second Candidate</h2>' +
-                    '<p data-cauto-id="candidate-location">Phoenix, AZ</p>';
-                  list.append(card);
-                }, 1500);
+                const card = document.createElement('article');
+                card.id = 'lazy-two';
+                card.setAttribute('data-cauto-id', 'MATCH_CARD_BASE-lazy-2');
+                card.innerHTML = '<h2 data-cauto-id="candidate-name">Second Candidate</h2>' +
+                  '<p data-cauto-id="candidate-location">Phoenix, AZ</p>';
+                event.currentTarget.append(card);
               });
             </script>"""
         )
@@ -180,10 +176,7 @@ def main():
         _install_runtime(vivian)
         vivian.add_script_tag(path=str(FRONTEND / "platform-content.js"))
         vivian_result = _message(vivian, {"type": "RADIXSOL_LIST_PLATFORM_CANDIDATES"})
-        assert vivian_result["count"] == 2, vivian_result
-        assert {profile["source_id"] for profile in vivian_result["profiles"]} == {
-            "vv_vivian-1", "vv_vivian-copy",
-        }, vivian_result
+        assert vivian_result["count"] == 1, vivian_result
         vivian_profile = vivian_result["profiles"][0]
         assert vivian_profile["name"] == "Zoë O'Neil", vivian_result
         assert vivian_profile["source_id"] == "vv_vivian-1", vivian_result

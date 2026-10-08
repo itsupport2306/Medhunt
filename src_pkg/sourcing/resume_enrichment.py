@@ -38,65 +38,6 @@ def enriched_filename(filename: str) -> str:
     return f"{stem} - enriched.pdf"
 
 
-def remove_contact_sheet(data: bytes) -> tuple[bytes, bool]:
-    """Return original resume pages, stripping a previously generated Medhunt cover."""
-    marked = (
-        b"/RadixsolCandidateId" in data
-        or b"Medhunt Sourcing Assistant" in data
-    )
-    try:
-        from pypdf import PdfReader, PdfWriter
-
-        reader = PdfReader(BytesIO(data), strict=False)
-        metadata = reader.metadata or {}
-        marked = marked or bool(
-            metadata.get("/RadixsolCandidateId") is not None
-            or str(metadata.get("/Author") or "").strip()
-            == "Medhunt Sourcing Assistant"
-        )
-        if not marked:
-            return data, False
-        if len(reader.pages) <= 1:
-            raise ContactSheetRefreshError(
-                "The marked PDF does not contain an original resume page."
-            )
-        writer = PdfWriter()
-        for source_page in reader.pages[1:]:
-            writer.add_page(source_page)
-        output = BytesIO()
-        writer.write(output)
-        return output.getvalue(), True
-    except ContactSheetRefreshError:
-        raise
-    except Exception as exc:
-        if marked:
-            raise ContactSheetRefreshError(
-                "The existing Medhunt contact page could not be removed safely."
-            ) from exc
-        return data, False
-
-
-def prepare_candidate_resume(data: bytes, candidate: dict, extraction=None):
-    """Remove a prior Medhunt cover and extract metadata without rejecting names."""
-    from . import resume_extraction
-
-    original, _ = remove_contact_sheet(data)
-    parsed = extraction or {}
-    fields = parsed.get("fields") or {}
-    confidence = parsed.get("confidence") or {}
-    try:
-        parsed_name_confidence = float(confidence.get("full_name") or 0)
-    except (TypeError, ValueError):
-        parsed_name_confidence = 0.0
-    if (
-        not fields.get("full_name")
-        or parsed_name_confidence < resume_extraction.config.RESUME_OCR_ACCEPT_CONFIDENCE
-    ):
-        parsed = resume_extraction.extract(original, candidate)
-    name = str((parsed.get("fields") or {}).get("full_name") or "").strip()
-    return original, parsed, name
-
-
 def add_contact_sheet(data: bytes, candidate: dict) -> tuple[bytes, bool]:
     """Return ``(pdf_bytes, embedded)`` for a captured PDF.
 
@@ -225,8 +166,42 @@ def refresh_contact_sheet(data: bytes, candidate: dict) -> tuple[bytes, bool]:
     page in the normal way. If no current contact is allowed, the old Medhunt
     page is removed instead of exposing stale data.
     """
-    source, marked = remove_contact_sheet(data)
-    if not marked:
-        return add_contact_sheet(source, candidate)
-    refreshed, embedded = add_contact_sheet(source, candidate)
-    return refreshed, embedded
+    marked = (
+        b"/RadixsolCandidateId" in data
+        or b"Medhunt Sourcing Assistant" in data
+    )
+    try:
+        from pypdf import PdfReader, PdfWriter
+
+        reader = PdfReader(BytesIO(data), strict=False)
+        metadata = reader.metadata or {}
+        marked = marked or bool(
+            metadata.get("/RadixsolCandidateId") is not None
+            or str(metadata.get("/Author") or "").strip()
+            == "Medhunt Sourcing Assistant"
+        )
+        if not marked:
+            return add_contact_sheet(data, candidate)
+        if len(reader.pages) <= 1:
+            raise ContactSheetRefreshError(
+                "The marked PDF does not contain an original resume page."
+            )
+
+        source = BytesIO()
+        writer = PdfWriter()
+        for page in reader.pages[1:]:
+            writer.add_page(page)
+        writer.write(source)
+        refreshed, embedded = add_contact_sheet(source.getvalue(), candidate)
+        return refreshed, embedded
+    except ContactSheetRefreshError:
+        raise
+    except Exception:
+        if marked:
+            # Returning the stored artifact here could expose a contact that
+            # has since expired or entered the DNC list. Fail closed instead.
+            raise ContactSheetRefreshError(
+                "The existing Medhunt contact page could not be refreshed safely."
+            )
+        # An unmarked source PDF contains no Medhunt contact page to leak.
+        return data, False

@@ -3,7 +3,7 @@ Outreach drafting with compliance guardrails.
 
 Drafts a personalized recruiting email per candidate (Gemini if available, else a
 solid template). NOTHING is sent automatically — drafts are saved for human review.
-Enforces the do-not-contact list for email drafts.
+Enforces the do-not-contact list and email-first default (phone/SMS need TCPA consent).
 """
 from __future__ import annotations
 
@@ -33,9 +33,15 @@ def draft_for_candidate(candidate_id: int, job: dict | None = None,
 
     # compliance gates
     normalized_channel = str(channel or "").strip().casefold()
-    if normalized_channel != "email":
-        return {"error": "Medhunt supports email drafts only; SMS messaging has been removed."}
-    targets = list(contactable.get("emails") or [])
+    if normalized_channel == "email":
+        targets = list(contactable.get("emails") or [])
+    elif normalized_channel in {"sms", "text", "text_message"}:
+        targets = [
+            item.get("value") for item in contactable.get("phone_contacts") or []
+            if item.get("kind") == "mobile" and item.get("value")
+        ]
+    else:
+        targets = list(contactable.get("phones") or [])
     if not targets:
         return {"error": f"No usable {channel} on file (missing or on do-not-contact list). "
                          "Enrich the candidate first."}

@@ -2,15 +2,15 @@
 
 const $ = (selector, element = document) => element.querySelector(selector);
 const IS_EXTENSION = ["chrome-extension:", "moz-extension:"].includes(location.protocol);
-const DEFAULT_BACKEND = "https://medhunt-fyxr.onrender.com";
+const DEFAULT_BACKEND = "http://127.0.0.1:8091";
 const HOSTED_AUTH_REQUIRED = IS_EXTENSION && DEFAULT_BACKEND.startsWith("https://");
 const LOCAL_API_TOKEN = "__MEDHUNT_LOCAL_API_TOKEN__";
 const BACKEND_STORAGE_KEY = "medhuntBenchmarkABackendUrl";
 const AUTH_STORAGE_KEY = "medhuntHealthBoardSession";
-const DEVICE_STORAGE_KEY = "medhuntExtensionInstallationId";
 const PRIVACY_CONSENT_KEY = "medhuntProfileDataConsentV1";
 const STAGES = ["new", "enriched", "contacted", "replied", "submitted", "rejected"];
 const CONTACT_BATCH_SIZE = 100;
+let MAX_LOOKUP_SELECTION = 10;
 // A public-records lookup drives a real browser per person and cannot be
 // parallelised, so a bulk request would sit unanswered well past any sane
 // timeout. Send one candidate per request instead and let each row resolve as
@@ -25,8 +25,8 @@ const SOURCING_PLATFORMS = {
     host: (hostname) => hostname === "indeed.com" || hostname.endsWith(".indeed.com"),
     contentScript: "indeed-content.js",
     mainScript: "inject.js",
-    adapterRevision: "indeed-capture-v6",
-    adapterRequestType: "RADIXSOL_INDEED_V6_REQUEST",
+    adapterRevision: "indeed-capture-v5",
+    adapterRequestType: "RADIXSOL_INDEED_V5_REQUEST",
     resumeCapture: true,
   },
   vivian: {
@@ -34,8 +34,8 @@ const SOURCING_PLATFORMS = {
     label: "Vivian",
     host: (hostname) => hostname === "vivian.com" || hostname.endsWith(".vivian.com"),
     contentScript: "platform-content.js",
-    adapterRevision: "platform-capture-v3",
-    adapterRequestType: "RADIXSOL_PLATFORM_V3_REQUEST",
+    adapterRevision: "platform-capture-v2",
+    adapterRequestType: "RADIXSOL_PLATFORM_V2_REQUEST",
     resumeCapture: false,
   },
   ziprecruiter: {
@@ -44,8 +44,8 @@ const SOURCING_PLATFORMS = {
     host: (hostname) => hostname === "ziprecruiter.com" || hostname.endsWith(".ziprecruiter.com"),
     contentScript: "platform-content.js",
     mainScript: "platform-main.js",
-    adapterRevision: "platform-capture-v3",
-    adapterRequestType: "RADIXSOL_PLATFORM_V3_REQUEST",
+    adapterRevision: "platform-capture-v2",
+    adapterRequestType: "RADIXSOL_PLATFORM_V2_REQUEST",
     resumeCapture: false,
   },
   linkedin: {
@@ -53,8 +53,8 @@ const SOURCING_PLATFORMS = {
     label: "LinkedIn",
     host: (hostname) => hostname === "linkedin.com" || hostname.endsWith(".linkedin.com"),
     contentScript: "linkedin-content.js",
-    adapterRevision: "linkedin-capture-v5",
-    adapterRequestType: "RADIXSOL_LINKEDIN_V5_REQUEST",
+    adapterRevision: "linkedin-capture-v4",
+    adapterRequestType: "RADIXSOL_LINKEDIN_V2_REQUEST",
     resumeCapture: false,
     guidedPdfCapture: true,
     automaticPdfCapture: true,
@@ -76,8 +76,8 @@ const SOURCING_PLATFORMS = {
     label: "NPI No.",
     host: (hostname) => hostname === "npino.com" || hostname.endsWith(".npino.com"),
     contentScript: "healthcare-directory-content.js",
-    adapterRevision: "healthcare-directory-v13",
-    adapterRequestType: "RADIXSOL_HEALTHCARE_DIRECTORY_V13_REQUEST",
+    adapterRevision: "healthcare-directory-v9",
+    adapterRequestType: "RADIXSOL_HEALTHCARE_DIRECTORY_V9_REQUEST",
     resumeCapture: false,
   },
   nysed: {
@@ -85,8 +85,8 @@ const SOURCING_PLATFORMS = {
     label: "NYSED",
     host: (hostname) => hostname === "eservices.nysed.gov",
     contentScript: "healthcare-directory-content.js",
-    adapterRevision: "healthcare-directory-v13",
-    adapterRequestType: "RADIXSOL_HEALTHCARE_DIRECTORY_V13_REQUEST",
+    adapterRevision: "healthcare-directory-v9",
+    adapterRequestType: "RADIXSOL_HEALTHCARE_DIRECTORY_V9_REQUEST",
     resumeCapture: false,
   },
   npiprofile: {
@@ -94,18 +94,18 @@ const SOURCING_PLATFORMS = {
     label: "NPI Profile",
     host: (hostname) => hostname === "npiprofile.com" || hostname.endsWith(".npiprofile.com"),
     contentScript: "healthcare-directory-content.js",
-    adapterRevision: "healthcare-directory-v13",
-    adapterRequestType: "RADIXSOL_HEALTHCARE_DIRECTORY_V13_REQUEST",
+    adapterRevision: "healthcare-directory-v9",
+    adapterRequestType: "RADIXSOL_HEALTHCARE_DIRECTORY_V9_REQUEST",
     resumeCapture: false,
   },
   usnews: {
     key: "usnews",
     label: "U.S. News Doctor Finder",
     host: (hostname, url) => hostname === "health.usnews.com" &&
-      /^\/(?:doctors|nurse-practitioners)(?:\/|$)/i.test(url?.pathname || ""),
+      /^\/(?:doctors|nurse-practitioners|physician-assistants|dentists)(?:\/|$)/i.test(url?.pathname || ""),
     contentScript: "healthcare-directory-content.js",
-    adapterRevision: "healthcare-directory-v13",
-    adapterRequestType: "RADIXSOL_HEALTHCARE_DIRECTORY_V13_REQUEST",
+    adapterRevision: "healthcare-directory-v9",
+    adapterRequestType: "RADIXSOL_HEALTHCARE_DIRECTORY_V9_REQUEST",
     resumeCapture: false,
   },
   medifind: {
@@ -114,8 +114,8 @@ const SOURCING_PLATFORMS = {
     host: (hostname, url) => (hostname === "medifind.com" || hostname.endsWith(".medifind.com"))
       && /^\/(?:doctors|specialty)(?:\/|$)/i.test(url?.pathname || ""),
     contentScript: "healthcare-directory-content.js",
-    adapterRevision: "healthcare-directory-v13",
-    adapterRequestType: "RADIXSOL_HEALTHCARE_DIRECTORY_V13_REQUEST",
+    adapterRevision: "healthcare-directory-v9",
+    adapterRequestType: "RADIXSOL_HEALTHCARE_DIRECTORY_V9_REQUEST",
     resumeCapture: false,
   },
   commonspirit: {
@@ -124,8 +124,8 @@ const SOURCING_PLATFORMS = {
     host: (hostname, url) => (hostname === "commonspirit.org" || hostname.endsWith(".commonspirit.org"))
       && /^\/(?:search|find-a-(?:doctor|location))(?:\/|$)/i.test(url?.pathname || ""),
     contentScript: "healthcare-directory-content.js",
-    adapterRevision: "healthcare-directory-v13",
-    adapterRequestType: "RADIXSOL_HEALTHCARE_DIRECTORY_V13_REQUEST",
+    adapterRevision: "healthcare-directory-v9",
+    adapterRequestType: "RADIXSOL_HEALTHCARE_DIRECTORY_V9_REQUEST",
     resumeCapture: false,
   },
   sharecare: {
@@ -134,8 +134,8 @@ const SOURCING_PLATFORMS = {
     host: (hostname, url) => hostname === "providers.sharecare.com"
       && /^\/(?:find-a-doctor|doctor)(?:\/|$)/i.test(url?.pathname || ""),
     contentScript: "healthcare-directory-content.js",
-    adapterRevision: "healthcare-directory-v13",
-    adapterRequestType: "RADIXSOL_HEALTHCARE_DIRECTORY_V13_REQUEST",
+    adapterRevision: "healthcare-directory-v9",
+    adapterRequestType: "RADIXSOL_HEALTHCARE_DIRECTORY_V9_REQUEST",
     resumeCapture: false,
   },
   webmd: {
@@ -146,18 +146,19 @@ const SOURCING_PLATFORMS = {
         || /^\/providers\/specialty(?:\/|$)/i.test(url?.pathname || "")
         || /^\/doctor\/[^/]+-overview\/?$/i.test(url?.pathname || "")),
     contentScript: "healthcare-directory-content.js",
-    adapterRevision: "healthcare-directory-v13",
-    adapterRequestType: "RADIXSOL_HEALTHCARE_DIRECTORY_V13_REQUEST",
+    adapterRevision: "healthcare-directory-v9",
+    adapterRequestType: "RADIXSOL_HEALTHCARE_DIRECTORY_V9_REQUEST",
     resumeCapture: false,
   },
 };
-const PROFESSIONAL_PROFILE_SOURCES = new Set(["usnews", "medifind", "commonspirit", "sharecare", "webmd"]);
+const PROFESSIONAL_PROFILE_SOURCES = new Set(["usnews", "medifind", "commonspirit", "sharecare", "webmd", "npino"]);
 
 let apiBase = IS_EXTENSION ? DEFAULT_BACKEND : "";
 let backendHealth = null;
 let authConfig = { enabled: false, provider: "healthboard" };
 let authSession = null;
-let extensionDeviceId = "";
+let contactLookupPaused = false;
+let contactLookupControlTimer = null;
 let privacyConsent = false;
 let extensionWorkspaceStarted = false;
 let extensionWorkspaceStarting = false;
@@ -167,6 +168,8 @@ let activeJobId = null;
 let activeView = IS_EXTENSION ? "indeed" : "candidates";
 let activeDraft = null;
 let activeSmsContext = null;
+let selectedSmsCandidates = new Set();
+let visibleCandidates = [];
 let activeIndeedProfile = null;
 let publicRecordReturnProfile = null;
 let activePublicRecordResult = null;
@@ -178,12 +181,20 @@ let activeSourcingContextKey = "";
 let activePageIndicatorLabel = "Candidate page";
 let indeedCandidates = [];
 let indeedSelected = new Set();
+let enrichedProfileKeys = new Set();
+let enrichedProfileOwner = "";
 let indeedSaveStatus = null;
 const indeedSavePromises = new Map();
 const professionalProfileResumePromises = new Map();
+const storedResumeDownloadPromises = new Map();
+const completedStoredResumeDownloads = new Set();
 let indeedScanState = { phase: "idle", found: 0, total: 0 };
 let indeedLookupState = new Map();
 let indeedLookupSummary = null;
+let nexusDeliverySummary = null;
+let nexusDeliveryCandidateIds = [];
+let nexusDeliveryPollTimer = null;
+let nexusDeliveryGeneration = 0;
 let indeedResultFilter = "all";
 let indeedLookupScope = new Set();
 let indeedLookupProfiles = [];
@@ -253,7 +264,6 @@ function setBusy(button, busy) {
 
 function friendlyActionError(error) {
   const message = String(error?.message || "");
-  if (/device|installation|approval/i.test(message) && /registered|approved|revoked|expired|waiting/i.test(message)) return message;
   if (
     Number(error?.status) === 401 ||
     /invalid local api token|unauthorized|authentication required/i.test(message)
@@ -293,7 +303,6 @@ async function api(path, options = {}) {
   const timer = setTimeout(() => controller.abort(), timeout);
 
   try {
-    await ensureExtensionDeviceId();
     const headers = authenticatedApiHeaders(fetchOptions.headers);
     const response = await fetch(`${apiBase}${path}`, {
       ...fetchOptions,
@@ -373,6 +382,48 @@ async function refreshHealth(showSuccess = false) {
     if (showSuccess) notify(IS_EXTENSION ? "Service unavailable." : (error.message || "Backend is unavailable."), "error");
     return null;
   }
+}
+
+function updateContactLookupPauseUi() {
+  const button = $('[data-action="toggle-contact-lookup-pause"]');
+  if (button) {
+    button.classList.toggle("is-paused", contactLookupPaused);
+    button.setAttribute("aria-pressed", String(contactLookupPaused));
+    button.title = contactLookupPaused ? "Resume contact lookup requests" : "Pause contact lookup requests";
+    button.innerHTML = `<span aria-hidden="true">${contactLookupPaused ? "&#9654;" : "&#10074;&#10074;"}</span><span>${contactLookupPaused ? "Resume" : "Pause"}</span>`;
+  }
+  updateSourceHeaderServiceStatus();
+}
+
+async function loadContactLookupControl() {
+  const control = await api("/contact-lookup/queue/control", { timeout: 15000 });
+  contactLookupPaused = control?.paused === true;
+  if (control && Object.prototype.hasOwnProperty.call(control, "selection_limit")) {
+    MAX_LOOKUP_SELECTION = control.selection_limit == null
+      ? Infinity
+      : Math.max(1, Number(control.selection_limit) || 10);
+  }
+  updateContactLookupPauseUi();
+  updateIndeedSelectionUi();
+  return contactLookupPaused;
+}
+
+async function toggleContactLookupPause() {
+  const control = await api("/contact-lookup/queue/control", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ paused: !contactLookupPaused }),
+    timeout: 15000,
+  });
+  contactLookupPaused = control?.paused === true;
+  if (control && Object.prototype.hasOwnProperty.call(control, "selection_limit")) {
+    MAX_LOOKUP_SELECTION = control.selection_limit == null
+      ? Infinity
+      : Math.max(1, Number(control.selection_limit) || 10);
+  }
+  updateContactLookupPauseUi();
+  updateIndeedSelectionUi();
+  notify(contactLookupPaused ? "Contact lookup requests paused." : "Contact lookup requests resumed.");
 }
 
 function normalizeBackendUrl(raw) {
@@ -469,7 +520,7 @@ const ROW_CONTACT_LIMIT = 3;
 function moreContactsNote(shown, total) {
   const hidden = Math.max(0, total - shown);
   return hidden
-    ? `<span class="lookup-detail">+${hidden} more — open Public records</span>`
+    ? `<span class="lookup-detail">+${hidden} more — open Candidate details</span>`
     : "";
 }
 
@@ -488,9 +539,33 @@ function publicPhoneLabel(kind) {
   return "Phone";
 }
 
+function preferredMessagingPhone(record) {
+  const contacts = publicPhoneContacts(record);
+  return contacts.find((item) => item.kind === "mobile") || contacts[0] || null;
+}
+
+function nexusBlockLabel(nexus) {
+  const destination = nexus?.target || (nexus?.state?.includes("ceipal") ? "ceipal" : "nexus");
+  if (destination === "ceipal") {
+    if (nexus?.state === "already_in_ceipal") return "Already present in Ceipal";
+    if (nexus?.state === "unavailable") return "Ceipal check unavailable · try again later";
+    return "Ceipal check needs review";
+  }
+  switch (nexus?.state) {
+    case "active_in_nexus": return "Already active in Nexus";
+    case "identity_unverified": return "Possible Nexus match · identity could not be confirmed";
+    case "identity_search_unavailable": return "Nexus check needs an email or wireless phone number";
+    case "unavailable": return "Nexus check unavailable · try again later";
+    default: return "Nexus check needs review";
+  }
+}
+
 function candidateCard(candidate) {
+  const nexus = candidate.ats_eligibility || candidate.nexus_eligibility || {};
+  const nexusBlocked = nexus.blocked === true;
   const email = Array.isArray(candidate.emails) ? candidate.emails[0] : "";
   const phoneContact = publicPhoneContacts(candidate)[0] || null;
+  const messagingContact = preferredMessagingPhone(candidate);
   const phone = phoneContact?.value || "";
   const phoneLabel = publicPhoneLabel(phoneContact?.kind);
   const address = Array.isArray(candidate.addresses) ? candidate.addresses[0] : "";
@@ -501,6 +576,11 @@ function candidateCard(candidate) {
   const publicRecord = candidate.records_available
     ? `<span class="contact-origin">Public record</span>`
     : "";
+  const nexusNotice = nexusBlocked
+    ? `<div class="notice error"><strong>${nexusBlockLabel(nexus)}</strong>${nexus.status ? ` · ${escapeHtml(nexus.status)}` : ""}${nexus.recruiter ? ` · ${escapeHtml(nexus.recruiter)}` : ""}</div>`
+    : nexus.state === "created_in_ceipal"
+      ? `<div class="notice success"><strong>Parsed to Ceipal</strong></div>`
+      : "";
   const contact = successful
     ? `<div class="contact">
         ${publicRecord}
@@ -521,12 +601,14 @@ function candidateCard(candidate) {
       <div class="fit"><div class="number">${Number(candidate.fit_score) || 0}</div><div class="label">FIT</div></div>
     </div>
     <div><span class="${stageClass(stage)}">${escapeHtml(stage)}</span></div>
+    ${nexusNotice}
     ${contact}
     <div class="candidate-actions">
-      <button type="button" class="btn teal sm" data-action="enrich" data-id="${Number(candidate.id)}">Enrich</button>
+      ${IS_EXTENSION && messagingContact?.value && !nexusBlocked ? `<label class="muted small"><input type="checkbox" data-action="toggle-sms-candidate" data-candidate-id="${Number(candidate.id)}"${selectedSmsCandidates.has(Number(candidate.id)) ? " checked" : ""}> Select for bulk SMS</label>` : ""}
+      <button type="button" class="btn teal sm" data-action="enrich" data-id="${Number(candidate.id)}"${nexusBlocked ? " disabled" : ""}>Enrich</button>
       ${publicRecordButton(candidate.name, candidate.location, candidate.id)}
       <button type="button" class="btn sm" data-action="draft" data-id="${Number(candidate.id)}">Draft outreach</button>
-      ${phoneContact?.kind === "mobile" ? `<button type="button" class="btn sm" data-action="compose-sms" data-candidate-id="${Number(candidate.id)}" data-candidate-name="${escapeHtml(candidate.name)}" data-phone="${escapeHtml(phone)}">Send SMS</button>` : ""}
+      ${messagingContact?.value && !nexusBlocked ? `<button type="button" class="btn sm sms-button" data-action="compose-sms" data-candidate-id="${Number(candidate.id)}" data-candidate-name="${escapeHtml(candidate.name)}" data-phone="${escapeHtml(messagingContact.value)}">Send SMS</button>` : ""}
       <button type="button" class="btn ghost sm" data-action="move" data-id="${Number(candidate.id)}">Move ▾</button>
     </div>
   </article>`;
@@ -549,6 +631,7 @@ async function viewCandidates() {
       api(`/candidates${suffix}`),
       api("/stats"),
     ]);
+    visibleCandidates = candidates;
     $("#content").innerHTML = `
       <div class="notice">Candidate contact access · human approval required · do-not-contact enforced.</div>
       <div class="kpis">
@@ -565,6 +648,7 @@ async function viewCandidates() {
             <select id="jobSelect" class="field-auto">${jobOptions(true)}</select>
           </div>
           <div class="row">
+            ${IS_EXTENSION ? `<button type="button" class="btn teal" data-action="bulk-sms"${selectedSmsCandidates.size ? "" : " disabled"}>Bulk SMS (${selectedSmsCandidates.size})</button>` : ""}
             ${IS_EXTENSION ? `<button type="button" class="btn capture-btn" data-action="capture-indeed">Capture sourcing profile</button>` : ""}
             <button type="button" class="btn teal" data-action="enrich-all">Enrich all</button>
             <button type="button" class="btn ghost" data-action="rank-all"${activeJobId ? "" : " disabled"}>Rank vs job</button>
@@ -649,7 +733,18 @@ async function submitIntake() {
 
 async function enrichCandidate(id) {
   const result = await api(`/candidates/${id}/contact-lookup`, { method: "POST" });
-  notify("Candidate enriched.");
+  const eligibility = result.ats_eligibility || result.nexus_eligibility || {};
+  const nexusState = eligibility.state;
+  const destination = result.ats_destination || eligibility.target || "nexus";
+  notify(result.status === "blocked"
+    ? destination === "ceipal"
+      ? nexusBlockLabel(eligibility)
+      : nexusState === "identity_search_unavailable"
+      ? "Cannot verify this candidate in Nexus until name and city/state search is supported."
+      : nexusState === "identity_unverified"
+        ? "Possible Nexus match needs identity review."
+        : "Candidate is already active in Nexus."
+    : "Candidate enriched.");
   await viewCandidates();
 }
 
@@ -832,37 +927,13 @@ function authenticatedApiHeaders(initialHeaders = {}) {
   if (authSession?.extension_token) {
     headers.set("X-HealthBoard-Extension-Token", authSession.extension_token);
   }
-  if (extensionDeviceId) headers.set("X-Medhunt-Device-ID", extensionDeviceId);
   return headers;
-}
-
-function extensionDeviceName() {
-  const platform = navigator.userAgentData?.platform || navigator.platform || "Computer";
-  const browser = /Edg\//.test(navigator.userAgent)
-    ? "Edge"
-    : /Chrome\//.test(navigator.userAgent) ? "Chrome" : "Browser";
-  return `${platform} · ${browser}`.slice(0, 200);
-}
-
-async function ensureExtensionDeviceId() {
-  if (!IS_EXTENSION) return "";
-  if (extensionDeviceId) return extensionDeviceId;
-  let value = await readChromeSetting(DEVICE_STORAGE_KEY);
-  if (!/^[A-Za-z0-9_-]{40,64}$/.test(String(value || ""))) {
-    const bytes = crypto.getRandomValues(new Uint8Array(32));
-    const binary = Array.from(bytes, (byte) => String.fromCharCode(byte)).join("");
-    value = btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
-    await writeChromeSetting(DEVICE_STORAGE_KEY, value);
-  }
-  extensionDeviceId = value;
-  return extensionDeviceId;
 }
 
 async function fetchStoredResumeBlob(candidateId, resumeId) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 60000);
   try {
-    await ensureExtensionDeviceId();
     const response = await fetch(
       `${apiBase}/candidates/${Number(candidateId)}/resumes/${Number(resumeId)}`,
       { headers: authenticatedApiHeaders(), signal: controller.signal },
@@ -896,7 +967,6 @@ function releaseResumeBlobUrlLater(url, delay = 300000) {
 
 async function loadAuth() {
   if (!IS_EXTENSION) return;
-  await ensureExtensionDeviceId();
   // Read the remembered identity before contacting the hosted service. A
   // Render cold start must not make a signed-in user appear logged out.
   authSession = await readChromeSession(AUTH_STORAGE_KEY) || null;
@@ -915,18 +985,6 @@ async function loadAuth() {
   }
   if (authConfig.enabled && authSession?.extension_token) {
     try {
-      if (authSession.device_pending) {
-        const status = await api("/auth/device-status", { timeout: 30000 });
-        if (!status.approved) {
-          authSession.device = status.device;
-          await writeChromeSession(AUTH_STORAGE_KEY, authSession);
-          renderAuthState();
-          return;
-        }
-        authSession.device_pending = false;
-        authSession.device = status.device;
-        authSession.user = status.user;
-      }
       const current = await api("/auth/me", { timeout: 30000 });
       authSession.user = current.user;
       await writeChromeSession(AUTH_STORAGE_KEY, authSession);
@@ -934,13 +992,8 @@ async function loadAuth() {
       // Only an explicit authentication rejection invalidates the remembered
       // login. Timeouts, Render cold starts, and temporary 5xx responses do not.
       if ([401, 403].includes(Number(error?.status))) {
-        if (/waiting for approval/i.test(String(error?.message || ""))) {
-          authSession.device_pending = true;
-          await writeChromeSession(AUTH_STORAGE_KEY, authSession);
-        } else {
-          authSession = null;
-          await writeChromeSession(AUTH_STORAGE_KEY, null);
-        }
+        authSession = null;
+        await writeChromeSession(AUTH_STORAGE_KEY, null);
       }
     }
   }
@@ -948,21 +1001,29 @@ async function loadAuth() {
 }
 
 function renderAuthState() {
-  const logoutButton = $("#logoutButton");
-  const sourceLogoutButton = $("#sourceLogoutButton");
+  const button = $("#authButton");
   const avatar = $("#userAvatar");
-  const signedIn = Boolean(authConfig.enabled && authSession?.extension_token);
-  if (logoutButton) logoutButton.hidden = !signedIn;
-  if (sourceLogoutButton) sourceLogoutButton.hidden = !signedIn;
-  if (!avatar) return;
+  if (!button || !avatar) return;
   if (authConfig.enabled && authSession?.user) {
     const user = authSession.user;
     avatar.textContent = initials(user.name || user.email || "User");
     avatar.setAttribute("aria-label", user.name || user.email || "Signed-in user");
+    button.hidden = IS_EXTENSION;
+    button.disabled = IS_EXTENSION;
+    button.textContent = IS_EXTENSION ? "" : "Sign out";
+    button.dataset.action = IS_EXTENSION ? "" : "logout";
   } else if (authConfig.enabled) {
+    button.hidden = false;
+    button.disabled = false;
     avatar.textContent = "?";
     avatar.setAttribute("aria-label", "Sign in to Medhunt");
+    button.textContent = "Sign in";
+    button.dataset.action = "login";
   } else {
+    button.hidden = true;
+    button.disabled = true;
+    button.textContent = "";
+    button.dataset.action = "";
     avatar.textContent = "MT";
     avatar.setAttribute("aria-label", "Medhunt local workspace");
   }
@@ -1027,18 +1088,11 @@ async function verifyLoginCode() {
   const loginConsent = Boolean(pendingLogin.privacyConsent);
   const verified = await api("/auth/verify-code", {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      ...pendingLogin,
-      code,
-      device_id: await ensureExtensionDeviceId(),
-      device_name: extensionDeviceName(),
-    }), timeout: 15000,
+    body: JSON.stringify({ ...pendingLogin, code }), timeout: 15000,
   });
   authSession = {
     extension_token: verified.extension_token,
     user: verified.user,
-    device: verified.device,
-    device_pending: verified.device_approval_required === true,
   };
   await writeChromeSession(AUTH_STORAGE_KEY, authSession);
   if (loginConsent) {
@@ -1046,12 +1100,8 @@ async function verifyLoginCode() {
     await writeChromeSetting(PRIVACY_CONSENT_KEY, true);
   }
   pendingLogin = null;
-  renderAuthState();
-  if (authSession.device_pending) {
-    showPendingDeviceApproval();
-    return;
-  }
   closeModal();
+  renderAuthState();
   if (!extensionWorkspaceStarted && privacyConsent) {
     await startExtensionWorkspace();
     notify(`Signed in as ${verified.user.email}.`);
@@ -1067,97 +1117,7 @@ async function logout() {
   authSession = null;
   await writeChromeSession(AUTH_STORAGE_KEY, null);
   renderAuthState();
-  closeModal();
   notify("Signed out.");
-}
-
-function deviceTimestamp(value) {
-  const timestamp = Number(value || 0);
-  return timestamp ? new Date(timestamp * 1000).toLocaleString() : "Not yet";
-}
-
-function showPendingDeviceApproval() {
-  const device = authSession?.device || {};
-  $("#modalRoot").innerHTML = `<div class="modal" role="presentation">
-    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="devicePendingTitle">
-      <div class="privacy-dialog-header">
-        <img class="privacy-dialog-logo" src="icons/medhunt-logo.png" alt="" aria-hidden="true">
-        <div><span class="privacy-eyebrow">Device security</span><h2 id="devicePendingTitle">Approval required</h2></div>
-      </div>
-      <p>This installation is signed in, but it cannot access candidate data yet.</p>
-      <div class="notice"><strong>${escapeHtml(device.device_name || extensionDeviceName())}</strong><br><span class="muted small">Request ending ${escapeHtml(device.installation_suffix || "")}</span></div>
-      <p class="muted small">Ask a Healthcareboard administrator to approve this installation. No verification code needs to be shared.</p>
-      <div class="row modal-actions">
-        <button type="button" class="btn ghost" data-action="logout">Cancel sign-in</button>
-        <button type="button" class="btn teal" data-action="check-device-approval">Check approval</button>
-      </div>
-    </div></div>`;
-}
-
-async function checkDeviceApproval() {
-  if (!authSession?.extension_token) return login();
-  const status = await api("/auth/device-status", { timeout: 30000 });
-  authSession.device = status.device;
-  authSession.user = status.user;
-  authSession.device_pending = !status.approved;
-  await writeChromeSession(AUTH_STORAGE_KEY, authSession);
-  renderAuthState();
-  if (!status.approved) {
-    showPendingDeviceApproval();
-    notify("This device is still waiting for approval.");
-    return;
-  }
-  closeModal();
-  notify("This device is approved.");
-  if (!privacyConsent) {
-    showPrivacyConsent();
-    return;
-  }
-  await startExtensionWorkspace();
-}
-
-function deviceCard(device, isAdmin = false) {
-  const owner = device.user_name || device.user_email || device.user_id || "Account user";
-  const canRevoke = device.status !== "revoked" && !device.current;
-  return `<div class="device-row">
-    <div class="device-row-main">
-      <div class="row spread"><strong>${escapeHtml(device.device_name || "Medhunt browser")}</strong><span class="pill ${device.status === "approved" ? "live" : ""}">${escapeHtml(device.status)}</span></div>
-      <span class="muted small">${escapeHtml(owner)}${device.current ? " · This device" : ""}</span>
-      ${isAdmin && Number(device.approved_device_count) > 1 ? `<span class="muted small">${Number(device.approved_device_count)} approved devices on this account</span>` : ""}
-      <span class="muted small">Last used ${escapeHtml(deviceTimestamp(device.last_seen))} · ID …${escapeHtml(device.installation_suffix || "")}</span>
-    </div>
-    <div class="row device-actions">
-      ${canRevoke ? `<button type="button" class="btn sm ghost" data-action="revoke-device" data-device-id="${Number(device.id)}">Revoke</button>` : ""}
-    </div>
-  </div>`;
-}
-
-async function showAccount() {
-  const result = await api("/auth/devices");
-  const devices = result.items || [];
-  $("#modalRoot").innerHTML = `<div class="modal" role="presentation">
-    <div class="dialog device-dialog" role="dialog" aria-modal="true" aria-labelledby="deviceAccountTitle">
-      <div class="privacy-dialog-header">
-        <img class="privacy-dialog-logo" src="icons/medhunt-logo.png" alt="" aria-hidden="true">
-        <div><span class="privacy-eyebrow">Account security</span><h2 id="deviceAccountTitle">Registered devices</h2></div>
-      </div>
-      <p class="muted small">Your registered devices. Organization and platform administrators manage device approvals in Halo.</p>
-      <div class="device-list">${devices.length ? devices.map((device) => deviceCard(device, false)).join("") : `<p class="muted">No registered devices.</p>`}</div>
-      <div class="row modal-actions">
-        <button type="button" class="btn ghost" data-action="logout">Sign out</button>
-        <button type="button" class="btn" data-action="close-modal">Close</button>
-      </div>
-    </div></div>`;
-}
-
-async function revokeDevice(button) {
-  await api(`/auth/devices/${Number(button.dataset.deviceId)}/revoke`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ reason: "Revoked from Medhunt account settings" }),
-  });
-  notify("Device access revoked.");
-  await showAccount();
 }
 
 function showPrivacyConsent() {
@@ -1594,47 +1554,16 @@ function professionalProfileImportPayload(profile) {
   };
 }
 
-// Resume metadata is durable in the Medhunt service and the bytes are kept in
-// private object storage. Reuse that central copy before opening a source
-// profile again for another recruiter or a reopened panel.
-async function hydrateStoredResume(profile) {
-  const candidateId = Number(profile?._candidateId);
-  if (!candidateId) return null;
-  try {
-    const candidate = await api(`/candidates/${candidateId}`, { timeout: 15000 });
-    const resume = Array.isArray(candidate?.resumes) ? candidate.resumes[0] : null;
-    if (!resume || !Number(resume.id)) return null;
-    // A public-profile PDF may have been stored before the contact lookup
-    // completed.  Do not reuse that un-enriched snapshot: the backend will
-    // rebuild it through the normal profile path and prepend the current
-    // contact sheet.  The filename is the durable marker written by
-    // _store_resume_pdf when the sheet was embedded.
-    const hasContacts = Boolean(
-      (Array.isArray(candidate?.emails) && candidate.emails.length)
-      || (Array.isArray(candidate?.phones) && candidate.phones.length),
-    );
-    const hasContactSheet = /\s-\s+enriched\.pdf$/i.test(String(resume.filename || ""));
-    if (hasContacts && !hasContactSheet) return null;
-    const current = indeedLookupFor(profile);
-    indeedLookupState.set(profile._selectionKey, {
-      ...current,
-      resume,
-      resume_status: "stored",
-      resume_error: "",
-    });
-    updateIndeedLookupProgressUi(profile);
-    return resume;
-  } catch {
-    return null;
-  }
-}
-
 // Keep source-declared specialty labels separate from generic skills. This
 // accepts structured adapter fields and explicit Specialty: notes emitted by
 // healthcare-directory adapters, without guessing that an arbitrary skill or
 // headline is a recruiting-system specialty.
 function profileSpecialties(profile, list) {
-  const values = [profile?.specialty, ...(Array.isArray(profile?.specialties) ? profile.specialties : [])];
+  const values = [
+    profile?.specialty,
+    ...(Array.isArray(profile?.specialties) ? profile.specialties : []),
+    ...(Array.isArray(profile?.profile_document?.specialties) ? profile.profile_document.specialties : []),
+  ];
   for (const line of String(profile?.notes || "").split(/\r?\n/)) {
     const match = line.match(/^specialt(?:y|ies)\s*:\s*(.+)$/i);
     if (match) values.push(...match[1].split(/\s*[;,|]\s*/));
@@ -1650,11 +1579,7 @@ async function enrichProfessionalProfileAndResume(profile) {
     resume_error: "",
   });
   updateIndeedLookupProgressUi(profile);
-  const captured = profile.profile_document?.kind === "public_professional_profile"
-    && profile._detail_capture_ready !== false
-    && sameProfessionalProfileUrl(activeSourcingPageUrl, profile.source_url)
-    ? profile
-    : await captureProfessionalProfileInBackground(profile);
+  const captured = await captureProfessionalProfileInBackground(profile);
   const platform = SOURCING_PLATFORMS[profile.source];
   if (!captured?.profile_document) {
     throw new Error(`${platform?.label || "The profile"} did not contain professional details.`);
@@ -1689,34 +1614,37 @@ async function enrichProfessionalProfileAndResume(profile) {
 }
 
 function startProfessionalProfileResumeBatch(profiles) {
-  const pending = (profiles || []).filter((profile) => (
-    PROFESSIONAL_PROFILE_SOURCES.has(profile?.source)
-      && Number(profile._candidateId)
-      && hasCompleteIndeedContact(indeedLookupFor(profile))
-      && (!indeedLookupFor(profile).resume || !profile._detailProfileCaptured)
-  ));
-  if (!pending.length || indeedResumeBatchState.active) return Promise.resolve();
+  const seenCandidates = new Set();
+  const queue = (profiles || []).filter((profile) => {
+    const candidateId = Number(profile?._candidateId);
+    const result = indeedLookupFor(profile);
+    if (
+      !PROFESSIONAL_PROFILE_SOURCES.has(profile?.source) || !candidateId
+      || !isIndeedMatch(result)
+      || (result.resume && profile._detailProfileCaptured)
+      || seenCandidates.has(candidateId)
+    ) return false;
+    seenCandidates.add(candidateId);
+    return true;
+  });
+  if (!queue.length || indeedResumeBatchState.active) return Promise.resolve();
+
+  const first = queue[0];
+  indeedResumeBatchState = {
+    active: true,
+    total: queue.length,
+    processed: 0,
+    saved: 0,
+    failed: 0,
+    sourceTabId: Number(first._sourceTabId || activeSourcingTabId),
+    sourceWindowId: Number(first._sourceWindowId || activeSourcingWindowId),
+    sourceContextKey: String(first._sourceContextKey || activeSourcingContextKey),
+    sourcePageUrl: String(activeSourcingPageUrl || first.source_url || ""),
+    platform: first.source,
+  };
+  updateSourceHeaderProgressUi();
 
   return (async () => {
-    const queue = [];
-    for (const profile of pending) {
-      if (!(await hydrateStoredResume(profile))) queue.push(profile);
-    }
-    if (!queue.length) return;
-    const first = queue[0];
-    indeedResumeBatchState = {
-      active: true,
-      total: queue.length,
-      processed: 0,
-      saved: 0,
-      failed: 0,
-      sourceTabId: Number(first._sourceTabId || activeSourcingTabId),
-      sourceWindowId: Number(first._sourceWindowId || activeSourcingWindowId),
-      sourceContextKey: String(first._sourceContextKey || activeSourcingContextKey),
-      sourcePageUrl: String(activeSourcingPageUrl || first.source_url || ""),
-      platform: first.source,
-    };
-    updateSourceHeaderProgressUi();
     try {
       for (const profile of queue) {
         let saved = false;
@@ -1749,6 +1677,7 @@ function startProfessionalProfileResumeBatch(profiles) {
       } else if (completed.failed) {
         notify("Professional profile resumes could not be saved.", "error");
       }
+      refreshTrackedNexusDeliveries();
     }
   })();
 }
@@ -2032,6 +1961,51 @@ function indeedProfileKey(profile, index) {
   return `row:${index}:${profile.name || ""}:${profile.location || ""}`;
 }
 
+function enrichedStorageKey() {
+  const owner = String(authSession?.user?.user_id || authSession?.user?.email || "local");
+  return `medhunt-enriched-profiles-v1:${owner}`;
+}
+
+function loadEnrichedProfileKeys() {
+  const owner = enrichedStorageKey();
+  if (owner === enrichedProfileOwner) return;
+  enrichedProfileOwner = owner;
+  try {
+    const saved = JSON.parse(localStorage.getItem(owner) || "[]");
+    enrichedProfileKeys = new Set(Array.isArray(saved) ? saved.filter((key) => typeof key === "string") : []);
+  } catch {
+    enrichedProfileKeys = new Set();
+  }
+}
+
+function enrichedProfileKey(profile) {
+  const source = String(profile?.source || activeSourcingPlatform?.key || "");
+  const identity = String(profile?.source_id || profile?.source_url || "");
+  return source && identity ? `${source}:${identity}` : "";
+}
+
+function isPreviouslyEnriched(profile) {
+  loadEnrichedProfileKeys();
+  const key = enrichedProfileKey(profile);
+  return Boolean(key && enrichedProfileKeys.has(key));
+}
+
+function rememberEnrichedProfile(profile) {
+  loadEnrichedProfileKeys();
+  const key = enrichedProfileKey(profile);
+  if (!key) return;
+  enrichedProfileKeys.add(key);
+  try {
+    localStorage.setItem(enrichedProfileOwner, JSON.stringify(Array.from(enrichedProfileKeys).slice(-5000)));
+  } catch {
+    // Storage can be unavailable in a restricted browser profile.
+  }
+}
+
+function selectableIndeedCandidates() {
+  return indeedCandidates.filter((profile) => !isPreviouslyEnriched(profile));
+}
+
 function updateIndeedSelectionUi() {
   const count = indeedSelected.size;
   const counter = $("#indeedSelectedCount");
@@ -2050,10 +2024,19 @@ function updateIndeedSelectionUi() {
   });
   const selectionToggle = $(".selection-toggle");
   if (selectionToggle) {
-    selectionToggle.textContent = indeedCandidates.length > 0 && count === indeedCandidates.length
+    const selectable = selectableIndeedCandidates();
+    selectionToggle.textContent = selectable.length > 0 && count === Math.min(selectable.length, MAX_LOOKUP_SELECTION)
       ? "Clear selection"
-      : "Select all";
+      : (Number.isFinite(MAX_LOOKUP_SELECTION)
+        ? `Select up to ${MAX_LOOKUP_SELECTION}`
+        : "Select all profiles");
   }
+  document.querySelectorAll(".indeed-select").forEach((checkbox) => {
+    checkbox.disabled = indeedScanState.phase === "lookup" ||
+      isPreviouslyEnriched(indeedCandidates.find((profile) => profile._selectionKey === checkbox.dataset.key)) || (
+      count >= MAX_LOOKUP_SELECTION && !checkbox.checked
+    );
+  });
   const selectAll = $("#indeedSelectAll");
   if (selectAll) {
     selectAll.checked = indeedCandidates.length > 0 && count === indeedCandidates.length;
@@ -2087,8 +2070,20 @@ function indeedResultStatus(profile) {
     : result.resume_status === "failed" || result.resume_error
       ? `<span class="lookup-detail">Resume unavailable</span>`
       : "";
-  if (result.status === "looking_up") {
-    return `<span class="lookup-searching"><i aria-hidden="true"></i>Checking contact</span>`;
+  if (result.status === "queued") {
+    const ahead = Math.max(0, Number(result.queue_position) || 0);
+    return `<span class="lookup-searching"><i aria-hidden="true"></i>In queue${ahead ? ` Â· ${ahead} ahead` : ""}${result.request_id ? ` Â· ${escapeHtml(result.request_id)}` : ""}</span>`;
+  }
+  if (result.status === "looking_up" || result.status === "processing") {
+    return `<span class="lookup-searching"><i aria-hidden="true"></i>Checking contact${result.request_id ? ` Â· ${escapeHtml(result.request_id)}` : ""}</span>`;
+  }
+  if (result.status === "blocked") {
+    const nexus = result.ats_eligibility || result.nexus_eligibility || {};
+    const details = [nexus.status, nexus.recruiter].filter(Boolean).join(" · ");
+    return `<div class="lookup-outcome">
+      <span class="lookup-state lookup-error"><i aria-hidden="true"></i>${nexusBlockLabel(nexus)}</span>
+      ${details ? `<span class="lookup-detail">${escapeHtml(details)}</span>` : ""}
+    </div>`;
   }
   if (isIndeedMatch(result)) {
     const emails = result.emails || [];
@@ -2099,9 +2094,12 @@ function indeedResultStatus(profile) {
       : "";
     const shownEmails = emails.slice(0, ROW_CONTACT_LIMIT);
     const shownPhones = phoneContacts.slice(0, ROW_CONTACT_LIMIT);
-    const mobile = phoneContacts.find((phone) => phone.kind === "mobile");
+    const messagingPhone = preferredMessagingPhone(result);
+    const parsedNotice = result.ats_eligibility?.state === "created_in_ceipal"
+      ? `<span class="lookup-state match"><i aria-hidden="true"></i>Parsed to Ceipal</span>`
+      : `<span class="lookup-state match"><i aria-hidden="true"></i>Contact ready</span>`;
     return `<div class="lookup-contact">
-      <span class="lookup-state match"><i aria-hidden="true"></i>Contact ready</span>
+      ${parsedNotice}
       ${shownEmails.map((email) => `<span class="lookup-value">${escapeHtml(email)}</span>`).join("")}
       ${shownPhones.map((phone) => `<span class="lookup-value">${escapeHtml(`${publicPhoneLabel(phone.kind)}: ${phone.value}`)}</span>`).join("")}
       ${moreContactsNote(
@@ -2111,9 +2109,7 @@ function indeedResultStatus(profile) {
       ${hometownMatch}
       ${resume}
       ${resumeStatus}
-      ${result.sms_status === "sent"
-        ? `<span class="lookup-state match sms-sent"><i aria-hidden="true"></i>SMS sent</span>`
-        : mobile && profile._candidateId ? `<button type="button" class="resume-link" data-action="compose-sms" data-candidate-id="${Number(profile._candidateId)}" data-candidate-name="${escapeHtml(profile.name)}" data-phone="${escapeHtml(mobile.value)}">Send SMS</button>` : ""}
+      ${messagingPhone ? `<button type="button" class="resume-link sms-inline" data-action="compose-sms" data-candidate-id="${Number(profile._candidateId)}" data-candidate-name="${escapeHtml(profile.name)}" data-phone="${escapeHtml(messagingPhone.value)}">Send SMS</button>` : ""}
     </div>`;
   }
   if (result.status === "not_found") {
@@ -2124,7 +2120,7 @@ function indeedResultStatus(profile) {
   }
   if (result.status === "failed") {
     return `<div class="lookup-outcome">
-      <span class="lookup-state lookup-error"><i aria-hidden="true"></i>Needs retry</span>
+      <span class="lookup-state lookup-error"><i aria-hidden="true"></i>Lookup unavailable</span>
       ${resume}${resumeStatus}
     </div>`;
   }
@@ -2151,9 +2147,6 @@ function linkedinPdfControl(profile, index) {
   if (result.resume_status === "downloading") {
     return `<div class="linkedin-pdf-tools"><span>Resume in progress</span></div>`;
   }
-  if (!hasCompleteIndeedContact(result)) {
-    return `<div class="linkedin-pdf-tools"><span>Find a phone number or email before saving a resume.</span></div>`;
-  }
   return `<div class="linkedin-pdf-tools">
     ${result.resume_error ? `<span>Resume unavailable</span>` : ""}
     <button type="button" class="linkedin-pdf-button" data-action="capture-linkedin-pdf" data-index="${index}">Save resume</button>
@@ -2174,7 +2167,9 @@ function indeedFilteredProfiles() {
     return scopedProfiles.filter((profile) => isIndeedMatch(indeedLookupFor(profile)));
   }
   if (indeedResultFilter === "no_match") {
-    return scopedProfiles.filter((profile) => indeedLookupFor(profile)?.status === "not_found");
+    return scopedProfiles.filter((profile) => ["not_found", "blocked"].includes(
+      indeedLookupFor(profile)?.status,
+    ));
   }
   if (indeedResultFilter === "failed") {
     return scopedProfiles.filter((profile) => indeedLookupFor(profile)?.status === "failed");
@@ -2304,7 +2299,9 @@ function updateSourceHeaderProgressUi() {
 function indeedPanelHeader() {
   const platformLabel = escapeHtml(activePageIndicatorLabel);
   const progress = sourceHeaderProgressSnapshot();
-  const serviceState = progress?.status || (backendHealth ? "Ready to find contacts" : "Service offline");
+  const serviceState = contactLookupPaused
+    ? "Contact requests paused"
+    : (progress?.status || (backendHealth ? "Ready to find contacts" : "Service offline"));
   return `
     <header class="source-shell-header panel-brand${progress ? " is-busy" : ""}" data-testid="source-header" data-progress-kind="${progress?.kind || "none"}" aria-busy="${progress ? "true" : "false"}">
       <img class="medhunt-mark" src="icons/medhunt-logo.png" alt="Med Hunt">
@@ -2314,7 +2311,9 @@ function indeedPanelHeader() {
       </div>
       <div class="source-header-actions">
         <span class="active-page-indicator"><i aria-hidden="true"></i>${platformLabel}</span>
-        <button type="button" class="panel-account-button" id="sourceLogoutButton" data-action="logout" aria-label="Log out of Medhunt" title="Log out"${authConfig.enabled && authSession?.extension_token ? "" : " hidden"}>Log out</button>
+        <button type="button" class="contact-pause-button${contactLookupPaused ? " is-paused" : ""}" data-action="toggle-contact-lookup-pause" aria-pressed="${contactLookupPaused}" title="${contactLookupPaused ? "Resume" : "Pause"} contact lookup requests">
+          <span aria-hidden="true">${contactLookupPaused ? "&#9654;" : "&#10074;&#10074;"}</span><span>${contactLookupPaused ? "Resume" : "Pause"}</span>
+        </button>
         <button type="button" class="panel-rescan-button" data-action="refresh-indeed" title="Scan current page" aria-label="Scan current page" aria-disabled="${progress ? "true" : "false"}"${progress ? " disabled" : ""}>
           <span aria-hidden="true">&#8635;</span>
         </button>
@@ -2332,7 +2331,9 @@ function updateSourceHeaderServiceStatus() {
   const status = $("#sourceHeaderStatus");
   if (!status) return;
   const progress = sourceHeaderProgressSnapshot();
-  status.textContent = progress?.status || (backendHealth ? "Ready to find contacts" : "Service offline");
+  status.textContent = contactLookupPaused
+    ? "Contact requests paused"
+    : (progress?.status || (backendHealth ? "Ready to find contacts" : "Service offline"));
 }
 
 function renderSourcingStatus(title, message, options = {}) {
@@ -2390,21 +2391,23 @@ function renderIndeedProfiles(scan = {}) {
             <span class="summary-signal" aria-hidden="true"></span><span>No contact</span><strong>${noMatch}</strong>
           </button>
           ${failed ? `<button type="button" role="tab" aria-selected="${indeedResultFilter === "failed"}" tabindex="${indeedResultFilter === "failed" ? "0" : "-1"}" class="summary-tile failed${indeedResultFilter === "failed" ? " active" : ""}" data-action="filter-indeed-results" data-filter="failed">
-            <span class="summary-signal" aria-hidden="true"></span><span>Retry</span><strong>${failed}</strong>
+            <span class="summary-signal" aria-hidden="true"></span><span>Unavailable</span><strong>${failed}</strong>
           </button>` : ""}
-        </div>` : `
+        </div>
+        ${nexusDeliverySummaryMarkup()}` : `
         <div class="capture-toolbar">
           <div class="queue-heading">
             <span class="section-kicker">Profiles on this page</span>
             <strong>${indeedCandidates.length} profiles ready</strong>
           </div>
-          <button type="button" class="text-button selection-toggle" data-action="toggle-all-indeed">${indeedSelected.size === indeedCandidates.length ? "Clear selection" : "Select all"}</button>
+          <button type="button" class="text-button selection-toggle" data-action="toggle-all-indeed">${indeedSelected.size === selectableIndeedCandidates().length ? "Clear selection" : "Select all"}</button>
         </div>`}
 
       <div class="indeed-candidate-list${hasResults ? " result-list" : ""}" id="indeedCandidateList" data-testid="profile-list">
         ${profiles.length
           ? profiles.map((profile) => {
           const key = profile._selectionKey;
+          const previouslyEnriched = !hasResults && isPreviouslyEnriched(profile);
           const originalIndex = indeedCandidates.indexOf(profile);
           const searchText = [profile.name, profile.location, profile.headline, ...(profile.roles || [])]
             .filter(Boolean).join(" ").toLowerCase();
@@ -2419,13 +2422,15 @@ function renderIndeedProfiles(scan = {}) {
           const primary = hasResults
             ? `${avatar}${identity}`
             : `<div class="capture-row-primary">
-                <label class="candidate-select-control"><input type="checkbox" class="indeed-select" data-key="${escapeHtml(key)}"${indeedSelected.has(key) ? " checked" : ""}${isLookingUp ? " disabled" : ""}><span class="sr-only">Select ${escapeHtml(profile.name)}</span></label>
+                <label class="candidate-select-control"><input type="checkbox" class="indeed-select" data-key="${escapeHtml(key)}"${indeedSelected.has(key) ? " checked" : ""}${isLookingUp || previouslyEnriched ? " disabled" : ""}><span class="sr-only">Select ${escapeHtml(profile.name)}</span></label>
                 ${avatar}
                 ${identity}
               </div>`;
-          return `<article class="capture-row${hasResults ? "" : " candidate-queue-card"}${indeedSelected.has(key) ? " selected" : ""}" data-profile-key="${escapeHtml(key)}" data-search="${escapeHtml(searchText)}">
+          return `<article class="capture-row${hasResults ? "" : " candidate-queue-card"}${indeedSelected.has(key) ? " selected" : ""}${previouslyEnriched ? " previously-enriched" : ""}" data-profile-key="${escapeHtml(key)}" data-search="${escapeHtml(searchText)}">
             ${primary}
+            ${previouslyEnriched ? `<span class="already-enriched-badge">Already enriched</span>` : ""}
             ${hasResults || isLookingUp ? `<div class="capture-result">${indeedResultStatus(profile)}</div>` : ""}
+            ${hasResults ? nexusCandidateStatusMarkup(profile._candidateId) : ""}
             ${publicRecordButton(profile.name, profile.location, profile._candidateId || 0, "capture-row-action")}
             ${linkedinPdfControl(profile, originalIndex)}
           </article>`;
@@ -2439,8 +2444,8 @@ function renderIndeedProfiles(scan = {}) {
       ${!hasResults ? `<div id="indeedSaveStatus" class="sync-status small ${escapeHtml(indeedSaveStatus?.state || "muted")}">${escapeHtml(indeedSaveStatus?.message || "")}</div>` : ""}
 
       ${hasResults ? (failed ? `<div class="results-actions">
-          <span>${failed} profile${failed === 1 ? " needs" : "s need"} another attempt.</span>
-          <button type="button" class="status-action secondary" data-action="retry-failed-lookups" aria-disabled="${indeedResumeBatchState.active ? "true" : "false"}"${indeedResumeBatchState.active ? " disabled" : ""}>Retry failed</button>
+          <span>${failed} profile lookup${failed === 1 ? " was" : "s were"} unavailable after automatic retries.</span>
+          <button type="button" class="status-action secondary" data-action="retry-failed-lookups" aria-disabled="${indeedResumeBatchState.active ? "true" : "false"}"${indeedResumeBatchState.active ? " disabled" : ""}>Try unavailable again</button>
         </div>` : "") : `
         <div class="workflow-footer command-dock" data-testid="action-dock">
           <div class="selection-summary" aria-live="polite">
@@ -2464,12 +2469,104 @@ function showIndeedSaveStatus(state, message) {
   element.className = `sync-status small ${state}`;
 }
 
+function nexusCandidateStatusMarkup(candidateId) {
+  if (nexusDeliverySummary?.enabled === false) {
+    return `<div class="nexus-candidate-status disabled" role="status">Nexus sync disabled</div>`;
+  }
+  const item = (nexusDeliverySummary?.items || []).find(
+    (entry) => Number(entry.candidate_id) === Number(candidateId),
+  );
+  if (!item) {
+    const label = nexusDeliverySummary?.loading ? "Checking Nexus status..." : "Nexus status unavailable";
+    return `<div class="nexus-candidate-status pending" role="status">${label}</div>`;
+  }
+  const states = {
+    uploaded: ["uploaded", "Parsed to Nexus"],
+    pending: ["pending", "Nexus upload pending"],
+    already_in_nexus: ["existing", "Already in Nexus"],
+    waiting_for_resume: ["waiting", "Waiting for resume before Nexus upload"],
+    not_uploaded: ["failed", "Not parsed to Nexus"],
+  };
+  const [state, label] = states[item.group] || ["failed", "Not parsed to Nexus"];
+  const reason = item.reason && item.reason !== item.group ? ` title="${escapeHtml(item.reason.replaceAll("_", " "))}"` : "";
+  return `<div class="nexus-candidate-status ${state}" role="status"${reason}>${label}</div>`;
+}
+
+function nexusDeliverySummaryMarkup() {
+  if (!nexusDeliverySummary) return "";
+  if (nexusDeliverySummary.loading) {
+    return `<div class="nexus-delivery-summary is-pending" role="status">Checking Nexus upload results...</div>`;
+  }
+  if (nexusDeliverySummary.enabled === false) {
+    return `<div class="nexus-delivery-summary" role="status"><strong>Nexus upload</strong><span>Disabled for this backend.</span></div>`;
+  }
+  const uploaded = Number(nexusDeliverySummary.uploaded) || 0;
+  const pending = Number(nexusDeliverySummary.pending) || 0;
+  const alreadyInNexus = Number(nexusDeliverySummary.already_in_nexus) || 0;
+  const waitingForResume = Number(nexusDeliverySummary.waiting_for_resume) || 0;
+  const notUploaded = Number(nexusDeliverySummary.not_uploaded) || 0;
+  return `<div class="nexus-delivery-summary${pending ? " is-pending" : ""}" role="status" aria-live="polite">
+    <strong>Nexus upload</strong>
+    <span><b>${uploaded}</b> uploaded</span>
+    <span><b>${pending}</b> pending</span>
+    <span><b>${alreadyInNexus}</b> already in Nexus</span>
+    <span><b>${waitingForResume}</b> waiting for resume</span>
+    <span><b>${notUploaded}</b> not uploaded</span>
+  </div>`;
+}
+
+function stopNexusDeliveryPolling() {
+  clearTimeout(nexusDeliveryPollTimer);
+  nexusDeliveryPollTimer = null;
+}
+
+async function refreshNexusDeliverySummary(generation, attempt = 0) {
+  if (generation !== nexusDeliveryGeneration || !nexusDeliveryCandidateIds.length) return;
+  try {
+    const summary = await api("/nexus/delivery-summary", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ candidate_ids: nexusDeliveryCandidateIds }),
+      timeout: 20000,
+    });
+    if (generation !== nexusDeliveryGeneration) return;
+    nexusDeliverySummary = summary;
+    if (activeView === "indeed" && indeedScanState.phase === "results") renderIndeedProfiles();
+    if (attempt < 20 && (Number(summary?.pending) > 0 || indeedResumeBatchState.active)) {
+      nexusDeliveryPollTimer = setTimeout(
+        () => refreshNexusDeliverySummary(generation, attempt + 1), 3000,
+      );
+    }
+  } catch {
+    if (generation !== nexusDeliveryGeneration) return;
+    nexusDeliverySummary = null;
+  }
+}
+
+function trackNexusDeliveries(candidateIds) {
+  const ids = [...new Set((candidateIds || []).map(Number).filter(Number.isInteger))];
+  stopNexusDeliveryPolling();
+  nexusDeliveryGeneration += 1;
+  nexusDeliveryCandidateIds = ids;
+  if (!ids.length) {
+    nexusDeliverySummary = null;
+    return;
+  }
+  nexusDeliverySummary = { loading: true, selected: ids.length };
+  if (activeView === "indeed" && indeedScanState.phase === "results") renderIndeedProfiles();
+  void refreshNexusDeliverySummary(nexusDeliveryGeneration);
+}
+
+function refreshTrackedNexusDeliveries() {
+  if (nexusDeliveryCandidateIds.length) trackNexusDeliveries(nexusDeliveryCandidateIds);
+}
+
 async function ensureProfessionalProfileResume(profile) {
   const candidateId = Number(profile?._candidateId);
   const documentProfile = profile?.profile_document;
   if (
-    !["usnews", "medifind", "commonspirit", "sharecare", "webmd"].includes(profile?.source) || !candidateId
-    || !hasCompleteIndeedContact(indeedLookupFor(profile))
+    !["usnews", "medifind", "commonspirit", "sharecare", "webmd", "npino"].includes(profile?.source) || !candidateId
+    || !isIndeedMatch(indeedLookupFor(profile))
     || documentProfile?.kind !== "public_professional_profile"
   ) return null;
   const key = `${candidateId}|${JSON.stringify(documentProfile)}`;
@@ -2485,6 +2582,18 @@ async function ensureProfessionalProfileResume(profile) {
   updateIndeedLookupProgressUi(profile);
   const pending = (async () => {
     try {
+      const existingResume = await existingContactResume(candidateId);
+      if (existingResume) {
+        const latest = indeedLookupFor(profile);
+        indeedLookupState.set(profile._selectionKey, {
+          ...latest,
+          resume: existingResume,
+          resume_status: "stored",
+          resume_error: "",
+        });
+        updateIndeedLookupProgressUi(profile);
+        return existingResume;
+      }
       const attached = await api(`/candidates/${candidateId}/professional-profile-resume`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -2604,6 +2713,10 @@ async function performDisplayedIndeedSave(searchUrl) {
     source: boundedText(profile.source, 50),
     source_url: boundedText(profile.source_url, 2000),
     source_id: boundedText(profile.source_id, 500),
+    npi: boundedText(profile.profile_document?.npi || (
+      ["npino", "npiprofile"].includes(String(profile.source || "").toLowerCase())
+        ? profile.source_id : ""
+    ), 30),
   }));
   try {
     const result = await api("/candidates/import/batch", {
@@ -2639,7 +2752,7 @@ async function performDisplayedIndeedSave(searchUrl) {
         && professionalProfile._detail_capture_ready !== false
         && PROFESSIONAL_PROFILE_SOURCES.has(professionalProfile.source)
         && sameProfessionalProfileUrl(activeSourcingPageUrl, professionalProfile.source_url)
-        && hasCompleteIndeedContact(indeedLookupFor(professionalProfile))
+        && isIndeedMatch(indeedLookupFor(professionalProfile))
       ) {
         professionalProfile._detailProfileCaptured = true;
         professionalProfiles.push(professionalProfile);
@@ -2828,15 +2941,17 @@ async function scanIndeedCandidates(options = {}) {
       indeedLookupSummary = null;
       indeedResultFilter = "all";
     }
+    loadEnrichedProfileKeys();
     indeedSelected = keepSelection
       ? (previouslySelectedAll
-        ? new Set(indeedCandidates.map((profile) => profile._selectionKey))
+        ? new Set(selectableIndeedCandidates().slice(0, MAX_LOOKUP_SELECTION).map((profile) => profile._selectionKey))
         : new Set(
         indeedCandidates
+          .filter((profile) => !isPreviouslyEnriched(profile))
           .map((profile) => profile._selectionKey)
           .filter((key) => previousSelection.has(key)),
         ))
-      : new Set(indeedCandidates.map((profile) => profile._selectionKey));
+      : new Set(selectableIndeedCandidates().slice(0, MAX_LOOKUP_SELECTION).map((profile) => profile._selectionKey));
     indeedScanState = {
       phase: "captured",
       found: indeedCandidates.length,
@@ -3062,8 +3177,7 @@ if (IS_EXTENSION) {
       // soon as the reported total is reached so results do not require a
       // panel close/reopen cycle.
       if (
-        ["npino", "npiprofile", "nysed", "usnews", "medifind", "commonspirit", "sharecare", "webmd"].includes(message.platform)
-        && Number(message.total) > 0
+        Number(message.total) > 0
         && Number(message.found) >= Number(message.total)
         && !indeedLookupInProgress
       ) {
@@ -3150,9 +3264,6 @@ async function captureLinkedinPdf(index) {
   const profile = indeedCandidates[index];
   if (!profile || activeSourcingPlatform.key !== "linkedin") {
     throw new Error("Open the captured profile first.");
-  }
-  if (!hasCompleteIndeedContact(indeedLookupFor(profile))) {
-    throw new Error("Find a phone number or email before saving a resume.");
   }
   if (!profile._candidateId) await saveDisplayedIndeedCandidates(activeSourcingPageUrl, [profile]);
   if (!profile._candidateId) throw new Error("The profile is not ready for resume capture.");
@@ -3251,7 +3362,7 @@ async function cancelLinkedinPdf(index) {
 }
 
 function selectedIndeedProfiles() {
-  return indeedCandidates.filter((profile) => indeedSelected.has(profile._selectionKey));
+  return selectableIndeedCandidates().filter((profile) => indeedSelected.has(profile._selectionKey));
 }
 
 function updateIndeedLookupProgressUi(profile = null) {
@@ -3269,12 +3380,20 @@ async function lookupSelectedIndeedCandidates() {
     throw new Error("Wait for the current resumes to finish saving.");
   }
   if (indeedLookupInProgress) throw new Error("A candidate lookup is already in progress.");
+  await loadContactLookupControl();
+  if (contactLookupPaused) throw new Error("Contact requests are paused. Click Resume before starting a lookup.");
   const profiles = selectedIndeedProfiles();
   if (!profiles.length) throw new Error(`Select at least one ${activeSourcingPlatform.label} profile.`);
+  if (profiles.length > MAX_LOOKUP_SELECTION) {
+    throw new Error(`Select no more than ${MAX_LOOKUP_SELECTION} candidates.`);
+  }
   indeedLookupProfiles = profiles.slice();
   clearTimeout(indeedAutoScanTimer);
   indeedAutoScanTimer = null;
   indeedLookupInProgress = true;
+  stopNexusDeliveryPolling();
+  nexusDeliverySummary = null;
+  nexusDeliveryCandidateIds = [];
   // Invalidate any quiet scan that was already awaiting a content-script
   // response before the recruiter pressed Lookup.
   indeedScanGeneration += 1;
@@ -3303,6 +3422,7 @@ async function lookupSelectedIndeedCandidates() {
   const resumeQueue = [];
   const linkedinResumeQueue = [];
   const professionalProfileResumeQueue = [];
+  const queuedResumeCandidateIds = new Set();
   const lookupRunId = globalThis.crypto?.randomUUID
     ? globalThis.crypto.randomUUID().replaceAll("-", "")
     : `lookup_${Date.now()}_${Math.random().toString(36).slice(2)}`;
@@ -3352,7 +3472,7 @@ async function lookupSelectedIndeedCandidates() {
 
   function applyLookupResult(profile, lookup) {
     const previous = indeedLookupFor(profile);
-    const status = ["found", "not_found", "failed"].includes(lookup?.status)
+    const status = ["found", "not_found", "failed", "blocked"].includes(lookup?.status)
       ? lookup.status
       : "failed";
     const result = {
@@ -3371,26 +3491,39 @@ async function lookupSelectedIndeedCandidates() {
         lookup.location_match.value.trim()
         ? { type: "hometown", value: lookup.location_match.value.trim().slice(0, 160) }
         : null,
+      nexus_eligibility: lookup?.nexus_eligibility || {},
+      ats_eligibility: lookup?.ats_eligibility || {},
+      ats_destination: lookup?.ats_destination || "nexus",
       resume: previous.resume || null,
       resume_status: previous.resume_status || "",
       resume_error: previous.resume_error || "",
     };
     indeedLookupState.set(profile._selectionKey, result);
-    if (profile.source === "indeed" && hasCompleteIndeedContact(result) && !result.resume) {
+    if (isIndeedMatch(result)) rememberEnrichedProfile(profile);
+    const candidateId = Number(profile._candidateId);
+    if (
+      profile.source === "indeed" && hasCompleteIndeedContact(result) && !result.resume
+      && !queuedResumeCandidateIds.has(candidateId)
+    ) {
       resumeQueue.push(profile);
+      queuedResumeCandidateIds.add(candidateId);
     }
     if (
       profile.source === "linkedin" && activeSourcingPlatform.automaticPdfCapture &&
       hasCompleteIndeedContact(result) && !result.resume
+      && !queuedResumeCandidateIds.has(candidateId)
     ) {
       linkedinResumeQueue.push(profile);
+      queuedResumeCandidateIds.add(candidateId);
     }
     if (
       PROFESSIONAL_PROFILE_SOURCES.has(profile.source)
-      && hasCompleteIndeedContact(result)
+      && isIndeedMatch(result)
       && (!result.resume || !profile._detailProfileCaptured)
+      && !queuedResumeCandidateIds.has(candidateId)
     ) {
       professionalProfileResumeQueue.push(profile);
+      queuedResumeCandidateIds.add(candidateId);
     }
     if (isIndeedMatch(result)) indeedLookupSummary.matched += 1;
     else if (result.status === "failed") indeedLookupSummary.errors += 1;
@@ -3400,38 +3533,106 @@ async function lookupSelectedIndeedCandidates() {
   }
 
   const publicRecordLookup = sequentialLookupMode();
-  const chunkSize = publicRecordLookup ? RECORD_LOOKUP_BATCH_SIZE : CONTACT_BATCH_SIZE;
-  const chunkTimeout = publicRecordLookup
-    ? RECORD_LOOKUP_TIMEOUT
-    : CONTACT_BATCH_TIMEOUT;
-  for (let start = 0; start < lookupTargets.length; start += chunkSize) {
-    const chunk = lookupTargets.slice(start, start + chunkSize);
-    let payload;
-    try {
-      payload = await api("/contact-lookup/batch", {
+  if (publicRecordLookup && lookupTargets.length) {
+    const candidateIds = lookupTargets.map((profile) => Number(profile._candidateId));
+    for (let start = 0; start < candidateIds.length; start += CONTACT_BATCH_SIZE) {
+      await api("/contact-lookup/queue", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          candidate_ids: chunk.map((profile) => profile._candidateId),
+          candidate_ids: candidateIds.slice(start, start + CONTACT_BATCH_SIZE),
           run_id: lookupRunId,
           confirmed: true,
         }),
-        timeout: chunkTimeout,
+        timeout: 30000,
       });
-    } catch (error) {
+    }
+    const profilesById = new Map(
+      lookupTargets.map((profile) => [Number(profile._candidateId), profile]),
+    );
+    const completedIds = new Set();
+    for (const profile of lookupTargets) {
+      const previous = indeedLookupFor(profile);
+      indeedLookupState.set(profile._selectionKey, {
+        ...previous, status: "queued", queue_position: 0,
+      });
+    }
+    renderIndeedProfiles();
+    let pollFailures = 0;
+    while (completedIds.size < candidateIds.length) {
+      try {
+        const queueItems = [];
+        for (let start = 0; start < candidateIds.length; start += CONTACT_BATCH_SIZE) {
+          const queue = await api("/contact-lookup/queue/status", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              candidate_ids: candidateIds.slice(start, start + CONTACT_BATCH_SIZE),
+              run_id: lookupRunId,
+              confirmed: true,
+            }),
+            timeout: 30000,
+          });
+          if (typeof queue?.paused === "boolean" && queue.paused !== contactLookupPaused) {
+            contactLookupPaused = queue.paused;
+            updateContactLookupPauseUi();
+          }
+          queueItems.push(...(queue?.items || []));
+        }
+        pollFailures = 0;
+        for (const job of queueItems) {
+          const candidateId = Number(job.candidate_id);
+          const profile = profilesById.get(candidateId);
+          if (!profile || completedIds.has(candidateId)) continue;
+          if (["succeeded", "not_found", "blocked", "failed"].includes(job.status)) {
+            completedIds.add(candidateId);
+            applyLookupResult(profile, {
+              ...(job.result || { status: "failed" }), request_id: job.request_id || "",
+            });
+          } else {
+            const previous = indeedLookupFor(profile);
+            indeedLookupState.set(profile._selectionKey, {
+              ...previous,
+              status: job.status === "processing" ? "processing" : "queued",
+              queue_position: Number(job.position) || 0,
+              request_id: job.request_id || "",
+            });
+            updateIndeedLookupProgressUi(profile);
+          }
+        }
+      } catch {
+        pollFailures += 1;
+      }
+      if (completedIds.size < candidateIds.length) {
+        await new Promise((resolve) => setTimeout(
+          resolve, Math.min(10000, 2000 + pollFailures * 1000),
+        ));
+      }
+    }
+  } else {
+    for (let start = 0; start < lookupTargets.length; start += CONTACT_BATCH_SIZE) {
+      const chunk = lookupTargets.slice(start, start + CONTACT_BATCH_SIZE);
+      let payload;
+      try {
+        payload = await api("/contact-lookup/batch", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            candidate_ids: chunk.map((profile) => profile._candidateId),
+            run_id: lookupRunId,
+            confirmed: true,
+          }),
+          timeout: CONTACT_BATCH_TIMEOUT,
+        });
+      } catch {
+        payload = { results: {} };
+      }
+      const byCandidate = payload?.results || {};
       for (const profile of chunk) {
-        applyLookupResult(profile, {
+        applyLookupResult(profile, byCandidate[String(profile._candidateId)] || {
           status: "failed",
         });
       }
-      continue;
-    }
-
-    const byCandidate = payload?.results || {};
-    for (const profile of chunk) {
-      applyLookupResult(profile, byCandidate[String(profile._candidateId)] || {
-        status: "failed",
-      });
     }
   }
 
@@ -3443,6 +3644,7 @@ async function lookupSelectedIndeedCandidates() {
     `${indeedLookupSummary.errors ? `; ${indeedLookupSummary.errors} could not be checked` : ""}`,
     indeedLookupSummary.errors ? "error" : "",
   );
+    trackNexusDeliveries(lookupTargets.map((profile) => profile._candidateId));
     if (professionalProfileResumeQueue.length) {
       await startProfessionalProfileResumeBatch(professionalProfileResumeQueue);
     } else if (resumeQueue.length) {
@@ -3461,9 +3663,10 @@ async function lookupSelectedIndeedCandidates() {
 }
 
 function toggleAllIndeedCandidates() {
-  indeedSelected = indeedSelected.size === indeedCandidates.length
+  const selectable = selectableIndeedCandidates().slice(0, MAX_LOOKUP_SELECTION);
+  indeedSelected = indeedSelected.size === selectable.length
     ? new Set()
-    : new Set(indeedCandidates.map((profile) => profile._selectionKey));
+    : new Set(selectable.map((profile) => profile._selectionKey));
   document.querySelectorAll(".indeed-select").forEach((checkbox) => {
     checkbox.checked = indeedSelected.has(checkbox.dataset.key);
   });
@@ -3583,7 +3786,11 @@ async function processPendingResumeEvents() {
 }
 
 async function saveStoredResumeDownload(profile, candidateId, resume) {
-  if (!hasCompleteIndeedContact(indeedLookupFor(profile))) return null;
+  const key = `${Number(candidateId)}|${Number(resume?.id)}`;
+  if (!Number(candidateId) || !Number(resume?.id)) throw new Error("The stored resume could not be identified.");
+  if (completedStoredResumeDownloads.has(key)) return null;
+  if (storedResumeDownloadPromises.has(key)) return storedResumeDownloadPromises.get(key);
+  const pending = (async () => {
   const safeName = String(profile.name || "candidate")
     .replace(/[^a-z0-9 _-]/gi, "_")
     .trim()
@@ -3593,15 +3800,31 @@ async function saveStoredResumeDownload(profile, candidateId, resume) {
   try {
     const downloadId = await chrome.downloads.download({
       url: blobUrl,
-      filename: `MedhuntResumes/${safeName}_resume.pdf`,
+      filename: `MedhuntResumes/${safeName}_${Number(candidateId)}_resume.pdf`,
       saveAs: false,
+      conflictAction: "overwrite",
     });
     releaseResumeBlobUrlLater(blobUrl);
+    completedStoredResumeDownloads.add(key);
     return downloadId;
   } catch (error) {
     URL.revokeObjectURL(blobUrl);
     throw error;
   }
+  })();
+  storedResumeDownloadPromises.set(key, pending);
+  try {
+    return await pending;
+  } finally {
+    storedResumeDownloadPromises.delete(key);
+  }
+}
+
+async function existingContactResume(candidateId) {
+  const candidate = await api(`/candidates/${Number(candidateId)}`, { timeout: 20000 });
+  return (candidate?.resumes || []).find((resume) => (
+    resume?.contact_sheet_embedded === true || /_enriched\.pdf$/i.test(resume?.filename || "")
+  )) || null;
 }
 
 async function recoverStoredResume(candidateId, uploadStartedAt, timeoutMs = 120000) {
@@ -3635,7 +3858,6 @@ async function downloadMatchedLinkedinPdf(profile, sourceTabId) {
     profile?.source !== "linkedin" || !candidateId || current.resume ||
     !hasCompleteIndeedContact(current) || !linkedinSlug(profile.source_url || "")
   ) return false;
-  if (await hydrateStoredResume(profile)) return true;
 
   indeedLookupState.set(profile._selectionKey, {
     ...current,
@@ -3646,6 +3868,18 @@ async function downloadMatchedLinkedinPdf(profile, sourceTabId) {
 
   let completion = null;
   try {
+    const existingResume = await existingContactResume(candidateId);
+    if (existingResume) {
+      const latest = indeedLookupFor(profile);
+      indeedLookupState.set(profile._selectionKey, {
+        ...latest,
+        resume: existingResume,
+        resume_status: "stored",
+        resume_error: "",
+      });
+      updateIndeedLookupProgressUi(profile);
+      return false;
+    }
     await chrome.tabs.update(Number(sourceTabId), {
       active: true,
       url: profile.source_url,
@@ -3743,6 +3977,7 @@ function startLinkedinResumeBatch(profiles) {
       } else if (completed.failed) {
         notify("LinkedIn profile PDFs were unavailable.", "error");
       }
+      refreshTrackedNexusDeliveries();
 
       const pending = pendingSourcingContext;
       pendingSourcingContext = null;
@@ -3752,9 +3987,17 @@ function startLinkedinResumeBatch(profiles) {
 }
 
 function startIndeedResumeBatch(profiles) {
-  const queue = (profiles || []).filter((profile) => (
-    profile?.source === "indeed" && Number(profile._candidateId)
-  ));
+  const seenCandidates = new Set();
+  const queue = (profiles || []).filter((profile) => {
+    const candidateId = Number(profile?._candidateId);
+    const current = indeedLookupFor(profile);
+    if (
+      profile?.source !== "indeed" || !candidateId || current.resume
+      || !hasCompleteIndeedContact(current) || seenCandidates.has(candidateId)
+    ) return false;
+    seenCandidates.add(candidateId);
+    return true;
+  });
   if (!queue.length || indeedResumeBatchState.active) return Promise.resolve();
 
   const first = queue[0];
@@ -3802,8 +4045,6 @@ function startIndeedResumeBatch(profiles) {
           updateSourceHeaderProgressUi();
           break;
         }
-        // Keep capture, server-side cover creation, and local save in this
-        // awaited loop: the next candidate must not start until this one ends.
         const saved = await downloadMatchedIndeedResume(profile);
         indeedResumeBatchState.processed += 1;
         if (saved) indeedResumeBatchState.saved += 1;
@@ -3835,6 +4076,7 @@ function startIndeedResumeBatch(profiles) {
       } else if (completed.failed) {
         notify("Resumes could not be saved.", "error");
       }
+      refreshTrackedNexusDeliveries();
 
       let currentTab = null;
       try {
@@ -3861,7 +4103,6 @@ async function downloadMatchedIndeedResume(profile) {
   const candidateId = Number(profile._candidateId);
   const current = indeedLookupFor(profile);
   if (!candidateId || current.resume || !hasCompleteIndeedContact(current)) return false;
-  if (await hydrateStoredResume(profile)) return true;
 
   indeedLookupState.set(profile._selectionKey, {
     ...current,
@@ -3871,6 +4112,18 @@ async function downloadMatchedIndeedResume(profile) {
   updateIndeedLookupProgressUi(profile);
 
   try {
+    const existingResume = await existingContactResume(candidateId);
+    if (existingResume) {
+      const latest = indeedLookupFor(profile);
+      indeedLookupState.set(profile._selectionKey, {
+        ...latest,
+        resume: existingResume,
+        resume_status: "stored",
+        resume_error: "",
+      });
+      updateIndeedLookupProgressUi(profile);
+      return true;
+    }
     // Automatic capture stores the bytes returned by the proven MAIN-world
     // hook. Clear the older file-path tracker so a normal Indeed download does
     // not create a duplicate resume record in parallel.
@@ -4053,61 +4306,36 @@ async function copyDraft() {
 }
 
 async function showSmsComposer(candidateId, candidateName, phone) {
-  if (!candidateId || !phone) throw new Error("A verified mobile number is required.");
-  const [status, preview] = await Promise.all([
-    api("/messaging/status"),
-    api(`/candidates/${candidateId}/sms-preview?phone=${encodeURIComponent(phone)}`),
-  ]);
-  activeSmsContext = { candidateId, candidateName, phone: preview.phone };
-  const providers = status.providers || {};
-  const availableProviders = ["twilio", "zoom"].filter((name) =>
-    providers[name]?.enabled && providers[name]?.sender_configured
-  );
-  const defaultProvider = availableProviders[0] || "twilio";
-  activeSmsContext.provider = defaultProvider;
-  const blocked = availableProviders.length === 0 || preview.opted_out ||
-    preview.already_contacted;
-  const notices = [];
-  if (status.zoom_sender_required) notices.push("Ask your Halo organization admin to assign your Zoom Phone number before using Zoom.");
-  if (!availableProviders.length && !status.zoom_sender_required) notices.push("No SMS provider is configured on the backend.");
-  if (preview.opted_out) notices.push("This candidate opted out of SMS.");
-  if (preview.already_contacted) notices.push("This candidate has already received SMS outreach.");
-  if (!status.reply_notifications_configured) notices.push("Reply email notifications are not fully configured.");
+  if (!candidateId || !phone) throw new Error("A verified phone number is required.");
+  const preview = await api("/candidates/" + Number(candidateId) + "/sms-preview?phone=" + encodeURIComponent(phone));
+  if (preview.ats_blocked || preview.nexus_blocked) {
+    const nexus = preview.ats_eligibility || preview.nexus_eligibility || {};
+    const details = [nexus.status, nexus.recruiter].filter(Boolean).join(" · ");
+    throw new Error(nexusBlockLabel(nexus) + (details ? " (" + details + ")." : "."));
+  }
+  if (preview.opted_out) throw new Error("This number has opted out and cannot be messaged.");
+  if (preview.already_contacted) throw new Error("This candidate has already received SMS outreach.");
+  const selectedPhone = preview.phone || phone;
+  activeSmsContext = { candidateId, candidateName, phone: selectedPhone };
+  const status = await api("/messaging/status");
+  const canSend = Boolean(status.enabled && status.sender_configured);
   $("#modalRoot").innerHTML = `<div class="modal" role="presentation">
-    <section class="sheet" role="dialog" aria-modal="true" aria-labelledby="smsTitle">
-      <h3 id="smsTitle">Send SMS to ${escapeHtml(candidateName || "candidate")}</h3>
-      <div class="muted small">To: ${escapeHtml(preview.phone || phone)}</div>
-      <label class="field-label mt" for="smsProvider">Send from</label>
-      <select id="smsProvider"${availableProviders.length < 2 ? " disabled" : ""}>
-        ${availableProviders.length
-          ? availableProviders.map((name) => `<option value="${name}">${name === "zoom" ? "Zoom Phone" : "Twilio"}</option>`).join("")
-          : `<option value="">Unavailable</option>`}
-      </select>
-      <label class="field-label mt" for="smsMessage">Message</label>
-      <textarea id="smsMessage" rows="7" maxlength="1600" placeholder="Write a message for this candidate"></textarea>
-      <p id="smsWordCount" class="muted small" aria-live="polite">0 / 29 words</p>
-      ${notices.map((item) => `<div class="notice mt">${escapeHtml(item)}</div>`).join("")}
+    <section class="sheet sms-sheet" role="dialog" aria-modal="true" aria-labelledby="smsTitle">
+      <span class="section-kicker">Zoom Phone</span>
+      <h3 id="smsTitle">Message ${escapeHtml(candidateName || "candidate")}</h3>
+      <p class="muted small">Selected phone: ${escapeHtml(selectedPhone)}</p>
+      ${!status.enabled ? `<div class="notice error">Zoom Phone SMS is not configured on the Medhunt server.</div>` : ""}
+      ${status.enabled && !status.sender_configured ? `<div class="notice error">Ask your Halo administrator to assign your Zoom Phone number before sending.</div>` : ""}
+      ${!status.reply_notifications_configured ? `<div class="notice mt">Reply email notifications are not fully configured.</div>` : ""}
+      <label class="field-label" for="smsMessage">Message</label>
+      <textarea id="smsMessage" rows="6" maxlength="420" placeholder="Write a custom message for this candidate"${canSend ? "" : " disabled"}></textarea>
+      <p class="muted small">Medhunt automatically adds its identity and ?Reply STOP to opt out? to each message.</p>
       <div class="row modal-actions">
         <button type="button" class="btn ghost" data-action="close-modal">Cancel</button>
-        <button type="button" class="btn teal" data-action="send-sms"${blocked ? " disabled" : ""}>Send with ${defaultProvider === "zoom" ? "Zoom Phone" : "Twilio"}</button>
+        <button type="button" class="btn teal" data-action="send-sms"${canSend ? "" : " disabled"}>Send with Zoom Phone</button>
       </div>
     </section>
   </div>`;
-  const messageInput = $("#smsMessage");
-  const sendButton = $('[data-action="send-sms"]');
-  const updateWordCount = () => {
-    const words = messageInput?.value.trim().split(/\s+/u).filter(Boolean).length || 0;
-    const counter = $("#smsWordCount");
-    if (counter) counter.textContent = `${words} / 29 words`;
-    if (sendButton) sendButton.disabled = blocked || words === 0 || words > 29;
-  };
-  if (messageInput) messageInput.addEventListener("input", updateWordCount);
-  updateWordCount();
-  const providerSelect = $("#smsProvider");
-  if (providerSelect) providerSelect.onchange = () => {
-    activeSmsContext.provider = providerSelect.value;
-    if (sendButton) sendButton.textContent = `Send with ${providerSelect.value === "zoom" ? "Zoom Phone" : "Twilio"}`;
-  };
 }
 
 async function composeSmsFromButton(button) {
@@ -4120,14 +4348,8 @@ async function composeSmsFromButton(button) {
 
 async function sendCandidateSms() {
   if (!activeSmsContext) throw new Error("Candidate message context expired.");
-  const message = $("#smsMessage")?.value?.trim() || "";
+  const message = $("#smsMessage")?.value.trim() || "";
   if (!message) throw new Error("Write a message before sending.");
-  if (message.split(/\s+/u).filter(Boolean).length > 29) {
-    throw new Error("SMS messages are limited to 29 words.");
-  }
-  if (message.length > 1600) throw new Error("SMS messages can contain up to 1,600 characters.");
-  const provider = activeSmsContext.provider;
-  const sentCandidateId = activeSmsContext.candidateId;
   await api("/messaging/sms", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -4135,27 +4357,153 @@ async function sendCandidateSms() {
       candidate_id: activeSmsContext.candidateId,
       phone: activeSmsContext.phone,
       message,
-      provider: activeSmsContext.provider,
       request_id: crypto.randomUUID(),
     }),
     timeout: 60000,
   });
   closeModal();
+  notify("Message accepted by Zoom Phone.");
+}
+
+async function showBulkSmsComposer() {
+  const selected = visibleCandidates.filter((candidate) => selectedSmsCandidates.has(Number(candidate.id)));
+  if (!selected.length) throw new Error("Select at least one candidate with a verified phone number.");
+  const status = await api("/messaging/status");
+  if (!status.enabled) throw new Error("Zoom Phone SMS is not configured on the Medhunt server.");
+  if (!status.sender_configured) throw new Error("Ask your Halo administrator to assign your Zoom Phone number before sending.");
+  const entries = [];
+  for (const candidate of selected) {
+    const candidatePhone = preferredMessagingPhone(candidate)?.value || "";
+    if (!candidatePhone) continue;
+    let preview = { phone: candidatePhone, opted_out: false, already_contacted: false };
+    try {
+      preview = await api("/candidates/" + Number(candidate.id) + "/sms-preview?phone=" + encodeURIComponent(candidatePhone));
+    } catch (error) {
+      preview = { phone: candidatePhone, opted_out: true, already_contacted: false, error: error.message };
+    }
+    const firstName = String(candidate.name || "there").trim().split(/\s+/u)[0] || "there";
+    entries.push({
+      candidateId: Number(candidate.id), name: String(candidate.name || "Candidate"),
+      phone: preview.phone || candidatePhone,
+      message: "Hello " + firstName + ", This is Brian from Radixsol. We have a Job title-Specialty opening in City, state, 13/26 weeks and Quick Offers, Would you be interested in more details?",
+      blocked: Boolean(preview.ats_blocked || preview.nexus_blocked || preview.opted_out || preview.already_contacted || preview.error),
+      reason: preview.error || (preview.ats_blocked || preview.nexus_blocked ? nexusBlockLabel(preview.ats_eligibility || preview.nexus_eligibility || {}) : preview.opted_out ? "Opted out" : preview.already_contacted ? "Already contacted" : ""),
+    });
+  }
+  if (!entries.length) throw new Error("The selected candidates have no verified phone numbers.");
+  activeSmsContext = { bulk: entries };
+  const cards = entries.map((entry, index) =>
+    '<div class="card bulk-sms-item"><div class="row spread"><strong>' + escapeHtml(entry.name) +
+    '</strong><span class="muted small">' + escapeHtml(entry.phone) + '</span></div>' +
+    (entry.blocked ? '<p class="notice error mt">' + escapeHtml(entry.reason || "Cannot send") + '</p>' : "") +
+    '<textarea data-bulk-sms-message="' + index + '" rows="4" maxlength="1600"' +
+    (entry.blocked ? " disabled" : "") + '>' + escapeHtml(entry.message) + '</textarea>' +
+    '<p class="muted small" data-bulk-sms-count="' + index + '"></p></div>'
+  ).join("");
+  $("#modalRoot").innerHTML = '<div class="modal" role="presentation"><section class="sheet sms-sheet" role="dialog" aria-modal="true" aria-labelledby="bulkSmsTitle">' +
+    '<span class="section-kicker">Zoom Phone</span><h3 id="bulkSmsTitle">Review bulk SMS (' + entries.length + ')</h3>' +
+    '<p class="muted small">Edit each message before sending. Messages over 29 words, opted-out candidates, and candidates already contacted are blocked.</p>' +
+    '<div class="bulk-sms-list">' + cards + '</div><div class="row modal-actions">' +
+    '<button type="button" class="btn ghost" data-action="close-modal">Cancel</button>' +
+    '<button type="button" class="btn teal" data-action="send-bulk-sms">Send available messages</button></div></section></div>';
+  $("#modalRoot").querySelectorAll("[data-bulk-sms-message]").forEach((field) => {
+    const update = () => {
+      const words = field.value.trim().split(/\s+/u).filter(Boolean).length;
+      const counter = $("[data-bulk-sms-count=\"" + field.dataset.bulkSmsMessage + "\"]");
+      if (counter) counter.textContent = words + " / 29 words" + (words > 29 ? " · over limit" : "");
+    };
+    field.addEventListener("input", update);
+    update();
+  });
+}
+
+async function sendBulkSms() {
+  const entries = activeSmsContext?.bulk || [];
+  if (!entries.length) throw new Error("Bulk message review expired.");
+  const ready = entries.map((entry, index) => ({
+    ...entry,
+    message: $("[data-bulk-sms-message=\"" + index + "\"]")?.value.trim() || "",
+  })).filter((entry) => !entry.blocked);
+  for (const entry of ready) {
+    const words = entry.message.split(/\s+/u).filter(Boolean).length;
+    if (!words) throw new Error("Write a message for " + entry.name + ".");
+    if (words > 29) throw new Error(entry.name + "'s message is over the 29-word limit.");
+  }
+  if (!ready.length) throw new Error("There are no eligible messages to send.");
+  const button = $("[data-action=\"send-bulk-sms\"]");
+  if (button) button.disabled = true;
+  let sent = 0;
+  let failed = 0;
+  for (const entry of ready) {
+    try {
+      await api("/messaging/sms", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ candidate_id: entry.candidateId, phone: entry.phone,
+          message: entry.message, request_id: crypto.randomUUID() }), timeout: 60000,
+      });
+      sent += 1;
+      selectedSmsCandidates.delete(entry.candidateId);
+    } catch {
+      failed += 1;
+    }
+  }
+  closeModal();
   activeSmsContext = null;
-  markIndeedSmsSent(sentCandidateId);
-  notify(`Message accepted by ${provider === "zoom" ? "Zoom Phone" : "Twilio"}.`);
+  notify(sent + " message" + (sent === 1 ? "" : "s") + " accepted by Zoom Phone" +
+    (failed ? "; " + failed + " failed" : "."), failed ? "error" : "");
   if (activeView === "candidates") await viewCandidates();
 }
 
-function markIndeedSmsSent(candidateId) {
-  const profiles = new Set([...indeedCandidates, ...indeedLookupProfiles]);
-  for (const profile of profiles) {
-    if (Number(profile._candidateId) !== Number(candidateId)) continue;
-    const result = indeedLookupFor(profile);
-    if (!isIndeedMatch(result)) continue;
-    indeedLookupState.set(profile._selectionKey, { ...result, sms_status: "sent" });
-    updateIndeedLookupProgressUi(profile);
+async function viewMessages() {
+  $("#title").textContent = "Messages";
+  try {
+    const data = await api("/messaging/conversations");
+    const items = data.items || [];
+    $("#content").innerHTML = `<div class="card messages-card">
+      <div class="row spread"><div><h3>Candidate conversations</h3><p class="muted small">Replies can be assigned to a Healthboard recruiter.</p></div><span class="pill live">${items.length}</span></div>
+      <div class="conversation-list">
+        ${items.length ? items.map((item) => `<button type="button" class="conversation-row" data-action="open-conversation" data-conversation-id="${Number(item.id)}">
+          <span><strong>${escapeHtml(item.candidate_name || `Candidate ${item.candidate_id}`)}</strong><small>${escapeHtml(item.candidate_phone || "")}</small></span>
+          <span><b>${escapeHtml(item.status || "open")}</b><small>${item.assigned_recruiter_name ? `Assigned to ${escapeHtml(item.assigned_recruiter_name)}` : "Unassigned"}</small></span>
+        </button>`).join("") : `<p class="muted">No SMS conversations yet.</p>`}
+      </div>
+    </div>`;
+  } catch (error) {
+    $("#content").innerHTML = backendError(error);
   }
+}
+
+async function openConversation(conversationId) {
+  const [conversation, recruiters] = await Promise.all([
+    api(`/messaging/conversations/${conversationId}`),
+    api("/messaging/recruiters").catch(() => ({ items: [] })),
+  ]);
+  const items = recruiters.items || [];
+  $("#modalRoot").innerHTML = `<div class="modal" role="presentation">
+    <section class="sheet sms-sheet" role="dialog" aria-modal="true" aria-labelledby="conversationTitle">
+      <h3 id="conversationTitle">${escapeHtml(conversation.candidate_name || "Candidate conversation")}</h3>
+      <div class="message-thread">${(conversation.messages || []).map((message) => `<div class="message-bubble ${message.direction === "inbound" ? "inbound" : "outbound"}"><span>${escapeHtml(message.body)}</span><small>${escapeHtml(message.status || "")}</small></div>`).join("")}</div>
+      <label class="field-label" for="conversationRecruiter">Assign reply</label>
+      <select id="conversationRecruiter"><option value="">Choose recruiter</option>${items.map((item) => `<option value="${escapeHtml(item.user_id)}">${escapeHtml(item.name || item.email || item.user_id)}</option>`).join("")}</select>
+      <div class="row modal-actions">
+        <button type="button" class="btn ghost" data-action="close-modal">Close</button>
+        <button type="button" class="btn teal" data-action="assign-conversation" data-conversation-id="${Number(conversation.id)}"${items.length ? "" : " disabled"}>Assign in Healthboard</button>
+      </div>
+    </section>
+  </div>`;
+}
+
+async function assignConversation(conversationId) {
+  const recruiter = $("#conversationRecruiter")?.value || "";
+  if (!recruiter) throw new Error("Choose a recruiter.");
+  await api(`/messaging/conversations/${conversationId}/assign`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ recruiter_user_id: recruiter }),
+  });
+  closeModal();
+  notify("Conversation assigned in Healthboard.");
+  if (activeView === "messages") await viewMessages();
 }
 
 async function viewPipeline() {
@@ -4274,6 +4622,7 @@ const views = {
   indeed: viewIndeed,
   add: viewAdd,
   pipeline: viewPipeline,
+  messages: viewMessages,
   dnc: viewDnc,
   analytics: viewAnalytics,
   settings: viewSettings,
@@ -4314,17 +4663,20 @@ document.addEventListener("keydown", (event) => {
 
 document.addEventListener("change", async (event) => {
   if (event.target.classList.contains("indeed-select")) {
-    if (event.target.checked) indeedSelected.add(event.target.dataset.key);
+    if (event.target.checked && indeedSelected.size >= MAX_LOOKUP_SELECTION) {
+      event.target.checked = false;
+      notify(`You can select up to ${MAX_LOOKUP_SELECTION} candidates.`, "error");
+    } else if (event.target.checked) indeedSelected.add(event.target.dataset.key);
     else indeedSelected.delete(event.target.dataset.key);
     updateIndeedSelectionUi();
     return;
   }
   if (event.target.id === "indeedSelectAll") {
     indeedSelected = event.target.checked
-      ? new Set(indeedCandidates.map((profile) => profile._selectionKey))
+      ? new Set(selectableIndeedCandidates().slice(0, MAX_LOOKUP_SELECTION).map((profile) => profile._selectionKey))
       : new Set();
     document.querySelectorAll(".indeed-select").forEach((checkbox) => {
-      checkbox.checked = event.target.checked;
+      checkbox.checked = indeedSelected.has(checkbox.dataset.key);
     });
     updateIndeedSelectionUi();
     return;
@@ -4352,6 +4704,18 @@ document.addEventListener("click", async (event) => {
   const id = Number(button.dataset.id);
   const index = Number(button.dataset.index);
 
+  if (action === "toggle-sms-candidate") {
+    const candidateId = Number(button.dataset.candidateId);
+    if (button.checked) selectedSmsCandidates.add(candidateId);
+    else selectedSmsCandidates.delete(candidateId);
+    const bulkButton = $('[data-action="bulk-sms"]');
+    if (bulkButton) {
+      bulkButton.textContent = `Bulk SMS (${selectedSmsCandidates.size})`;
+      bulkButton.disabled = selectedSmsCandidates.size === 0;
+    }
+    return;
+  }
+
   if (action === "close-modal") {
     closeModal();
     return;
@@ -4360,13 +4724,22 @@ document.addEventListener("click", async (event) => {
     await go(button.dataset.view);
     return;
   }
+  if (action === "toggle-contact-lookup-pause") {
+    button.disabled = true;
+    try {
+      await toggleContactLookupPause();
+    } catch (error) {
+      notify(friendlyActionError(error), "error");
+    } finally {
+      button.disabled = false;
+    }
+    return;
+  }
 
   const actions = {
     "login": login,
     "request-login-code": requestLoginCode,
     "verify-login-code": verifyLoginCode,
-    "check-device-approval": checkDeviceApproval,
-    "revoke-device": () => revokeDevice(button),
     "logout": logout,
     "open-privacy": openPrivacyNotice,
     "decline-privacy": declinePrivacyConsent,
@@ -4411,6 +4784,10 @@ document.addEventListener("click", async (event) => {
     "draft": () => draftOutreach(id),
     "compose-sms": () => composeSmsFromButton(button),
     "send-sms": sendCandidateSms,
+    "bulk-sms": showBulkSmsComposer,
+    "send-bulk-sms": sendBulkSms,
+    "open-conversation": () => openConversation(Number(button.dataset.conversationId)),
+    "assign-conversation": () => assignConversation(Number(button.dataset.conversationId)),
     "approve-draft": () => approveDraft(id),
     "copy-draft": copyDraft,
     "add-dnc": addDnc,
@@ -4426,10 +4803,6 @@ async function startExtensionWorkspace() {
   extensionWorkspaceStarting = true;
   try {
     await loadAuth();
-    if (authConfig.enabled && authSession?.device_pending) {
-      showPendingDeviceApproval();
-      return;
-    }
     if (authConfig.enabled && !authSession?.extension_token) {
       await login();
       return;
@@ -4443,6 +4816,16 @@ async function startExtensionWorkspace() {
     );
     const servicePromise = refreshHealth().then(async (health) => {
       if (!health) return;
+      try {
+        await loadContactLookupControl();
+        if (!contactLookupControlTimer) {
+          contactLookupControlTimer = setInterval(() => {
+            loadContactLookupControl().catch(() => {});
+          }, 60_000);
+        }
+      } catch {
+        updateContactLookupPauseUi();
+      }
       try {
         await loadJobs();
       } catch {
@@ -4477,9 +4860,7 @@ async function startExtensionWorkspace() {
         "Medhunt will not read or transmit candidate profile data until you accept the data-use notice.",
         { retry: false },
       );
-      if (authConfig.enabled && authSession?.device_pending) {
-        showPendingDeviceApproval();
-      } else if (authConfig.enabled && !authSession?.extension_token) {
+      if (authConfig.enabled && !authSession?.extension_token) {
         await login({ requirePrivacyConsent: true });
       } else {
         showPrivacyConsent();

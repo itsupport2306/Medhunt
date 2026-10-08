@@ -96,35 +96,19 @@ if IS_FROZEN and not re.fullmatch(r"[A-Za-z0-9_-]{40,128}", LOCAL_API_TOKEN):
 # an email and verification code; this backend validates HealthBoard's opaque,
 # limited extension token and reports enrichment activity to its analytics.
 HEALTHBOARD_BASE_URL = os.getenv("HEALTHBOARD_BASE_URL", "").strip().rstrip("/")
-MEDHUNT_MAIN_WEBSITE_URL = os.getenv(
-    "MEDHUNT_MAIN_WEBSITE_URL", "https://medhunt.ai/"
-).strip()
 HEALTHBOARD_AUTH_TIMEOUT = max(
     2.0, min(30.0, float(os.getenv("HEALTHBOARD_AUTH_TIMEOUT", "8")))
+)
+MEDHUNT_CEIPAL_TIMEOUT_SECONDS = max(
+    5.0, min(180.0, float(os.getenv("MEDHUNT_CEIPAL_TIMEOUT_SECONDS", "120")))
 )
 HEALTHBOARD_AUTH_CACHE_SECONDS = max(
     0, min(300, int(os.getenv("HEALTHBOARD_AUTH_CACHE_SECONDS", "60")))
 )
-# Shared service credential for Halo analytics delivery and internal service routes.
-MEDHUNT_HEALTHBOARD_SERVICE_TOKEN = os.getenv(
-    "MEDHUNT_HEALTHBOARD_SERVICE_TOKEN", ""
-).strip()
-# Retained for deployments that still set this variable; device registration
-# no longer blocks sign-in based on a device count.
-MEDHUNT_MAX_REGISTERED_DEVICES = max(
-    1, min(5, int(os.getenv("MEDHUNT_MAX_REGISTERED_DEVICES", "2")))
-)
-MEDHUNT_ADMIN_EMAILS = frozenset(
-    email.strip().casefold()
-    for email in re.split(r"[,;]", os.getenv("MEDHUNT_ADMIN_EMAILS", ""))
-    if email.strip()
-)
-MEDHUNT_DEVICE_IDLE_DAYS = max(
-    7, min(365, int(os.getenv("MEDHUNT_DEVICE_IDLE_DAYS", "90")))
-)
 
-# Zoom Phone remains configured for compatibility, while SMS_PROVIDER selects
-# Twilio for current outbound delivery.
+# Zoom Phone SMS is a server-side integration. Credentials are never shipped
+# in the browser extension. Sending remains disabled until every required
+# value is present and the operator explicitly enables it.
 ZOOM_SMS_ENABLED_REQUESTED = os.getenv("ZOOM_SMS_ENABLED", "0").strip().lower() in (
     "1", "true", "yes",
 )
@@ -137,18 +121,13 @@ ZOOM_WEBHOOK_SECRET_TOKEN = os.getenv("ZOOM_WEBHOOK_SECRET_TOKEN", "").strip()
 ZOOM_API_BASE_URL = os.getenv("ZOOM_API_BASE_URL", "https://api.zoom.us/v2").strip().rstrip("/")
 ZOOM_OAUTH_URL = os.getenv("ZOOM_OAUTH_URL", "https://zoom.us/oauth/token").strip()
 ZOOM_SMS_TIMEOUT = max(3.0, min(60.0, float(os.getenv("ZOOM_SMS_TIMEOUT", "20"))))
-ZOOM_SMS_ENABLED = bool(
-    ZOOM_SMS_ENABLED_REQUESTED and ZOOM_ACCOUNT_ID and ZOOM_CLIENT_ID
-    and ZOOM_CLIENT_SECRET
-)
-ZOOM_SMS_TEST_MODE = os.getenv("ZOOM_SMS_TEST_MODE", "0").strip().lower() in (
-    "1", "true", "yes",
-)
-ZOOM_SMS_TEST_NUMBERS = tuple(dict.fromkeys(
-    value.strip()
-    for value in os.getenv("ZOOM_SMS_TEST_NUMBERS", "").split(",")
-    if value.strip()
-))
+ZOOM_SMS_ENABLED = bool(ZOOM_SMS_ENABLED_REQUESTED)
+# Shared server-to-server credential used only for Medhunt webhook activity
+# reporting. User-initiated HealthBoard calls continue to use the user's opaque
+# extension token.
+MEDHUNT_HEALTHBOARD_SERVICE_TOKEN = os.getenv(
+    "MEDHUNT_HEALTHBOARD_SERVICE_TOKEN", ""
+).strip()
 
 # Hosted browser clients must be explicitly allowlisted once Chrome assigns
 # the production extension ID. Local development keeps the broad extension
@@ -301,14 +280,31 @@ QUICK_SOURCER_BASE_URL = os.getenv(
 ).strip().rstrip("/")
 QUICK_SOURCER_API_KEY = os.getenv("QUICK_SOURCER_API_KEY", "").strip()
 QUICK_SOURCER_TIMEOUT = max(10.0, float(os.getenv("QUICK_SOURCER_TIMEOUT", "150")))
+CONTACT_LOOKUP_MAX_OUTSTANDING_PER_USER = max(
+    1, min(80, int(os.getenv("CONTACT_LOOKUP_MAX_OUTSTANDING_PER_USER", "10"))),
+)
+# Hard cap across all Quick Sourcer lookup workers.
+CONTACT_LOOKUP_MAX_CONCURRENT = max(
+    1, min(80, int(os.getenv("CONTACT_LOOKUP_MAX_CONCURRENT", "80"))),
+)
+# Halo's overnight Neon backfill shares the durable queue but may occupy only
+# this many slots. Interactive extension jobs can use every remaining slot and
+# always win the next available worker.
+CONTACT_LOOKUP_BACKFILL_MAX_CONCURRENT = max(
+    1,
+    min(
+        CONTACT_LOOKUP_MAX_CONCURRENT,
+        int(os.getenv("CONTACT_LOOKUP_BACKFILL_MAX_CONCURRENT", "10")),
+    ),
+)
 QUICK_SOURCER_ENABLED = bool(
     QUICK_SOURCER_BASE_URL and QUICK_SOURCER_API_KEY
 ) and os.getenv("QUICK_SOURCER_ENABLED", "1").strip().lower() in ("1", "true", "yes")
 # The Hub uses its shared search pool when this is disabled. Enable it only
 # after at least one Hub Search Endpoint is marked Dedicated.
 QUICK_SOURCER_DEDICATED_IP = os.getenv(
-    "QUICK_SOURCER_DEDICATED_IP", "0"
-).strip().lower() in ("1", "true", "yes")
+    'QUICK_SOURCER_DEDICATED_IP', '0'
+).strip().lower() in ('1', 'true', 'yes')
 # A repeated search costs another 30-90 second browser run, so a found record is
 # reused from the local cache until it expires.
 QUICK_SOURCER_CACHE_TTL_SECONDS = max(
@@ -322,7 +318,7 @@ QUICK_SOURCER_TRUSTED_FOR_SYNC = os.getenv(
 ).strip().lower() in ("1", "true", "yes")
 
 # Demo mode returns deterministic mock enrichment when no key is set OR when
-# ENFORMION_DEMO=1 — lets you run the whole product before wiring the real key.
+# ENFORMION_DEMO=1 â€” lets you run the whole product before wiring the real key.
 DEMO_MODE = os.getenv("ENFORMION_DEMO", "").strip() in ("1", "true", "yes") or not ENFORMION_ENABLED
 
 # ---- LLM (Gemini) for outreach drafting ----
@@ -359,56 +355,11 @@ NPI_TIMEOUT = max(3.0, float(os.getenv("NPI_TIMEOUT", "12")))
 VERIFY_EMAILS = os.getenv("VERIFY_EMAILS", "").strip().lower() in ("1", "true", "yes")
 NEVERBOUNCE_API_KEY = os.getenv("NEVERBOUNCE_API_KEY", "")
 VERIFY_PHONES = os.getenv("VERIFY_PHONES", "").strip().lower() in ("1", "true", "yes")
-# ---- Candidate SMS (Twilio) ----
-SMS_PROVIDER = os.getenv("SMS_PROVIDER", "twilio").strip().casefold() or "twilio"
-TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "").strip()
-TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "").strip()
-TWILIO_API_KEY = os.getenv("TWILIO_API_KEY", "").strip()
-TWILIO_API_KEY_SECRET = os.getenv("TWILIO_API_KEY_SECRET", "").strip()
-TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER", "").strip()
-TWILIO_WEBHOOK_URL = os.getenv("TWILIO_WEBHOOK_URL", "").strip()
-TWILIO_SMS_TIMEOUT = max(3.0, min(60.0, float(os.getenv("TWILIO_SMS_TIMEOUT", "20"))))
-TWILIO_SMS_ENABLED = bool(
-    os.getenv("TWILIO_SMS_ENABLED", "0").strip().lower() in ("1", "true", "yes")
-    and TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_PHONE_NUMBER
-)
-
-# CEIPAL Candidate Pass API. Halo controls which recruiters route enriched
-# candidates here; credentials and tenant endpoint stay server-side.
-CEIPAL_SYNC_ENABLED = os.getenv("CEIPAL_SYNC_ENABLED", "0").strip().lower() in (
-    "1", "true", "yes",
-)
-CEIPAL_AUTH_URL = os.getenv(
-    "CEIPAL_AUTH_URL", "https://api.ceipal.com/v1/createAuthtoken/",
-).strip()
-CEIPAL_EMAIL = os.getenv("CEIPAL_EMAIL", "").strip()
-CEIPAL_PASSWORD = os.getenv("CEIPAL_PASSWORD", "").strip()
-CEIPAL_API_KEY = os.getenv("CEIPAL_API_KEY", "").strip()
-CEIPAL_CANDIDATE_URL = os.getenv("CEIPAL_CANDIDATE_URL", "").strip()
-CEIPAL_TIMEOUT = max(5.0, min(120.0, float(os.getenv("CEIPAL_TIMEOUT", "30"))))
-CEIPAL_WORKER_INTERVAL_SECONDS = max(
-    0.5, float(os.getenv("CEIPAL_WORKER_INTERVAL_SECONDS", "2"))
-)
-CEIPAL_MAX_ATTEMPTS = max(1, min(20, int(os.getenv("CEIPAL_MAX_ATTEMPTS", "8"))))
-CEIPAL_CONFIGURED = bool(
-    CEIPAL_SYNC_ENABLED and CEIPAL_AUTH_URL and CEIPAL_EMAIL and CEIPAL_PASSWORD
-    and CEIPAL_API_KEY and CEIPAL_CANDIDATE_URL
-)
-DEFAULT_PHONE_COUNTRY = os.getenv("DEFAULT_PHONE_COUNTRY", "US").strip() or "US"
-_DEFAULT_SMS_REPLY_NOTIFICATION_EMAILS = (
-    "ricky.singh@radixsol.com",
-    "sonali.singh@radixsol.com",
-    "ashwin.b@radixsol.com",
-)
-SMS_REPLY_NOTIFICATION_EMAILS = tuple(dict.fromkeys(
-    email.strip().casefold()
-    for email in re.split(
-        r"[,;]",
-        os.getenv("SMS_REPLY_NOTIFICATION_EMAILS", "").strip()
-        or ",".join(_DEFAULT_SMS_REPLY_NOTIFICATION_EMAILS),
-    )
-    if email.strip()
-))
+TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "")
+TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")
+TWILIO_API_KEY = os.getenv("TWILIO_API_KEY", "")
+TWILIO_API_KEY_SECRET = os.getenv("TWILIO_API_KEY_SECRET", "")
+DEFAULT_PHONE_COUNTRY = os.getenv("DEFAULT_PHONE_COUNTRY", "US")
 
 # ---- Watcher email notifications (SendGrid) ----
 # Recipients are administrator-controlled and never supplied by the browser.
@@ -449,6 +400,7 @@ if _USES_APP_HOME_LAYOUT and not _db_path.is_absolute():
 DB_PATH = str(_db_path.resolve()) if _db_path.is_absolute() else str(_db_path)
 LOG_PATH = str((LOG_DIR / "backend.log").resolve())
 DATABASE_CONNECT_TIMEOUT = max(3, int(os.getenv("DATABASE_CONNECT_TIMEOUT", "10")))
+DATABASE_POOL_SIZE = max(1, min(20, int(os.getenv("DATABASE_POOL_SIZE", "20"))))
 RESUME_DOWNLOAD_DIR = Path(
     os.getenv("RESUME_DOWNLOAD_DIR", str(Path.home() / "Downloads"))
 ).resolve()
@@ -497,6 +449,13 @@ S3_PUBLIC_BASE_URL = os.getenv("S3_PUBLIC_BASE_URL", "").strip().rstrip("/")
 NEXUS_BASE_URL = os.getenv(
     "NEXUS_BASE_URL", "https://api-nexus.laboredge.com"
 ).strip().rstrip("/")
+NEXUS_API_BASE_URL = os.getenv("NEXUS_API_BASE_URL", "").strip().rstrip("/")
+if not NEXUS_API_BASE_URL:
+    NEXUS_API_BASE_URL = (
+        "https://api-nexus.laboredge.com:9000"
+        if NEXUS_BASE_URL.casefold() == "https://api-nexus.laboredge.com"
+        else NEXUS_BASE_URL
+    )
 NEXUS_AUTH_METHOD = os.getenv("NEXUS_AUTH_METHOD", "static").strip().lower()
 NEXUS_TOKEN_URL = os.getenv("NEXUS_TOKEN_URL", "").strip()
 NEXUS_TOKEN_PAYLOAD_STYLE = os.getenv(
@@ -562,11 +521,18 @@ _NEXUS_AUTH_CONFIGURED = bool(
 NEXUS_SYNC_REQUESTED = (
     os.getenv("NEXUS_SYNC_ENABLED", "0").strip().lower() in ("1", "true", "yes")
 )
+NEXUS_PRECHECK_ENABLED = (
+    os.getenv("NEXUS_PRECHECK_ENABLED", os.getenv("NEXUS_SYNC_ENABLED", "0"))
+    .strip().lower() in ("1", "true", "yes")
+) and bool(NEXUS_BASE_URL and _NEXUS_AUTH_CONFIGURED)
+NEXUS_PRECHECK_CACHE_SECONDS = max(
+    0, int(os.getenv("NEXUS_PRECHECK_CACHE_SECONDS", "300"))
+)
 if not NEXUS_SYNC_REQUESTED:
     NEXUS_DISABLED_REASON = "not_requested"
 elif _NEXUS_DEFAULT_PROFILE_ERROR:
     NEXUS_DISABLED_REASON = _NEXUS_DEFAULT_PROFILE_ERROR
-elif not NEXUS_BASE_URL:
+elif not NEXUS_API_BASE_URL:
     NEXUS_DISABLED_REASON = "api_address_missing"
 elif not _NEXUS_AUTH_CONFIGURED:
     NEXUS_DISABLED_REASON = "authentication_not_configured"
@@ -582,7 +548,7 @@ else:
 NEXUS_SYNC_ENABLED = bool(NEXUS_SYNC_REQUESTED and not NEXUS_DISABLED_REASON)
 
 # ---- Compliance defaults (baked into the workflow) ----
-# Default outreach channel; Medhunt only drafts email outreach.
+# Default outreach channel; phone/SMS require extra consent (TCPA), so email-first.
 DEFAULT_CHANNEL = "email"
 REQUIRE_HUMAN_APPROVAL = True   # nothing sends automatically
 HONOR_DNC = True                # do-not-contact / opt-out list is always enforced
@@ -590,6 +556,7 @@ HONOR_DNC = True                # do-not-contact / opt-out list is always enforc
 COMPLIANCE_NOTICE = (
     "Contact data may come from licensed enrichment providers. Use for legitimate "
     "recruiting outreach only. Email sends must comply with CAN-SPAM (identify sender, "
-    "honor opt-outs). This tool requires human approval before sending and enforces a "
+    "honor opt-outs); phone/SMS outreach is subject to TCPA consent rules. This tool "
+    "defaults to email, requires human approval before sending, and enforces a "
     "do-not-contact list."
 )

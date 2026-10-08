@@ -315,6 +315,8 @@ def _phone_checks(phones: list[str]) -> list[dict]:
             "value": phone, "format_valid": 10 <= len(digits) <= 15,
             "line_status": "not_checked", "identity_owner": "not_checked",
         }
+        if check["format_valid"]:
+            check.update(contact_validation.verify_phone(phone))
         checks.append(check)
     return checks
 

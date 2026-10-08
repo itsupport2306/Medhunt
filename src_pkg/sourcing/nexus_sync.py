@@ -1,4 +1,4 @@
-"""Private, idempotency-aware delivery of trusted candidates to Nexus.
+"""Private, idempotency-aware delivery of candidates and resumes to Nexus.
 
 The browser extension must never know Nexus credentials or tenant routing IDs.
 This module therefore accepts only the backend's already-sanitized candidate
@@ -7,12 +7,10 @@ evidence, and API credentials are deliberately excluded from every outbound
 candidate payload and from public exception messages.
 
 ``process_delivery`` is synchronous so a durable outbox worker can decide when
-to acknowledge, retry, or send a delivery for manual review.  It performs two
-independent duplicate searches (exact email and exact phone) before any write:
-
-* no remote match -> create the candidate with the resume;
-* one consistent remote candidate -> upload the resume to that candidate;
-* multiple or conflicting matches -> stop for manual review.
+to acknowledge, retry, or send a delivery for manual review. It creates a
+candidate directly through the configured Nexus insert endpoint when there is
+no saved Nexus link, then uploads the resume. Existing saved links are reused.
+It does not search Nexus for duplicate candidates.
 """
 from __future__ import annotations
 
@@ -28,8 +26,8 @@ from urllib.parse import quote
 
 import httpx
 
+from . import nexus_taxonomy, verification
 from .person_name import identity_signature, is_name_suffix, normalize_person_name
-from . import legacy_taxonomy
 
 
 _SURNAME_PARTICLES = {"da", "de", "del", "della", "der", "di", "du", "la", "le", "van", "von"}
@@ -43,35 +41,29 @@ _SPECIALTY_ALIASES: Mapping[str, tuple[str, ...]] = {
     "family medicine": ("Family Practice", "Family Practice/Primary Care"),
     "family practice": ("Family Medicine", "Family Practice/Primary Care"),
     "primary care": ("Family Practice/Primary Care", "Family Practice"),
-    "anesthesia": ("Anesthesiology",),
-    "anesthesiology": ("Anesthesia",),
-    "cardiothoracic surgery": ("CardioThoracic Surgery", "Thoracic Surgery", "Surgery-Thoracic"),
-    "thoracic surgery": ("CardioThoracic Surgery", "Cardiothoracic Surgery", "Surgery-Thoracic"),
-    "gastroenterologic": ("Gastroenterology",),
-    "gastroenterology": ("Gastroenterologic",),
-    "obstetrics gynecology": ("Gynecology", "Obstetrics", "Obstetrics & Gynecology"),
-    "obstetrics and gynecology": ("Gynecology", "Obstetrics", "Obstetrics & Gynecology"),
-    "gynecology": ("Obstetrics", "Obstetrics & Gynecology"),
-    "internal medicine": ("Internal Medicine",),
-    "emergency medicine": ("Emergency Medicine",),
+    "thoracic surgery": ("Surgery-Thoracic", "CardioThoracic Surgery"),
+    "cardiothoracic surgery": ("CardioThoracic Surgery", "Surgery-Thoracic"),
     "ob gyn": ("Obstetrics & Gynecology",),
     "obgyn": ("Obstetrics & Gynecology",),
+    "obstetrics and gynecology": ("Obstetrics & Gynecology",),
+    "or": ("Operating Room",),
+    "er": ("Emergency Room",),
 }
 
-# A source directory often uses a credential/role label that is semantically
-# correct but not identical to the tenant's profession master label. Try the
-# canonical label first, then these reviewed equivalents before falling back to
-# Nexus's explicit Unknown pair.
-_PROFESSION_ALIASES: Mapping[str, tuple[str, ...]] = {
-    "physician": ("Physician", "Doctor", "Medical Doctor", "MD", "DO"),
-    "nurse": ("RN", "Registered Nurse", "Nurse"),
-    "registered nurse": ("RN", "Nurse"),
-    "nurse anesthetist": ("CRNA", "Certified Registered Nurse Anesthetist"),
-    "crna": ("Nurse Anesthetist", "Certified Registered Nurse Anesthetist"),
-    "nurse practitioner": ("Nurse Practitioner", "NP", "APRN"),
-    "medical doctor": ("Physician", "Doctor", "MD", "DO"),
-    "doctor": ("Physician", "Medical Doctor", "MD", "DO"),
-}
+_ROLE_SPECIALTY_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("Sterile Processing Tech (SPT)", re.compile(r"\bsterile\s+processing\s+tech(?:nician)?\b", re.I)),
+    ("Interventional Radiology Tech", re.compile(r"\binterventional\s+radiology\s+tech(?:nician|nologist)?\b", re.I)),
+    ("CT Tech", re.compile(r"\bct\s+tech(?:nician|nologist)?\b", re.I)),
+    ("MRI Tech", re.compile(r"\bmri\s+tech(?:nician|nologist)?\b", re.I)),
+    ("X-Ray Tech", re.compile(r"\bx[ -]?ray\s+tech(?:nician|nologist)?\b", re.I)),
+    ("X-Ray Tech", re.compile(r"\bradiologic\s+technolog(?:ist|y)\b", re.I)),
+    ("Long Term Acute Care (LTAC)", re.compile(r"\b(?:ltac|long\s+term\s+acute\s+care)\b", re.I)),
+    ("MedSurg / Tele", re.compile(r"\bmed(?:ical)?[ -]?surg(?:ical)?.{0,20}\btele(?:metry)?\b", re.I)),
+    ("MedSurg", re.compile(r"\bmed(?:ical)?[ -]?surg(?:ical)?\b", re.I)),
+    ("Post-Partum", re.compile(r"\bpost[ -]?partum\b", re.I)),
+    ("Psychiatric-Mental Health", re.compile(r"\b(?:psychiatric[ -]?mental\s+health|mental\s+health\s+nurse\s+practitioner|pmhnp)\b", re.I)),
+    ("Dialysis", re.compile(r"\bhemodialysis\b", re.I)),
+)
 
 
 class NexusDeliveryError(RuntimeError):
@@ -177,7 +169,12 @@ class NexusSettings:
                     getattr(config_module, "NEXUS_ENABLED", False),
                 )
             ),
-            base_url=str(getattr(config_module, "NEXUS_BASE_URL", "") or "").rstrip("/"),
+            base_url=str(
+                getattr(
+                    config_module, "NEXUS_API_BASE_URL",
+                    getattr(config_module, "NEXUS_BASE_URL", ""),
+                ) or ""
+            ).rstrip("/"),
             auth_method=str(getattr(config_module, "NEXUS_AUTH_METHOD", "static") or "static").lower(),
             token_url=str(getattr(config_module, "NEXUS_TOKEN_URL", "") or ""),
             token_payload_style=str(
@@ -496,16 +493,20 @@ class NexusClient:
             raise _response_error(response, operation=operation, write=write)
         return response
 
-    def search_candidates(self, *, email: str = "", phone: str = "") -> list[dict[str, Any]]:
-        if bool(email) == bool(phone):
+    def search_candidates(
+        self, *, email: str = "", phone: str = "", npi: str = ""
+    ) -> list[dict[str, Any]]:
+        supplied = [bool(email), bool(phone), bool(npi)]
+        if sum(supplied) != 1:
             raise NexusPermanentError(
-                "A duplicate search must contain exactly one contact value.",
+                "A duplicate search must contain exactly one identity value.",
                 operation="duplicate_search",
             )
         payload: dict[str, Any] = {
             "pagingSortingDetails": {"start": 0, "maxRowsToFetch": 20}
         }
-        payload["email" if email else "phone"] = email or phone
+        key = "email" if email else "phone" if phone else "npi"
+        payload[key] = email or phone or npi
         response = self.request(
             "POST",
             "/api/api-integration/v1/candidates/search",
@@ -737,66 +738,14 @@ def _candidate_specialties(candidate: Mapping[str, Any], accepted: Mapping[str, 
     return _text_values(values)
 
 
-def _candidate_role(candidate: Mapping[str, Any], accepted: Mapping[str, Any]) -> str:
-    """Return the source-declared profession/role for Nexus mapping.
-
-    Candidate rows intentionally keep the browser payload in ``notes`` rather
-    than adding an unrestricted job-title column.  The import path writes
-    explicit ``Profession:``/``Role:`` evidence lines there, so read those
-    lines back before falling through to resume-extraction fields.  Without
-    this step a valid Sharecare/Directory role was silently treated as empty
-    and Nexus had to use its Unknown profession classification.
-    """
-    direct_values = (
-        candidate.get("job_title"),
-        candidate.get("role"),
-        candidate.get("title"),
-        accepted.get("job_title"),
-        accepted.get("profession"),
-        accepted.get("role"),
-        accepted.get("occupation"),
-        accepted.get("title"),
-    )
-    for value in direct_values:
-        text = " ".join(str(value or "").split()).strip()
-        if text:
-            return text
-
-    # ``_profile_row`` preserves these labels as source evidence. Prefer an
-    # explicit profession over a generic role/headline when both are present.
-    found: dict[str, str] = {}
-    for raw_line in str(candidate.get("notes") or "").splitlines():
-        match = re.match(r"^\s*(profession|role|headline|occupation)\s*:\s*(.+?)\s*$", raw_line, re.I)
-        if not match:
-            continue
-        value = " ".join(match.group(2).split()).strip()
-        if value:
-            found.setdefault(match.group(1).casefold(), value)
-    for label in ("profession", "role", "occupation", "headline"):
-        if found.get(label):
-            return found[label]
-    return ""
-
-
 def _specialty_master_labels(values: Sequence[str]) -> list[str]:
     """Return source labels followed by approved Nexus label equivalents."""
     expanded: list[str] = []
     for value in _text_values(values):
-        canonical = legacy_taxonomy.canonical_specialty(value)
-        if canonical:
-            expanded.append(canonical)
         expanded.append(value)
-        # Sharecare and other JSON-LD publishers sometimes expose a Schema.org
-        # URI (for example ``https://schema.org/Anesthesia``) instead of the
-        # human label. Resolve the URI tail before applying reviewed aliases.
-        uri_tail = re.split(r"[/#]", value)[-1]
-        uri_tail = re.sub(r"([a-z])([A-Z])", r"\1 \2", uri_tail)
-        uri_tail = uri_tail.replace("_", " ").strip()
-        if uri_tail and uri_tail.casefold() != value.casefold():
-            expanded.append(uri_tail)
-        for label in (value, uri_tail):
-            alias_key = re.sub(r"[^a-z0-9]+", " ", label.casefold()).strip()
-            expanded.extend(_SPECIALTY_ALIASES.get(alias_key, ()))
+        expanded.extend(nexus_taxonomy.specialty_labels((value,)))
+        alias_key = re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip()
+        expanded.extend(_SPECIALTY_ALIASES.get(alias_key, ()))
     return _text_values(expanded)
 
 
@@ -882,8 +831,45 @@ def _trusted_identity(payload: Mapping[str, Any]) -> dict[str, Any]:
         city = parts[0]
     if not state and len(parts) >= 2:
         state = parts[-2] if len(parts) >= 3 else parts[-1]
+    parsed_location = verification.us_city_state(location)
+    if parsed_location:
+        parsed_city, parsed_state = (part.strip() for part in parsed_location.split(",", 1))
+        city = city or parsed_city
+        # Strip ZIP codes and normalize full state names before resolving the
+        # state against Nexus master data.
+        state = parsed_state
     if not country and len(parts) >= 3:
         country = parts[-1]
+    source_specialties = _candidate_specialties(candidate, {})
+    resume_specialties = _text_values([
+        *_text_values(accepted.get("specialty")),
+        *_text_values(accepted.get("specialties")),
+    ])
+    if not resume_specialties and isinstance(extraction, Mapping):
+        # Older captures already stored this structured field. Read it only
+        # during Nexus delivery so resume capture and downloads stay untouched.
+        fields = extraction.get("fields")
+        confidence = extraction.get("confidence")
+        conflicts = extraction.get("conflicts") or []
+        try:
+            specialty_confidence = float(
+                confidence.get("specialties") if isinstance(confidence, Mapping) else 0
+            )
+        except (TypeError, ValueError):
+            specialty_confidence = 0
+        if (
+            isinstance(fields, Mapping)
+            and specialty_confidence >= 0.75
+            and "name" not in conflicts
+        ):
+            # The existing parser matches short acronyms without case context.
+            # Avoid treating ordinary prose such as "or" as a clinical unit.
+            extracted = [
+                value for value in _text_values(fields.get("specialties"))
+                if value.casefold() not in {"or", "er"}
+            ]
+            if len(extracted) == 1:
+                resume_specialties = extracted
     return {
         "firstName": first_name,
         "middleName": middle_name,
@@ -893,8 +879,16 @@ def _trusted_identity(payload: Mapping[str, Any]) -> dict[str, Any]:
         "city": city,
         "state": state,
         "country": country,
-        "role": _candidate_role(candidate, accepted),
-        "specialties": _candidate_specialties(candidate, accepted),
+        "role": str(
+            candidate.get("job_title")
+            or candidate.get("role")
+            or candidate.get("title")
+            or accepted.get("job_title")
+            or ""
+        ).strip(),
+        "source_specialties": source_specialties,
+        "resume_specialties": resume_specialties,
+        "specialties": _text_values([*source_specialties, *resume_specialties]),
     }
 
 
@@ -920,19 +914,6 @@ def _master_id(row: Mapping[str, Any], list_name: str = "") -> Any:
 
 def _label(value: Any) -> str:
     return re.sub(r"[^a-z0-9]+", " ", str(value or "").casefold()).strip()
-
-
-def _master_labels(row: Mapping[str, Any]) -> set[str]:
-    """Read the label variants returned by different Nexus API revisions."""
-    return {
-        value
-        for key in (
-            "name", "label", "code", "abbreviation", "displayName",
-            "description", "professionName", "specialtyName", "value",
-        )
-        for value in (_label(row.get(key)),)
-        if value
-    }
 
 
 _PROFESSION_ROLE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
@@ -990,20 +971,24 @@ def _profession_labels(role: str) -> tuple[str, ...]:
     unrelated clinical profession merely to pass payload validation.
     """
     text = str(role or "").strip()
-    labels: list[str] = []
-    if text:
-        canonical = legacy_taxonomy.canonical_profession(text)
-        if canonical:
-            labels.append(canonical)
     for label, pattern in _PROFESSION_ROLE_PATTERNS:
         if pattern.search(text):
-            if label not in labels:
-                labels.append(label)
-            break
-    expanded: list[str] = []
-    for label in labels:
-        expanded.extend((label, *_PROFESSION_ALIASES.get(_label(label), ())))
-    return tuple(_text_values(expanded)) or ("Unknown",)
+            return (label,)
+    taxonomy_labels = nexus_taxonomy.profession_labels_for_role(text)
+    if taxonomy_labels:
+        return taxonomy_labels
+    return ("Unknown",)
+
+
+def _role_specialty_labels(
+    role: str, profession_values: Sequence[str],
+) -> tuple[str, ...]:
+    labels = [
+        label for label, pattern in _ROLE_SPECIALTY_PATTERNS
+        if pattern.search(str(role or ""))
+    ]
+    labels.extend(nexus_taxonomy.specialty_labels_for_role(role, profession_values))
+    return tuple(_text_values(labels))
 
 
 def _exact_master_id(
@@ -1017,7 +1002,12 @@ def _exact_master_id(
     wanted = {_label(value) for value in values if _label(value)}
     matches: dict[int, Mapping[str, Any]] = {}
     for row in _active(client.get_master(name)):
-        labels = _master_labels(row)
+        labels = {
+            _label(row.get("name")),
+            _label(row.get("label")),
+            _label(row.get("code")),
+            _label(row.get("abbreviation")),
+        }
         raw_id = _master_id(row, name)
         if raw_id is None or not (wanted & labels):
             continue
@@ -1049,7 +1039,12 @@ def _preferred_master_id(
         wanted = _label(value)
         matches: set[int] = set()
         for row in rows:
-            labels = _master_labels(row)
+            labels = {
+                _label(row.get("name")),
+                _label(row.get("label")),
+                _label(row.get("code")),
+                _label(row.get("abbreviation")),
+            }
             raw_id = _master_id(row, name)
             if not wanted or wanted not in labels or raw_id is None:
                 continue
@@ -1083,7 +1078,12 @@ def _preferred_master_row(
         wanted = _label(value)
         matches: dict[int, Mapping[str, Any]] = {}
         for row in rows:
-            labels = _master_labels(row)
+            labels = {
+                _label(row.get("name")),
+                _label(row.get("label")),
+                _label(row.get("code")),
+                _label(row.get("abbreviation")),
+            }
             raw_id = _master_id(row, name)
             if not wanted or wanted not in labels or raw_id is None:
                 continue
@@ -1169,8 +1169,13 @@ def _build_profile(
     )
     if identity.get("middleName"):
         profile["middleName"] = identity["middleName"]
-    if identity.get("city"):
-        profile["city"] = identity["city"]
+    city_text = str(identity.get("city") or "").strip()
+    if not city_text:
+        raise NexusPermanentError(
+            "Candidate city is required for Nexus creation.",
+            operation="payload_validation",
+        )
+    profile["city"] = city_text
 
     if not profile["firstName"] or not profile["lastName"]:
         raise NexusPermanentError(
@@ -1206,9 +1211,9 @@ def _build_profile(
                 (state_text,),
                 description="state",
             )
-    elif not _default_id(profile, "stateId"):
+    else:
         raise NexusPermanentError(
-            "Candidate state is required for Nexus creation.",
+            "Candidate state is required for Nexus creation; tenant defaults cannot replace candidate location.",
             operation="payload_validation",
         )
 
@@ -1252,13 +1257,31 @@ def _build_profile(
                 )
             profile["referralSourceId"] = next(iter(ids))
 
+    role = str(identity.get("role") or "")
+    initial_profession_values = (
+        (profession_name,) if profession_name else _profession_labels(role)
+    )
+    source_specialties = _text_values(identity.get("source_specialties"))
+    resume_specialties = _text_values(identity.get("resume_specialties"))
+    if "source_specialties" not in identity and "resume_specialties" not in identity:
+        source_specialties = _text_values(identity.get("specialties"))
+    # Current source data has priority; a role/title is more current than
+    # resume-wide terms, which can mention several historical clinical units.
+    actual_specialties = (
+        source_specialties
+        or _text_values(_role_specialty_labels(role, initial_profession_values))
+        or resume_specialties
+    )
+    taxonomy_row = nexus_taxonomy.classify(
+        initial_profession_values, actual_specialties,
+    )
+    profession_values = (
+        (taxonomy_row.profession,) if taxonomy_row else initial_profession_values
+    )
+
     profession_id = _default_id(profile, "professionId", "professionIds")
     profession_inferred = False
-    if not profile.get("jobId") and not profession_id:
-        role = str(identity.get("role") or "")
-        profession_values = (
-            (profession_name,) if profession_name else _profession_labels(role)
-        )
+    if not profession_id:
         profession_id = _preferred_master_id(
             client,
             "professions",
@@ -1271,13 +1294,15 @@ def _build_profile(
         profile["professionIds"] = [profession_id]
 
     specialty_id = _default_id(profile, "specialtyId", "specialtyIds")
-    actual_specialties = _text_values(identity.get("specialties"))
     if actual_specialties:
         # The captured specialty is candidate data, not a tenant default. It
         # therefore takes precedence over a configured generic specialty ID.
         # Try the source label first and then only approved semantic aliases.
         # This keeps the mapping deterministic and profession-aware.
-        specialty_values = _specialty_master_labels(actual_specialties)
+        specialty_values = _specialty_master_labels([
+            *((taxonomy_row.specialty,) if taxonomy_row else ()),
+            *actual_specialties,
+        ])
         specialty_row = None
         if profession_id:
             try:
@@ -1320,7 +1345,7 @@ def _build_profile(
                     ) from exc
                 profile["professionId"] = profession_id
                 profile["professionIds"] = [profession_id]
-    elif not profile.get("jobId") and not specialty_id:
+    elif not specialty_id:
         try:
             specialty_id = _preferred_master_id(
                 client,
@@ -1586,45 +1611,9 @@ def process_delivery(
             "checksum_sha256": checksum,
         }
 
-    # Always query both identifiers independently. Stopping after the first hit
-    # can silently attach a resume to the wrong person when stale contacts were
-    # re-used on two different Nexus records.
-    email_rows = (
-        client.search_candidates(email=identity["email"])
-        if identity["email"]
-        else []
-    )
-    phone_rows = (
-        client.search_candidates(phone=identity["phone"])
-        if identity["phone"]
-        else []
-    )
-    candidate_id, matched_by = _resolve_duplicate(
-        email_rows,
-        phone_rows,
-        expected_name=f"{identity['firstName']} {identity['lastName']}",
-    )
-
-    if candidate_id is not None:
-        doc_type_id = _resume_doc_type_id(client)
-        if before_write:
-            before_write("resume_upload")
-        client.upload_resume(
-            candidate_id,
-            doc_type_id=doc_type_id,
-            filename=filename,
-            content=resume_pdf,
-            checksum=checksum,
-        )
-        return {
-            "status": "delivered",
-            "action": "resume_uploaded",
-            "nexus_candidate_id": candidate_id,
-            "matched_by": matched_by,
-            "resume_id": resume_id,
-            "checksum_sha256": checksum,
-        }
-
+    # No ATS duplicate lookup is performed. If this local candidate already
+    # has a stored Nexus link, the resume is attached above; otherwise submit
+    # the candidate directly; any duplicate handling is left to Nexus.
     profile = _build_profile(client, identity, settings.default_profile)
     if before_write:
         before_write("candidate_creation")

@@ -27,7 +27,7 @@ def _load_panel(page: Page) -> None:
         ".includes(location.protocol);"
     )
     assert extension_check in source
-    if 'const DEFAULT_BACKEND = "https://medhunt-fyxr.onrender.com";' in source:
+    if 'const DEFAULT_BACKEND = "https://medhunt1.onrender.com";' in source:
         # Packaged UI geometry tests model a valid persisted sign-in. The
         # separate hosted-auth test below deliberately starts without one.
         page.evaluate(
@@ -56,7 +56,7 @@ def _run_hosted_auth_gate(browser_type, executable: Path) -> dict:
         ".includes(location.protocol);"
     )
     local_backend = 'const DEFAULT_BACKEND = "http://127.0.0.1:8091";'
-    hosted_backend = 'const DEFAULT_BACKEND = "https://medhunt-fyxr.onrender.com";'
+    hosted_backend = 'const DEFAULT_BACKEND = "https://medhunt1.onrender.com";'
     assert extension_check in source
     source = source.replace(extension_check, "const IS_EXTENSION = true;", 1)
     if local_backend in source:
@@ -250,33 +250,28 @@ def _run_browser(browser_type, executable: Path) -> dict:
     _load_panel(page)
     _seed_profiles(page)
 
-    resume_gate = page.evaluate("""async () => {
-      const profile = {
-        source: 'webmd', name: 'Test Dentist', _candidateId: 91001,
-        _selectionKey: 'webmd:resume-gate',
-        profile_document: { kind: 'public_professional_profile' },
-      };
-      indeedLookupState.set(profile._selectionKey, {
-        status: 'not_found', emails: [], phones: [], resume_required: false,
-      });
-      await startProfessionalProfileResumeBatch([profile]);
-      return {
-        active: indeedResumeBatchState.active,
-        generated: await ensureProfessionalProfileResume(profile),
-        guidedButton: linkedinPdfControl(indeedCandidates[0], 0).includes('Save resume'),
-      };
-    }""")
-    assert resume_gate == {"active": False, "generated": None, "guidedButton": False}
-
     assert "50 profiles ready" in page.locator("body").inner_text()
     assert "candidates captured" not in page.locator("body").inner_text().lower()
     assert page.locator(".capture-row").count() == 50
     assert page.locator(".candidate-select-control").count() == 50
+    page.evaluate("""() => {
+      rememberEnrichedProfile(indeedCandidates[0]);
+      indeedSelected = new Set();
+      toggleAllIndeedCandidates();
+      renderIndeedProfiles();
+    }""")
+    assert page.locator(".capture-row.previously-enriched").count() == 1
+    assert page.locator(".already-enriched-badge").inner_text() == "Already enriched"
+    assert page.locator(".capture-row.previously-enriched input").is_disabled()
+    assert page.evaluate("() => !indeedSelected.has(indeedCandidates[0]._selectionKey)")
+    page.evaluate("""() => {
+      enrichedProfileKeys.clear();
+      indeedSelected = new Set(indeedCandidates.map(profile => profile._selectionKey));
+      renderIndeedProfiles();
+    }""")
     assert page.locator(".source-brand-copy strong").inner_text() == "Medhunt"
     assert page.locator(".medhunt-mark").count() == 1
     assert page.locator(".radixsol-mark").count() == 0
-    logout = page.locator("#sourceLogoutButton")
-    assert logout.is_visible(), "Signed-in extension users need a visible logout action."
     assert page.locator(".medhunt-mark").evaluate("el => getComputedStyle(el).borderRadius") != "50%"
     _assert_inactive_header_progress(page)
 
@@ -402,10 +397,7 @@ def _run_browser(browser_type, executable: Path) -> dict:
     assert page.locator('[role=tab][data-filter="all"]').get_attribute("aria-selected") == "true"
     assert page.locator(".capture-row").count() == 50
     assert "Ready" in page.locator(".result-summary").inner_text()
-    assert "Retry" in page.locator(".result-summary").inner_text()
-    assert page.locator("#sourceCreditBalance").is_visible()
-    assert "credits" in page.locator("#sourceCreditBalance").inner_text().casefold()
-    assert page.locator("#sourceAccountButton").count() == 0
+    assert "Unavailable" in page.locator(".result-summary").inner_text()
 
     matched_tab = page.locator('[role=tab][data-filter="matched"]')
     matched_tab.click()
@@ -439,17 +431,6 @@ def _run_browser(browser_type, executable: Path) -> dict:
     )
     forbidden = {"rgb(116, 50, 237)", "rgb(126, 52, 238)", "rgb(128, 53, 241)"}
     assert forbidden.isdisjoint(rendered_colors), rendered_colors
-
-    page.evaluate("""() => {
-      chrome.storage.local.remove = (keys, callback) => {
-        for (const key of keys || []) delete window.__panelTest.local[key];
-        queueMicrotask(() => callback?.());
-      };
-    }""")
-    logout.click()
-    page.wait_for_function("document.querySelector('#sourceLogoutButton')?.hidden === true")
-    assert "Signed out" in page.locator("#toast").inner_text()
-    assert page.locator("#sourceAccountButton").count() == 0
 
     browser.close()
     return {

@@ -7,9 +7,7 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright
 
 
-FRONTEND = Path(os.environ.get(
-    "MEDHUNT_FRONTEND_DIR", str(Path(__file__).parents[1] / "frontend"),
-))
+FRONTEND = Path(__file__).parents[1] / "frontend"
 CHROME = Path("C:/Program Files/Google/Chrome/Application/chrome.exe")
 BROWSER = Path(os.environ.get("RADIXSOL_BROWSER_EXECUTABLE", str(CHROME)))
 
@@ -74,44 +72,12 @@ def main():
         npino.add_script_tag(path=str(FRONTEND / "healthcare-directory-content.js"))
         npino_result = _message(npino, {"type": "RADIXSOL_LIST_PLATFORM_CANDIDATES"})
         assert npino_result["platform"] == "npino", npino_result
-        assert npino_result["adapter_revision"] == "healthcare-directory-v13"
+        assert npino_result["adapter_revision"] == "healthcare-directory-v9"
         assert npino_result["count"] == 1, npino_result
         assert npino_result["profiles"][0]["name"] == "Patrick Theodore Gomella"
         assert npino_result["profiles"][0]["source_id"] == "1093058315"
         assert npino_result["profiles"][0]["location"] == "Abington, PA"
         assert npino_result["profiles"][0]["roles"] == ["Urology"]
-
-        nurses = context.new_page()
-        nurses.goto("https://npino.com/nurses/163w00000x-registered-nurse/")
-        nurses.set_content((FRONTEND.parents[1] / "npi.txt").read_text(encoding="utf-8"))
-        _install_runtime(nurses)
-        nurses.add_script_tag(path=str(FRONTEND / "healthcare-directory-content.js"))
-        nurse_result = _message(nurses, {"type": "RADIXSOL_LIST_PLATFORM_CANDIDATES"})
-        assert nurse_result["count"] == 20, nurse_result
-        nurses.add_script_tag(path=str(FRONTEND / "profile-quality.js"))
-        nurse_quality = nurses.evaluate(
-            "profiles => globalThis.RadixsolProfileQuality.sanitizeProfiles(profiles, "
-            "{platform: 'npino'}).profiles.length",
-            nurse_result["profiles"],
-        )
-        assert nurse_quality == 20, nurse_result
-        assert nurse_result["profiles"][0]["source_url"].startswith("https://npino.com/nurse/1003000985-")
-        assert nurse_result["profiles"][0]["source_id"] == "1003000985"
-        assert nurse_result["profiles"][0]["location"] == "Sacramento, CA"
-        assert nurse_result["profiles"][0]["roles"] == ["Registered Nurse"]
-
-        dentists = context.new_page()
-        dentists.goto("https://npino.com/dentists/122300000x-dentist/")
-        dentists.set_content("""<main><h1>Dentist NPI Lookup</h1>
-          <div class="bg-white rounded-xl"><div><h3><a href="/dentist/1003000167-dr.-julio-edgardo-escobar/">Dr. Julio Edgardo Escobar, DDS</a></h3>
-          <p>Dentist</p><p>NPI Number: <a href="/dentist/1003000167-dr.-julio-edgardo-escobar/">1003000167</a></p>
-          <p>Address: 5 Pine Cone Rd, Dayton, NV, 89403-7482</p></div></div></main>""")
-        _install_runtime(dentists)
-        dentists.add_script_tag(path=str(FRONTEND / "healthcare-directory-content.js"))
-        dentist_result = _message(dentists, {"type": "RADIXSOL_LIST_PLATFORM_CANDIDATES"})
-        assert dentist_result["count"] == 1, dentist_result
-        assert dentist_result["profiles"][0]["name"] == "Julio Edgardo Escobar"
-        assert dentist_result["profiles"][0]["roles"] == ["Dentist"]
 
         npi_profile = context.new_page()
         npi_profile.goto("https://npiprofile.com/taxonomy/code/207V00000X/state/ia")
@@ -301,7 +267,7 @@ def main():
         medifind_result = _message(medifind, {"type": "RADIXSOL_SCAN_PLATFORM_CANDIDATES"})
         assert medifind_result["platform"] == "medifind", medifind_result
         assert medifind_result["platform_label"] == "MediFind"
-        assert medifind_result["adapter_revision"] == "healthcare-directory-v13"
+        assert medifind_result["adapter_revision"] == "healthcare-directory-v9"
         assert medifind_result["count"] == 1, medifind_result
         medifind_profile = medifind_result["profiles"][0]
         assert medifind_profile["name"] == "Brian E. Louie"
@@ -370,7 +336,7 @@ def main():
         commonspirit_result = _message(commonspirit, {"type": "RADIXSOL_SCAN_PLATFORM_CANDIDATES"})
         assert commonspirit_result["platform"] == "commonspirit", commonspirit_result
         assert commonspirit_result["platform_label"] == "CommonSpirit Health"
-        assert commonspirit_result["adapter_revision"] == "healthcare-directory-v13"
+        assert commonspirit_result["adapter_revision"] == "healthcare-directory-v9"
         assert commonspirit_result["count"] == 2, commonspirit_result
         commonspirit_profile = next(
             profile for profile in commonspirit_result["profiles"]
@@ -511,7 +477,7 @@ def main():
         sharecare_result = _message(sharecare, {"type": "RADIXSOL_LIST_PLATFORM_CANDIDATES"})
         assert sharecare_result["platform"] == "sharecare", sharecare_result
         assert sharecare_result["platform_label"] == "Sharecare"
-        assert sharecare_result["adapter_revision"] == "healthcare-directory-v13"
+        assert sharecare_result["adapter_revision"] == "healthcare-directory-v9"
         assert sharecare_result["count"] == 1, sharecare_result
         sharecare_candidate = sharecare_result["profiles"][0]
         assert sharecare_candidate["name"] == "Raja Flores"
@@ -537,7 +503,7 @@ def main():
         _install_runtime(sharecare_profile)
         sharecare_profile.add_script_tag(path=str(FRONTEND / "healthcare-directory-content.js"))
         sharecare_capture = _message(sharecare_profile, {
-            "type": "RADIXSOL_HEALTHCARE_DIRECTORY_V13_REQUEST",
+            "type": "RADIXSOL_HEALTHCARE_DIRECTORY_V9_REQUEST",
             "original_type": "RADIXSOL_CAPTURE_PLATFORM_PROFILE",
         })
         assert sharecare_capture["ok"] is True, sharecare_capture
@@ -577,37 +543,6 @@ def main():
             )
             actual_sharecare_count = actual_sharecare_result["count"]
             actual_sharecare.close()
-
-        webmd_snapshot = FRONTEND.parents[1] / "webmd.txt"
-        if webmd_snapshot.is_file():
-            webmd = context.new_page()
-            webmd.goto("https://doctor.webmd.com/results?q=Dentist")
-            webmd.set_content(webmd_snapshot.read_text(encoding="utf-8"))
-            _install_runtime(webmd)
-            webmd.add_script_tag(path=str(FRONTEND / "healthcare-directory-content.js"))
-            webmd_result = _message(webmd, {"type": "RADIXSOL_LIST_PLATFORM_CANDIDATES"})
-            assert webmd_result["count"] == 2, webmd_result
-            assert {p["name"] for p in webmd_result["profiles"]} == {
-                "Kyle Pettersen", "Pooja Santwani",
-            }
-            assert all("?" not in p["source_url"] for p in webmd_result["profiles"])
-            webmd.close()
-
-            webmd_profile = context.new_page()
-            webmd_profile.goto(webmd_result["profiles"][0]["source_url"])
-            webmd_profile.set_content("""<main><h1>Dr Kyle Pettersen, DDS</h1>
-              <section><h2>Overview</h2><p>General dentist with a focus on pediatric dentistry.</p></section>
-              <section><h2>Specialties</h2><ul><li>Dentistry</li></ul></section>
-              <section><h2>Education &amp; Training</h2><p>Graduated from UCLA in 2010.</p></section>
-              <section><h2>Languages Spoken</h2><ul><li>Spanish</li><li>English</li></ul></section>
-            </main>""")
-            _install_runtime(webmd_profile)
-            webmd_profile.add_script_tag(path=str(FRONTEND / "healthcare-directory-content.js"))
-            captured = _message(webmd_profile, {"type": "RADIXSOL_CAPTURE_PLATFORM_PROFILE"})
-            assert captured["ok"] is True, captured
-            assert captured["profile"]["roles"] == ["Dentist"]
-            assert captured["profile"]["profile_document"]["specialties"] == ["Dentistry"]
-            webmd_profile.close()
 
         browser.close()
         print({

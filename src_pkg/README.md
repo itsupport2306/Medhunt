@@ -109,6 +109,9 @@ QUICK_SOURCER_ENABLED=1
 CONTACT_LOOKUP_PROVIDER=quick_sourcer
 VERIFY_EMAILS=0
 NEVERBOUNCE_API_KEY=<optional>
+VERIFY_PHONES=0
+TWILIO_ACCOUNT_SID=<optional>
+TWILIO_AUTH_TOKEN=<optional>
 ```
 
 When `DATABASE_BACKEND=sqlite`, the application ignores `DATABASE_URL` even if
@@ -345,10 +348,12 @@ Contact lookup and verification are different operations:
    before persistence.
 5. The verified record stores its canonical name, provider person ID, evidence,
    verification timestamps, contact expiry, and cross-platform master link.
-6. A provider identity match is not the same as email deliverability or phone
-   ownership. Set `VERIFY_EMAILS=1` with a NeverBounce key for deliverability
-   results. Medhunt performs phone-format checks locally and does not use a
-   third-party phone lookup service.
+6. A provider identity match is not the same as email deliverability, active
+   phone-line status, or phone ownership. Set `VERIFY_EMAILS=1` with a
+   NeverBounce key for deliverability results. Set `VERIFY_PHONES=1` with
+   Twilio credentials for basic number-range validation. Basic Twilio Lookup
+   still does not prove ownership; ownership requires a separately enabled
+   Identity Match product and appropriate legal basis.
 
 ### Cost-aware PDL → Enformion waterfall
 
@@ -395,6 +400,7 @@ Enformion Person Search is fallback-only. The request order is:
    phone**. Enformion alternatives must be connected, not explicitly stale,
    and cannot be fax, pager, disconnected, inactive, or invalid. PDL associated
    numbers do not carry a connected guarantee and are never labeled as mobile.
+   SMS drafting remains restricted to mobile/wireless values.
 7. Caches normalized Enformion results for 90 days by default. Cached fallbacks
    are evaluated before the consent and budget gates, so they remain usable at
    zero provider cost even after the fresh-call cap is reached. Provider values
@@ -433,11 +439,10 @@ Quick Sourcer answers the panel's candidate lookups. **Find contact details**
 on a selection, and **Enrich** on a single candidate, both call the Quick
 Sourcer external API on the Hub and store exactly what it returns — every
 phone number it reports regardless of line type, every email address, and the
-addresses on record. There is no identity threshold, no provider likelihood
-floor, and no trust gate in front of that data: the recruiter sees the
-external record itself. The one filter that still applies is the
-do-not-contact list, which is a compliance obligation rather than a confidence
-judgement.
+addresses on record, but only after the first/last name and current
+city/state match the candidate exactly. Historical addresses do not satisfy
+the location check. Do-not-contact filtering applies before contacts are
+returned.
 
 `CONTACT_LOOKUP_PROVIDER` selects this. Set it to `people_data_labs` to
 restore the PDL → Enformion waterfall and its verification policy, which
@@ -476,8 +481,8 @@ candidate; only a lookup run through the flow above stores contacts.
 
 ## Matched resume capture
 
-For Indeed only, after the provider waterfall produces at least one accepted
-phone number or email address, the
+For Indeed only, after the provider waterfall produces an accepted phone
+number and email address, the
 extension opens that exact candidate and trusted-clicks the normal
 **Download resume** action. A MAIN-world hook captures resume bytes produced by
 Blob, fetch, or XHR, with the browser download URL as a fallback. This avoids
@@ -485,7 +490,7 @@ depending only on Chrome's download-complete event. The PDF is uploaded to the
 private R2 bucket and its metadata is saved in Neon. If Indeed did not create a
 visible file itself, the extension explicitly saves the captured PDF under
 `Downloads/MedhuntResumes`. Profiles with only a phone or only an email are
-also eligible for the same capture and Nexus delivery path.
+saved, but their resume is not captured automatically.
 
 Each enriched resume shows one latest trusted phone. Medhunt
 keeps its existing contact policy: an accepted mobile/wireless number is
@@ -570,20 +575,23 @@ the original resume from being stored.
 Medhunt can automatically queue a newly saved enriched resume and its approved
 candidate data for LaborEdge Nexus. This is a backend-only integration: the
 extension receives neither Nexus credentials nor provider responses. Delivery
-is disabled by default and is queued when the candidate has at least one
-current trusted email or phone. The resume row and durable delivery record are
+is disabled by default and is queued when the candidate has a current trusted
+email or trusted phone. The resume row and durable delivery record are
 committed together, so restarting the service does not lose pending work.
 PDFs larger than the configured Nexus upload limit are saved locally but are
 reported as `skipped_resume_too_large` instead of entering a doomed queue.
 If a resume was stored before trusted contacts became available, the newest
-stored resume is queued automatically as soon as a later lookup supplies one
-approved channel.
+stored resume is queued automatically as soon as a later lookup supplies an
+approved contact channel.
 
 Set these backend variables for the authentication method supplied by Nexus:
 
 ```text
 NEXUS_SYNC_ENABLED=1
+NEXUS_PRECHECK_ENABLED=1
+NEXUS_PRECHECK_CACHE_SECONDS=300
 NEXUS_BASE_URL=https://api-nexus.laboredge.com
+NEXUS_API_BASE_URL=https://api-nexus.laboredge.com:9000
 NEXUS_AUTH_METHOD=password
 NEXUS_TOKEN_URL=<tenant OAuth token URL>
 NEXUS_USERNAME=<backend API user>
@@ -601,27 +609,22 @@ included in the browser extension. A trusted-team installer can also resolve
 the allowlisted settings from `NEXUS_REFERENCE_ENV` and
 `NEXUS_REFERENCE_CONFIG` while it is built.
 
+When `NEXUS_PRECHECK_ENABLED=1`, Medhunt searches Nexus by exact email, exact
+phone, and NPI before exposing enriched contacts or sending Zoom Phone SMS.
+The current search integration does not query by first name, last name, city,
+and state. A contact hit is called an active Nexus match only when Nexus also
+returns a matching first/last name and exact city/state. If Nexus omits those
+identity fields, Medhunt blocks the operation and labels the result as a
+possible match needing review, rather than claiming it is the same person. If
+the candidate has no email, phone, or NPI for the available Nexus search, the
+operation is also blocked until Nexus supports a name/city/state search. If
+Nexus cannot be verified, these actions fail closed and can be retried after
+the service is available. The setting defaults to the value of
+`NEXUS_SYNC_ENABLED`, so an existing Nexus-enabled Render service does not
+require another environment variable.
+
 For a hosted deployment, add the production Chrome extension origin after the
 Chrome Web Store assigns its ID:
-
-Healthcareboard-authenticated accounts use registered extension installations.
-The first device is approved automatically; every later installation remains
-pending until a Healthcareboard administrator approves it. Users can review and
-revoke their devices but cannot approve devices themselves. The account screen
-lists device names, last-use times, approval state, and revoke controls. Two approved devices are allowed by
-default, controlled by `MEDHUNT_MAX_REGISTERED_DEVICES` (1-5). Registrations
-expire after 90 inactive days by default, controlled by
-`MEDHUNT_DEVICE_IDLE_DAYS` (7-365), and can be restored by a fresh email-code
-sign-in. Revoked installations do not reactivate automatically. Approval,
-revocation, expiry, and registration events are retained in
-`extension_device_events`. Older extension builds that do not send an
-installation identifier must be updated before this backend is deployed.
-
-### Extension enrichment usage
-
-Medhunt does not deduct or enforce Halo enrichment credits for candidate lookup.
-Third-party provider billing, API limits, and configured lookup controls still
-apply.
 
 ```text
 MEDHUNT_EXTENSION_ORIGINS=chrome-extension://<32-character-extension-id>
@@ -643,19 +646,18 @@ mapping exists, Medhunt sends the tenant's explicit Unknown profession and
 Unknown specialty pair. Profiles without a declared specialty can still use
 the configured fallback, or the tenant's Unknown/Other/General master data.
 
-For contacts, Nexus receives whichever trusted, non-DNC identifier is available:
-email, phone, or both. The email is the first trusted address in provider order.
-Phone selection prefers mobile/wireless over other callable lines, then
-current/recent evidence, connectivity, corroborating-source count, and finally
-stable provider order. Candidate creation and duplicate matching work with one
-identifier; a second identifier is included when available.
+For identity, Nexus receives the candidate's first and last name, middle name
+when available, city, and the Nexus state ID resolved from the candidate's
+state. Candidate city/state are required; tenant defaults cannot substitute
+for the candidate's location. Profession and specialty are sent as Nexus
+master-data IDs resolved from the candidate's role/specialty. If the source
+does not provide a safe classification, Medhunt uses the tenant's explicit
+Unknown classification instead of inventing one.
 
-Legacy source labels are normalized using the bundled
-`sourcing/data/legacy_taxonomy.csv` catalogue before live Nexus master-data
-resolution. This preserves the old profession/specialty vocabulary while
-still sending only the current Nexus IDs. Set
-`NEXUS_LEGACY_TAXONOMY_PATH` only when a deployment intentionally uses a
-different, reviewed taxonomy file.
+For contacts, Nexus receives the available primary email and/or primary phone.
+The email is the first trusted, non-DNC address in provider order. Phone selection
+prefers mobile/wireless over other callable lines, then current/recent evidence,
+connectivity, corroborating-source count, and finally stable provider order.
 
 Before creation, Medhunt searches Nexus independently by trusted email and
 phone. A unique compatible record is reused; multiple candidates, conflicting
@@ -720,38 +722,14 @@ tests/                  Demo-mode backend and extension checks
 `POST /outreach/{id}/approve` · `PATCH /candidates/{id}/stage` ·
 `POST /dnc` · `GET /stats` · `GET /health` ·
 `GET /quick-sourcer/status` · `POST /quick-sourcer/find` ·
-`GET /quick-sourcer/candidates/{external_id}` ·
-`GET /candidates/{id}/sms-preview` · `POST /messaging/sms` ·
-`POST /integrations/twilio/webhook`
-
-## Candidate SMS
-
-Set `SMS_PROVIDER=twilio`, `TWILIO_SMS_ENABLED=1`, the Twilio account
-credentials, `TWILIO_PHONE_NUMBER`, and the exact public `TWILIO_WEBHOOK_URL`.
-Configure that URL as the Twilio number's incoming-message webhook using POST.
-Set `SENDGRID_API_KEY` and `EMAIL_FROM`. `SMS_REPLY_NOTIFICATION_EMAILS`
-defaults to the Radixsol fallback recipients and can be overridden with a
-comma-separated list. Replies without a stored conversation are sent to these
-fallback recipients; mapped replies also reach the initiating recruiter.
-
-The extension builds the initial message from the candidate's captured first
-name, specialty, title, city, and state. The backend permits one initial SMS
-per candidate or phone number, honors the do-not-contact list, and records STOP
-replies before sending the recruiter notification email.
-
-Quick Sourcer uses the shared endpoint pool by default. Set
-`QUICK_SOURCER_DEDICATED_IP=1` after marking at least one Search Endpoint as
-Dedicated in Hub Settings. Medhunt then adds `dedicated_ip: true` to each new
-`/external/find` request and keeps its dedicated results in a separate cache
-namespace from shared-pool results.
+`GET /quick-sourcer/candidates/{external_id}`
 
 ## Compliance defaults
 
 - Use platform integrations only with candidate data you are authorized to
   access and retain.
-- Candidate SMS is sent through the configured Twilio account only after the
-  recruiter reviews the generated message and selects Send.
-- Email outreach remains a human-reviewed draft workflow.
+- Email-first; phone and SMS require appropriate TCPA consent.
+- Human approval is required before outreach is used.
 - Nothing is sent automatically.
 - Do-not-contact entries are enforced during enrichment and outreach.
 - Honor opt-outs and applicable retention/deletion requirements.

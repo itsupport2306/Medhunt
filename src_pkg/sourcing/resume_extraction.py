@@ -97,8 +97,6 @@ _US_STATES = {
     "utah": "UT", "vermont": "VT", "virginia": "VA", "washington": "WA",
     "west virginia": "WV", "wisconsin": "WI", "wyoming": "WY",
 }
-
-
 _US_CODES = set(_US_STATES.values())
 _CANADA_REGIONS = {
     "AB", "BC", "MB", "NB", "NL", "NS", "NT", "NU", "ON", "PE", "QC", "SK", "YT",
@@ -537,7 +535,7 @@ def extract(data: bytes, candidate: Mapping[str, Any] | None = None) -> dict[str
         "accepted": {},
         "conflicts": [],
     }
-    if not isinstance(data, bytes) or not data.startswith(b"%PDF"):
+    if not config.RESUME_OCR_ENABLED or not isinstance(data, bytes) or not data.startswith(b"%PDF"):
         return base
     try:
         pages = _text_pages(data)
@@ -548,21 +546,15 @@ def extract(data: bytes, candidate: Mapping[str, Any] | None = None) -> dict[str
         index for index, text in enumerate(pages)
         if len(re.sub(r"\W+", "", text)) < config.RESUME_OCR_MIN_PAGE_CHARS
     ]
-    base["scanned"] = bool(pages and all(not _clean(text) for text in pages))
+    base["scanned"] = bool(pages and len(sparse) == len(pages))
     try:
-        # OCR is for image-only pages. Existing PDF text, even a short name at
-        # the top of a one-page resume, remains the authoritative text layer.
-        ocr_indexes = [index for index in sparse if not _clean(pages[index])]
-        ocr = _ocr_pages(data, ocr_indexes) if config.RESUME_OCR_ENABLED and ocr_indexes else {}
+        ocr = _ocr_pages(data, sparse) if sparse else {}
     except Exception:
         ocr = {}
     combined: list[str] = []
     for index, embedded in enumerate(pages):
-        # Any real text layer is more reliable than OCR for that page. OCR is
-        # reserved for image-only pages; sparse-but-valid text pages (often
-        # generated or one-page resumes) must not be replaced by noisy OCR.
-        combined.append(embedded if _clean(embedded) else ocr.get(index, ""))
-    has_embedded = any(_clean(text) for text in pages)
+        combined.append(ocr.get(index) or embedded)
+    has_embedded = any(index not in sparse and _clean(text) for index, text in enumerate(pages))
     has_ocr = any(_clean(text) for text in ocr.values())
     base["pages_ocr"] = len([text for text in ocr.values() if _clean(text)])
     base["source"] = "mixed" if has_embedded and has_ocr else ("local_ocr" if has_ocr else ("embedded_text" if has_embedded else "none"))

@@ -18,23 +18,24 @@ import re
 import sys
 import time
 import uuid
-import httpx
 from contextlib import asynccontextmanager
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import urlsplit
+
+import httpx
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from sourcing import (
     store, intake, ranking, outreach, config, storage,
     resume_enrichment, contact_access,
     person_name, phone_policy, quick_sourcer_client,
-    nexus_delivery, ceipal_delivery, watcher_notifications, healthboard_auth,
-    profile_resume, analytics_delivery, twilio_sms, zoom_sms, sms_notifications,
-    verification,
+    nexus_delivery, resume_extraction, watcher_notifications, healthboard_auth,
+    profile_resume, zoom_sms,
+    contact_lookup_queue, ats_routing, ceipal_delivery,
 )
 
 
@@ -44,23 +45,24 @@ async def lifespan(_app: FastAPI):
     # their respective stores. Do not contact any remote dependency before the
     # localhost API becomes ready: a slow pooled database connection or
     # provider probe must not make every browser-extension action unavailable.
-    if config.NEXUS_SYNC_REQUESTED and not config.NEXUS_SYNC_ENABLED:
+    if (config.NEXUS_SYNC_REQUESTED and not config.NEXUS_SYNC_ENABLED
+            and not nexus_delivery.worker_enabled()):
         logging.getLogger("medhunt.nexus").error(
             "Candidate synchronization was requested but is disabled (%s).",
             config.NEXUS_DISABLED_REASON,
         )
     nexus_delivery.start()
     ceipal_delivery.start()
-    analytics_delivery.start()
+    contact_lookup_queue.start()
     try:
         yield
     finally:
-        analytics_delivery.stop()
+        contact_lookup_queue.stop()
         ceipal_delivery.stop()
         nexus_delivery.stop()
 
 
-APP_VERSION = "3.26.30"
+APP_VERSION = "3.37.4"
 
 app = FastAPI(
     title="Medhunt Sourcing Assistant",
@@ -80,16 +82,14 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
     allow_headers=[
         "Content-Type", "X-Medhunt-Token", "X-HealthBoard-Extension-Token",
-        "X-Medhunt-Device-ID",
     ],
 )
 
 
 _PUBLIC_LOCAL_PATHS = frozenset({
-    '/integrations/twilio/webhook',
-    '/integrations/zoom/webhook',
     "/", "/app.js", "/styles.css", "/privacy", "/health", "/auth/config",
-    "/auth/request-code", "/auth/verify-code", "/auth/device-status",
+    "/auth/request-code", "/auth/verify-code",
+    "/integrations/zoom/webhook",
 })
 
 
@@ -146,12 +146,13 @@ async def authenticate_local_api_requests(request: Request, call_next):
     request.state.user = None
     request.state.healthboard_extension_token = ""
     if request.url.path.startswith("/internal/halo/"):
-        supplied = request.headers.get("x-medhunt-service-token", "")
-        if not config.MEDHUNT_HEALTHBOARD_SERVICE_TOKEN or not hmac.compare_digest(
-            supplied, config.MEDHUNT_HEALTHBOARD_SERVICE_TOKEN
-        ):
-            return JSONResponse({"detail": "Invalid Halo service token."}, status_code=401)
-        request.state.halo_service = True
+        expected = config.MEDHUNT_HEALTHBOARD_SERVICE_TOKEN
+        supplied = request.headers.get("x-medhunt-service-token", "").strip()
+        if not expected:
+            return JSONResponse({"detail": "Halo service access is not configured."}, status_code=503)
+        if not hmac.compare_digest(supplied, expected):
+            return JSONResponse({"detail": "Invalid Halo service credential."}, status_code=401)
+        request.state.user = {"sub": "halo-service", "role": "service"}
         return await call_next(request)
     if (
         healthboard_auth.enabled()
@@ -163,34 +164,8 @@ async def authenticate_local_api_requests(request: Request, call_next):
             return JSONResponse({"detail": "Healthcareboard sign-in is required."}, status_code=401)
         try:
             identity = healthboard_auth.verify_extension_token(supplied)
-            subject = str(identity.get("user_id") or "")
-        except Exception:
-            return JSONResponse({"detail": "Invalid Healthcareboard extension session."}, status_code=401)
-        installation_id = request.headers.get("x-medhunt-device-id", "").strip()
-        if not re.fullmatch(r"[A-Za-z0-9_-]{40,64}", installation_id):
-            return JSONResponse(
-                {"detail": "This Medhunt installation is not registered. Update the extension and sign in again."},
-                status_code=403,
-            )
-        device = store.authorize_extension_device(subject, installation_id)
-        if not device:
-            return JSONResponse(
-                {"detail": "This Medhunt installation is not registered. Sign in to request access."},
-                status_code=403,
-            )
-        if device.get("status") != "approved":
-            messages = {
-                "pending": "This device is waiting for approval from a Healthcareboard administrator.",
-                "expired": "This device registration expired after extended inactivity. Sign in again to restore access.",
-                "revoked": "Access for this device was revoked. Contact your administrator if this was unexpected.",
-            }
-            return JSONResponse(
-                {"detail": messages.get(str(device.get("status")), "This device is not approved.")},
-                status_code=403,
-            )
-        try:
             request.state.user = {
-                "sub": subject,
+                "sub": str(identity.get("user_id") or ""),
                 "email": str(identity.get("email") or ""),
                 "role": str(identity.get("role") or ""),
                 "delivery_targets": dict(identity.get("delivery_targets") or {}),
@@ -222,6 +197,7 @@ def _request_user(request: Request | None) -> dict:
 
 _RESOURCE_ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 _FRONTEND_DIR = _RESOURCE_ROOT / "frontend"
+_FRONTEND = _FRONTEND_DIR / "index.html"
 
 
 class JobIn(BaseModel):
@@ -258,6 +234,7 @@ class ProfileImportIn(BaseModel):
     source: str = "indeed"
     source_url: str = ""
     source_id: str = ""
+    npi: str = Field(default="", max_length=30)
     job_id: int | None = None
 
 
@@ -306,12 +283,6 @@ class HealthBoardCodeVerify(BaseModel):
     email: str = Field(min_length=3, max_length=320)
     code: str = Field(pattern=r"^\d{6}$")
     challenge: str = Field(min_length=40, max_length=4096)
-    device_id: str = Field(pattern=r"^[A-Za-z0-9_-]{40,64}$")
-    device_name: str = Field(default="Medhunt browser", max_length=200)
-
-
-class DeviceRevokeIn(BaseModel):
-    reason: str = Field(default="", max_length=500)
 
 
 class PdlBatchEnrichIn(BaseModel):
@@ -328,6 +299,25 @@ class ContactLookupBatchIn(BaseModel):
     candidate_ids: list[int] = Field(min_length=1, max_length=100)
     run_id: str = Field(min_length=8, max_length=80)
     confirmed: bool = False
+
+
+class ContactLookupControlIn(BaseModel):
+    paused: bool
+
+
+class HaloBackfillProfileIn(BaseModel):
+    profile_id: str = Field(min_length=1, max_length=80)
+    name: str = Field(min_length=3, max_length=200)
+    location: str = Field(min_length=2, max_length=200)
+
+
+class HaloBackfillBatchIn(BaseModel):
+    run_id: str = Field(min_length=8, max_length=80)
+    profiles: list[HaloBackfillProfileIn] = Field(min_length=1, max_length=100)
+
+
+class NexusDeliverySummaryIn(BaseModel):
+    candidate_ids: list[int] = Field(min_length=1, max_length=100)
 
 
 class QuickSourcerFindIn(BaseModel):
@@ -373,9 +363,37 @@ class OutreachBatchIn(BaseModel):
 class SmsSendIn(BaseModel):
     candidate_id: int
     phone: str = Field(min_length=7, max_length=50)
-    message: str = Field(min_length=1, max_length=1600)
-    request_id: str = Field(default='', max_length=100)
-    provider: str = Field(default='twilio', pattern=r'^(twilio|zoom)$')
+    message: str = Field(min_length=1, max_length=420)
+    request_id: str = Field(default="", max_length=100)
+
+
+class SmsAssignIn(BaseModel):
+    recruiter_user_id: str = Field(min_length=1, max_length=200)
+
+
+class HaloScopeIn(BaseModel):
+    user_ids: list[str] = Field(default_factory=list, max_length=1000)
+    all_users: bool = False
+
+
+class HaloDeviceActionIn(HaloScopeIn):
+    actor_user_id: str = Field(min_length=1, max_length=80)
+
+
+class HaloConversationAssignmentIn(HaloScopeIn):
+    actor_user_id: str = Field(min_length=1, max_length=80)
+    recruiter_user_id: str = Field(min_length=1, max_length=80)
+    recruiter_email: str = Field(default="", max_length=320)
+    recruiter_name: str = Field(default="", max_length=320)
+
+
+class HaloConversationReplyIn(HaloScopeIn):
+    actor_user_id: str = Field(min_length=1, max_length=80)
+    actor_name: str = Field(default="", max_length=320)
+    message: str = Field(min_length=1, max_length=500)
+    sender_number: str = Field(min_length=7, max_length=40)
+    zoom_user_id: str = Field(min_length=1, max_length=80)
+    request_id: str = Field(default="", max_length=120)
 
 
 class DncIn(BaseModel):
@@ -432,16 +450,6 @@ def _public_lookup_result(result: dict) -> dict:
     # Reapply per-number provenance at the final browser boundary so stale or
     # inconsistent cached landlines fail closed instead of reaching a card.
     phone_details = phone_policy.preferred_phone_details(source) if trusted else []
-    latest_phone = phone_policy.latest_phone_detail(source) if trusted else None
-    latest_wireless = (
-        latest_phone.get("value")
-        if latest_phone and latest_phone.get("kind") == "mobile" else ""
-    )
-    if latest_wireless:
-        phone_details = sorted(
-            phone_details,
-            key=lambda item: item.get("value") != latest_wireless,
-        )
     phones = [item["value"] for item in phone_details]
     found = bool(trusted and (emails or phones))
     failed = internal_status in {"error", "disabled", "budget_exhausted"}
@@ -465,7 +473,6 @@ def _public_lookup_result(result: dict) -> dict:
             {"value": item["value"], "kind": item["kind"]}
             for item in phone_details
         ] if found else [],
-        "latest_phone": latest_wireless if found else "",
         # One approved usable contact channel is enough to retain the matched
         # Indeed resume. Masked provider text is not exposed as an email, but a
         # valid phone beside that text still makes the result eligible.
@@ -476,31 +483,28 @@ def _public_lookup_result(result: dict) -> dict:
     }
 
 
-def _public_candidate(candidate: dict | None) -> dict:
+def _public_candidate(candidate: dict | None, actor: dict | None = None) -> dict:
     projected = contact_access.project_candidate(candidate)
-    latest_phone = phone_policy.latest_phone_detail(projected)
-    latest_wireless = (
-        latest_phone.get("value")
-        if latest_phone and latest_phone.get("kind") == "mobile" else ""
+    identity = actor or {"sub": "local", "delivery_targets": {}}
+    ats = ats_routing.stored(
+        candidate,
+        str(identity.get("sub") or "local"),
+        ats_routing.destination_for(identity),
     )
-    phone_details = phone_policy.preferred_phone_details(projected)
-    if latest_wireless:
-        phone_details.sort(key=lambda item: item.get("value") != latest_wireless)
-        projected["phones"] = [item["value"] for item in phone_details]
-        projected["phone_contacts"] = [
-            {"value": item["value"], "kind": item["kind"]}
-            for item in phone_details
-        ]
     allowed = (
         "id", "name", "location", "job_id", "stage", "fit_score",
         "emails", "phones", "phone_contacts", "addresses", "enrich_status",
-        "latest_phone", "notes", "created", "updated", "identity_status",
+        "notes", "created", "updated", "identity_status",
     )
     public = {key: projected.get(key) for key in allowed if key in projected}
-    public["latest_phone"] = latest_wireless
     public["records_available"] = bool(
         str(projected.get("contact_source") or "") == "quick_sourcer"
     )
+    public["ats_destination"] = ats.get("destination") or "nexus"
+    # Keep fields for older extension builds, but no longer expose external ATS
+    # duplicate checks or block contact visibility based on their results.
+    public["ats_eligibility"] = {}
+    public["nexus_eligibility"] = {}
     return public
 
 
@@ -510,13 +514,16 @@ def _public_resume(resume: dict | None) -> dict:
     allowed = (
         "id", "candidate_id", "filename", "mime_type", "size", "created",
         "deduplicated", "contact_sheet_embedded", "contacts_saved",
+        "ceipal_sync_status",
     )
     return {key: source.get(key) for key in allowed if key in source}
 
 
 @app.get("/", response_class=HTMLResponse)
 def home():
-    return RedirectResponse(config.MEDHUNT_MAIN_WEBSITE_URL, status_code=302)
+    if _FRONTEND.exists():
+        return FileResponse(str(_FRONTEND))
+    return HTMLResponse("<h1>Medhunt Sourcing Assistant API</h1>")
 
 
 @app.get("/styles.css", include_in_schema=False)
@@ -553,6 +560,179 @@ def health():
         "lookup_behavior": (
             "sequential" if _quick_sourcer_selected() else "bulk"
         ),
+    }
+
+
+@app.post("/internal/halo/api-monitor")
+def halo_api_monitor():
+    status = quick_sourcer_client.status()
+    queue = store.contact_lookup_queue_counts()
+    current_request_id = (
+        "LQ-" + hashlib.sha256(queue["processing_job_key"].encode()).hexdigest()[:12].upper()
+        if queue.get("processing_job_key") else ""
+    )
+    return {
+        "service": "medhunt1",
+        "lookup_provider": {
+            "enabled": bool(status.get("enabled")),
+            "configured": bool(status.get("configured")),
+            "search_pool": str(status.get("search_pool") or ""),
+            **dict(status.get("requests") or {}),
+            "queued": max(0, queue["queued"] - queue["backfill_queued"]),
+            "processing": max(0, queue["processing"] - queue["backfill_processing"]),
+            "backfill_queued": queue["backfill_queued"],
+            "backfill_processing": queue["backfill_processing"],
+            "concurrency_limit": config.CONTACT_LOOKUP_MAX_CONCURRENT,
+            "backfill_concurrency_limit": config.CONTACT_LOOKUP_BACKFILL_MAX_CONCURRENT,
+            "per_user_limit": store.contact_lookup_user_limit(),
+            "per_user_limit_timezone": "America/Los_Angeles",
+            "per_user_unlimited_after": "16:00",
+            "per_user_unlimited_weekends": ["Saturday", "Sunday"],
+            "current_request_id": current_request_id,
+        },
+    }
+
+
+@app.post("/internal/halo/contact-backfill")
+def enqueue_halo_contact_backfill(body: HaloBackfillBatchIn):
+    """Stage Halo Neon profiles in the shared low-priority lookup queue."""
+    candidate_ids: list[int] = []
+    external_refs: dict[int, str] = {}
+    for profile in body.profiles:
+        existing = store.get_candidate_by_source("halo_neon", profile.profile_id)
+        if existing:
+            candidate_id = int(existing["id"])
+            store.update_candidate(
+                candidate_id, name=profile.name.strip(),
+                location=profile.location.strip(), hometown=profile.location.strip(),
+            )
+        else:
+            candidate_id = int(store.add_candidate(
+                profile.name, profile.location, source="halo_neon",
+                source_id=profile.profile_id, hometown=profile.location,
+            ))
+        candidate_ids.append(candidate_id)
+        external_refs[candidate_id] = profile.profile_id
+    items = store.enqueue_contact_lookup_jobs(
+        body.run_id, candidate_ids, "halo-neon-backfill",
+        job_source="halo_backfill", priority=10,
+        external_refs=external_refs, bypass_user_limit=True,
+    )
+    return {
+        "status": "queued", "run_id": body.run_id,
+        "items": [
+            {
+                "profile_id": item.get("external_ref"),
+                "candidate_id": item.get("candidate_id"),
+                "status": item.get("status"),
+            }
+            for item in items
+        ],
+    }
+
+
+@app.post("/nexus/delivery-summary")
+def nexus_delivery_summary(body: NexusDeliverySummaryIn, request: Request):
+    actor = _request_user(request)
+    if ats_routing.destination_for(actor) != "nexus":
+        return {
+            "selected": len(set(body.candidate_ids)), "uploaded": 0,
+            "pending": 0, "already_in_nexus": 0,
+            "waiting_for_resume": 0, "not_uploaded": 0,
+            "enabled": False, "destination": "ceipal", "items": [],
+        }
+    waiting_resume_ids = []
+    if nexus_delivery.enabled_for(str(actor.get("sub") or "local")):
+        candidates = store.get_candidates(body.candidate_ids)
+        for projected in contact_access.project_candidates(candidates):
+            if (
+                projected.get("contacts_trusted") is True
+                and (projected.get("emails") or projected.get("phones"))
+            ):
+                waiting_resume_ids.append(int(projected["id"]))
+    return store.nexus_delivery_summary(
+        body.candidate_ids, waiting_resume_ids=waiting_resume_ids,
+    )
+
+
+@app.post("/contact-lookup/queue")
+def enqueue_contact_lookups(body: ContactLookupBatchIn, request: Request):
+    actor = _request_user(request)
+    if not body.confirmed:
+        raise HTTPException(400, "Confirm the selected candidates before queueing lookup.")
+    user_id = str(actor.get("sub") or "local")
+    try:
+        items = store.enqueue_contact_lookup_jobs(
+            body.run_id, body.candidate_ids, user_id,
+            delivery_target=ats_routing.destination_for(actor),
+            per_user_limit=healthboard_auth.medhunt_contact_lookup_limit(user_id),
+        )
+    except store.ContactLookupQueueLimitError as exc:
+        raise HTTPException(
+            429,
+            f"{exc} You currently have {exc.active} active and requested {exc.requested} more.",
+        ) from exc
+    return {"status": "queued", "run_id": body.run_id, "items": [
+        _public_contact_lookup_job(item) for item in items
+    ]}
+
+
+@app.get("/contact-lookup/queue/control")
+def contact_lookup_queue_control(request: Request):
+    actor = _request_user(request)
+    user_id = str(actor.get("sub") or "local")
+    limit = store.contact_lookup_user_limit(
+        limit_override=healthboard_auth.medhunt_contact_lookup_limit(user_id),
+    )
+    return {
+        "paused": store.contact_lookup_paused(str(actor.get("sub") or "local")),
+        "selection_limit": limit,
+        "limit_timezone": "America/Los_Angeles",
+        "unlimited_after": "16:00",
+        "unlimited_weekends": ["Saturday", "Sunday"],
+    }
+
+
+@app.post("/contact-lookup/queue/control")
+def update_contact_lookup_queue_control(body: ContactLookupControlIn, request: Request):
+    actor = _request_user(request)
+    result = store.set_contact_lookup_paused(
+        str(actor.get("sub") or "local"), body.paused,
+    )
+    result["selection_limit"] = store.contact_lookup_user_limit(
+        limit_override=healthboard_auth.medhunt_contact_lookup_limit(
+            str(actor.get("sub") or "local"),
+        ),
+    )
+    result["limit_timezone"] = "America/Los_Angeles"
+    result["unlimited_after"] = "16:00"
+    result["unlimited_weekends"] = ["Saturday", "Sunday"]
+    return result
+
+
+@app.post("/contact-lookup/queue/status")
+def contact_lookup_queue_status(body: ContactLookupBatchIn, request: Request):
+    actor = _request_user(request)
+    owner = str(actor.get("sub") or "local")
+    data = store.list_contact_lookup_jobs(
+        body.run_id, body.candidate_ids,
+        requested_by=owner,
+    )
+    return {**data, "paused": store.contact_lookup_paused(owner), "items": [
+        _public_contact_lookup_job(item) for item in data["items"]
+    ]}
+
+
+def _public_contact_lookup_job(item: dict) -> dict:
+    request_id = "LQ-" + hashlib.sha256(
+        str(item.get("job_key") or item.get("id") or "").encode()
+    ).hexdigest()[:12].upper()
+    return {
+        "request_id": request_id,
+        **{
+            key: item.get(key)
+            for key in ("candidate_id", "status", "attempts", "position", "result")
+        },
     }
 
 
@@ -594,7 +774,7 @@ def verify_healthboard_code(body: HealthBoardCodeVerify, request: Request):
     if not healthboard_auth.enabled():
         raise HTTPException(503, "Healthcareboard login is not configured.")
     try:
-        verified = healthboard_auth.verify_code(
+        return healthboard_auth.verify_code(
             body.email.strip().lower(), body.code, body.challenge,
             client_ip=_request_client_ip(request),
         )
@@ -603,308 +783,6 @@ def verify_healthboard_code(body: HealthBoardCodeVerify, request: Request):
             "Healthcareboard code verification was rejected (%s).", type(exc).__name__,
         )
         raise HTTPException(401, "Invalid or expired sign-in code.") from exc
-    identity = verified.get("user") or {}
-    subject = str(identity.get("user_id") or "")
-    if not subject:
-        raise HTTPException(502, "Healthcareboard did not return a valid user identity.")
-    store.upsert_user(
-        subject,
-        email=str(identity.get("email") or ""),
-        name=str(identity.get("name") or ""),
-    )
-    device = store.register_extension_device(
-        subject,
-        body.device_id,
-        device_name=body.device_name,
-        user_agent=request.headers.get("user-agent", ""),
-    )
-    verified = dict(verified)
-    verified["device"] = device
-    verified["device_approval_required"] = device.get("status") != "approved"
-    return verified
-
-
-def _admin_identity(user: dict) -> bool:
-    role = re.sub(r"[\s-]+", "_", str(user.get("role") or "").strip().casefold())
-    email = str(user.get("email") or "").strip().casefold()
-    return role in {
-        "admin", "administrator", "super_admin", "owner",
-        "org_admin", "orgadmin", "org_administrator",
-        "organization_admin", "organizationadmin", "organization_administrator",
-        "medhunt_admin", "medhuntadmin", "medhunt_administrator",
-        "platform_admin", "platformadmin", "platform_administrator",
-    } or email in config.MEDHUNT_ADMIN_EMAILS
-
-
-@app.get("/auth/device-status")
-def auth_device_status(request: Request):
-    """Allow a signed-in pending installation to finish auto-approval."""
-    token = request.headers.get("x-healthboard-extension-token", "").strip()
-    installation_id = request.headers.get("x-medhunt-device-id", "").strip()
-    if not token or not re.fullmatch(r"[A-Za-z0-9_-]{40,64}", installation_id):
-        raise HTTPException(401, "A valid Medhunt device session is required.")
-    try:
-        identity = healthboard_auth.verify_extension_token(token)
-    except Exception as exc:
-        raise HTTPException(401, "Invalid Healthcareboard extension session.") from exc
-    subject = str(identity.get("user_id") or "")
-    device = store.auto_approve_pending_extension_device(subject, installation_id)
-    if not device:
-        raise HTTPException(404, "This device request no longer exists.")
-    return {
-        "device": device,
-        "approved": device.get("status") == "approved",
-        "user": {
-            "user_id": subject,
-            "email": str(identity.get("email") or ""),
-            "name": str(identity.get("name") or ""),
-            "role": str(identity.get("role") or ""),
-        },
-    }
-
-
-@app.get("/auth/devices")
-def auth_devices(request: Request):
-    user = _request_user(request)
-    subject = str(user.get("sub") or "")
-    current = request.headers.get("x-medhunt-device-id", "").strip()
-    devices = store.list_extension_devices(
-        subject,
-        current_installation_id=current,
-        include_all_users=False,
-    )
-    multi_device_accounts = []
-    if _admin_identity(user):
-        owners = {}
-        for device in devices:
-            owner_id = str(device.get("user_id") or "")
-            entry = owners.setdefault(owner_id, {
-                "user_id": owner_id,
-                "email": str(device.get("user_email") or ""),
-                "name": str(device.get("user_name") or ""),
-                "device_count": int(device.get("approved_device_count") or 0),
-            })
-            entry["device_count"] = int(
-                device.get("approved_device_count") or entry["device_count"]
-            )
-        multi_device_accounts = [
-            account for account in owners.values()
-            if account["device_count"] > 1
-        ]
-    return {
-        "items": devices,
-        "multi_device_accounts": multi_device_accounts,
-        "is_admin": _admin_identity(user),
-    }
-
-
-@app.post("/auth/devices/{device_id}/approve")
-def approve_auth_device(device_id: int, request: Request):
-    _request_user(request)
-    raise HTTPException(410, "Approve extension devices from the Halo admin website.")
-
-
-@app.post("/auth/devices/{device_id}/revoke")
-def revoke_auth_device(device_id: int, body: DeviceRevokeIn, request: Request):
-    user = _request_user(request)
-    try:
-        device = store.revoke_extension_device(
-            device_id,
-            actor_user_id=str(user.get("sub") or ""),
-            actor_is_admin=_admin_identity(user),
-            reason=body.reason,
-        )
-    except LookupError as exc:
-        raise HTTPException(404, str(exc)) from exc
-    except PermissionError as exc:
-        raise HTTPException(403, str(exc)) from exc
-    return {"device": device}
-
-
-class HaloScopeIn(BaseModel):
-    user_ids: list[str] = Field(default_factory=list, max_length=1000)
-    all_users: bool = False
-
-
-class HaloDeviceActionIn(HaloScopeIn):
-    actor_user_id: str = Field(min_length=1, max_length=80)
-
-
-class HaloConversationAssignmentIn(HaloScopeIn):
-    actor_user_id: str = Field(min_length=1, max_length=80)
-    recruiter_user_id: str = Field(min_length=1, max_length=80)
-    recruiter_email: str = Field(default='', max_length=320)
-    recruiter_name: str = Field(default='', max_length=320)
-
-
-class HaloConversationReplyIn(HaloScopeIn):
-    actor_user_id: str = Field(min_length=1, max_length=80)
-    actor_name: str = Field(default='', max_length=320)
-    message: str = Field(min_length=1, max_length=500)
-    sender_number: str = Field(min_length=7, max_length=40)
-    zoom_user_id: str = Field(min_length=1, max_length=80)
-    request_id: str = Field(default='', max_length=120)
-
-
-def _halo_scoped(record: dict, scope: HaloScopeIn) -> bool:
-    return scope.all_users or str(record.get("user_id") or "") in set(scope.user_ids)
-
-
-@app.post("/internal/halo/devices")
-def halo_devices(scope: HaloScopeIn):
-    devices = store.list_extension_devices("", include_all_users=True)
-    items = [device for device in devices if _halo_scoped(device, scope)]
-    multiple = {}
-    for device in items:
-        if device.get("approved_device_count", 0) > 1:
-            multiple[device["user_id"]] = {
-                "user_id": device["user_id"],
-                "email": device.get("user_email"),
-                "device_count": device["approved_device_count"],
-            }
-    return {"items": items, "multi_device_accounts": list(multiple.values())}
-
-
-@app.post("/internal/halo/devices/{device_id}/approve")
-def halo_approve_device(device_id: int, body: HaloDeviceActionIn):
-    devices = store.list_extension_devices("", include_all_users=True)
-    target = next((item for item in devices if item["id"] == device_id), None)
-    if not target:
-        raise HTTPException(404, "Device request not found.")
-    if not _halo_scoped(target, body):
-        raise HTTPException(403, "Device is outside your organization.")
-    try:
-        return {"device": store.approve_extension_device(
-            device_id, actor_user_id=body.actor_user_id, actor_is_admin=True,
-        )}
-    except ValueError as exc:
-        raise HTTPException(409, str(exc)) from exc
-
-
-def _halo_conversation_in_scope(conversation: dict, scope: HaloScopeIn) -> bool:
-    if scope.all_users:
-        return True
-    users = {str(value) for value in scope.user_ids}
-    return bool(users & {
-        str(conversation.get('initiated_by') or ''),
-        str(conversation.get('assigned_recruiter_id') or ''),
-    })
-
-
-def _halo_conversation_public(conversation: dict, *, include_messages=False) -> dict:
-    if not conversation:
-        return {}
-    fields = (
-        'id', 'candidate_id', 'nexus_candidate_id', 'candidate_name',
-        'candidate_phone', 'initiated_by', 'assigned_recruiter_id',
-        'assigned_recruiter_email', 'assigned_recruiter_name', 'status',
-        'created', 'updated', 'last_message_at', 'has_reply', 'last_reply_at',
-        'last_outbound_at', 'last_outbound_user_id',
-    )
-    result = {key: conversation.get(key) for key in fields if key in conversation}
-    if include_messages:
-        result['messages'] = [{
-            key: message.get(key) for key in (
-                'id', 'direction', 'body', 'status', 'sender_user_id',
-                'sender_name', 'sender_number', 'created', 'updated',
-            ) if key in message
-        } for message in conversation.get('messages') or []]
-    return result
-
-
-@app.post('/internal/halo/conversations')
-def halo_conversations(scope: HaloScopeIn):
-    items = store.list_sms_conversations(
-        user_ids=scope.user_ids,
-        include_all=scope.all_users,
-    )
-    return {'items': [_halo_conversation_public(item) for item in items]}
-
-
-@app.post('/internal/halo/conversations/{conversation_id}')
-def halo_conversation(conversation_id: int, scope: HaloScopeIn):
-    conversation = store.get_sms_conversation(conversation_id)
-    if not conversation:
-        raise HTTPException(404, 'SMS conversation not found.')
-    if not _halo_conversation_in_scope(conversation, scope):
-        raise HTTPException(403, 'Conversation is outside the requested organization scope.')
-    return _halo_conversation_public(conversation, include_messages=True)
-
-
-@app.post('/internal/halo/conversations/{conversation_id}/assign')
-def halo_assign_conversation(conversation_id: int, body: HaloConversationAssignmentIn):
-    conversation = store.get_sms_conversation(conversation_id)
-    if not conversation:
-        raise HTTPException(404, 'SMS conversation not found.')
-    if not _halo_conversation_in_scope(conversation, body):
-        raise HTTPException(403, 'Conversation is outside the requested organization scope.')
-    if conversation.get('status') == 'opted_out':
-        raise HTTPException(409, 'An opted-out candidate cannot be reassigned for outreach.')
-    messages = conversation.get('messages') or []
-    last_reply = max((float(message.get('created') or 0) for message in messages
-                      if message.get('direction') == 'inbound'), default=0)
-    last_outbound = max((float(message.get('created') or 0) for message in messages
-                         if message.get('direction') == 'outbound'
-                         and message.get('status') in {'accepted', 'sent', 'delivered'}),
-                        default=0)
-    if not last_reply:
-        raise HTTPException(409, 'Wait for a candidate reply before assigning.')
-    if last_outbound > last_reply:
-        raise HTTPException(409, 'This conversation has already been answered.')
-    conversation = store.update_sms_conversation(
-        conversation_id,
-        assigned_recruiter_id=body.recruiter_user_id,
-        assigned_recruiter_email=body.recruiter_email,
-        assigned_recruiter_name=body.recruiter_name,
-    )
-    return {'conversation': _halo_conversation_public(conversation, include_messages=True)}
-
-
-@app.post('/internal/halo/conversations/{conversation_id}/reply')
-def halo_reply_to_conversation(conversation_id: int, body: HaloConversationReplyIn):
-    conversation = store.get_sms_conversation(conversation_id)
-    if not conversation:
-        raise HTTPException(404, 'SMS conversation not found.')
-    if not _halo_conversation_in_scope(conversation, body):
-        raise HTTPException(403, 'Conversation is outside the requested organization scope.')
-    if conversation.get('status') == 'opted_out':
-        raise HTTPException(409, 'This candidate opted out of SMS.')
-    messages = conversation.get('messages') or []
-    last_reply = max((float(message.get('created') or 0) for message in messages
-                      if message.get('direction') == 'inbound'), default=0)
-    last_outbound = max((float(message.get('created') or 0) for message in messages
-                         if message.get('direction') == 'outbound'
-                         and message.get('status') in {'accepted', 'sent', 'delivered'}),
-                        default=0)
-    if not last_reply:
-        raise HTTPException(409, 'Wait for a candidate reply before replying.')
-    if last_outbound > last_reply:
-        raise HTTPException(409, 'This candidate has already received a reply to their latest message.')
-    text = body.message.strip()
-    if not text:
-        raise HTTPException(422, 'Reply cannot be blank.')
-    request_id = body.request_id.strip() or uuid.uuid4().hex
-    message, created = store.create_sms_message(
-        conversation_id, 'outbound', text, request_id=request_id,
-        sender_user_id=body.actor_user_id, sender_name=body.actor_name,
-        sender_number=body.sender_number, zoom_user_id=body.zoom_user_id,
-    )
-    if created:
-        try:
-            result = zoom_sms.send_sms(
-                conversation['candidate_phone'], text,
-                sender_number=body.sender_number,
-                sender_user_id=body.zoom_user_id,
-            )
-            sid = str(result.get('sid') or result.get('message_id') or result.get('id') or '')
-            store.update_sms_message(message['id'], status='accepted', zoom_message_id=sid)
-        except zoom_sms.ZoomSmsError as exc:
-            store.update_sms_message(
-                message['id'], status='failed', failure_reason=str(exc),
-            )
-            raise HTTPException(502, str(exc)) from exc
-    conversation = store.get_sms_conversation(conversation_id)
-    return _halo_conversation_public(conversation, include_messages=True)
 
 
 @app.get("/auth/me")
@@ -924,6 +802,146 @@ def auth_me(request: Request):
             "role": claims.get("role", ""),
         },
     }
+
+
+def _halo_conversation_in_scope(conversation: dict, scope: HaloScopeIn) -> bool:
+    if scope.all_users:
+        return True
+    users = {str(value) for value in scope.user_ids}
+    return bool(users & {
+        str(conversation.get("initiated_by") or ""),
+        str(conversation.get("assigned_recruiter_id") or ""),
+    })
+
+
+def _halo_conversation_public(conversation: dict, *, include_messages=False) -> dict:
+    if not conversation:
+        return {}
+    fields = (
+        "id", "candidate_id", "nexus_candidate_id", "candidate_name",
+        "candidate_phone", "initiated_by", "assigned_recruiter_id",
+        "assigned_recruiter_email", "assigned_recruiter_name", "status",
+        "created", "updated", "last_message_at", "has_reply", "last_reply_at",
+        "last_outbound_at", "last_outbound_user_id",
+    )
+    result = {key: conversation.get(key) for key in fields if key in conversation}
+    if include_messages:
+        result["messages"] = [{
+            key: message.get(key) for key in (
+                "id", "direction", "body", "status", "sender_user_id",
+                "sender_name", "sender_number", "created", "updated",
+            ) if key in message
+        } for message in conversation.get("messages") or []]
+    return result
+
+
+@app.post("/internal/halo/devices")
+def halo_devices(scope: HaloScopeIn):
+    # Medhunt1 uses Halo email-code sessions and intentionally has no separate
+    # device approval registry. Keep the Halo dashboard contract explicit.
+    return {"items": [], "multi_device_accounts": []}
+
+
+@app.post("/internal/halo/devices/{device_id}/approve")
+def halo_approve_device(device_id: int, body: HaloDeviceActionIn):
+    raise HTTPException(404, "Device request not found.")
+
+
+@app.post("/internal/halo/conversations")
+def halo_conversations(scope: HaloScopeIn):
+    items = store.list_sms_conversations(
+        user_ids=scope.user_ids,
+        include_all=scope.all_users,
+    )
+    return {"items": [_halo_conversation_public(item) for item in items]}
+
+
+@app.post("/internal/halo/conversations/{conversation_id}")
+def halo_conversation(conversation_id: int, scope: HaloScopeIn):
+    conversation = store.get_sms_conversation(conversation_id)
+    if not conversation:
+        raise HTTPException(404, "SMS conversation not found.")
+    if not _halo_conversation_in_scope(conversation, scope):
+        raise HTTPException(403, "Conversation is outside the requested organization scope.")
+    return _halo_conversation_public(conversation, include_messages=True)
+
+
+@app.post("/internal/halo/conversations/{conversation_id}/assign")
+def halo_assign_conversation(conversation_id: int, body: HaloConversationAssignmentIn):
+    conversation = store.get_sms_conversation(conversation_id)
+    if not conversation:
+        raise HTTPException(404, "SMS conversation not found.")
+    if not _halo_conversation_in_scope(conversation, body):
+        raise HTTPException(403, "Conversation is outside the requested organization scope.")
+    if conversation.get("status") == "opted_out":
+        raise HTTPException(409, "An opted-out candidate cannot be reassigned for outreach.")
+    messages = conversation.get("messages") or []
+    last_reply = max((float(message.get("created") or 0) for message in messages
+                      if message.get("direction") == "inbound"), default=0)
+    last_outbound = max((float(message.get("created") or 0) for message in messages
+                         if message.get("direction") == "outbound"
+                         and message.get("status") in {"accepted", "sent", "delivered"}),
+                        default=0)
+    if not last_reply:
+        raise HTTPException(409, "Wait for a candidate reply before assigning.")
+    if last_outbound > last_reply:
+        raise HTTPException(409, "This conversation has already been answered.")
+    conversation = store.update_sms_conversation(
+        conversation_id,
+        assigned_recruiter_id=body.recruiter_user_id,
+        assigned_recruiter_email=body.recruiter_email,
+        assigned_recruiter_name=body.recruiter_name,
+    )
+    return {"conversation": _halo_conversation_public(conversation, include_messages=True)}
+
+
+@app.post("/internal/halo/conversations/{conversation_id}/reply")
+def halo_reply_to_conversation(conversation_id: int, body: HaloConversationReplyIn):
+    conversation = store.get_sms_conversation(conversation_id)
+    if not conversation:
+        raise HTTPException(404, "SMS conversation not found.")
+    if not _halo_conversation_in_scope(conversation, body):
+        raise HTTPException(403, "Conversation is outside the requested organization scope.")
+    if conversation.get("status") == "opted_out":
+        raise HTTPException(409, "This candidate opted out of SMS.")
+    messages = conversation.get("messages") or []
+    last_reply = max((float(message.get("created") or 0) for message in messages
+                      if message.get("direction") == "inbound"), default=0)
+    last_outbound = max((float(message.get("created") or 0) for message in messages
+                         if message.get("direction") == "outbound"
+                         and message.get("status") in {"accepted", "sent", "delivered"}),
+                        default=0)
+    if not last_reply:
+        raise HTTPException(409, "Wait for a candidate reply before replying.")
+    if last_outbound > last_reply:
+        raise HTTPException(409, "This candidate has already received a reply to their latest message.")
+    text = body.message.strip()
+    if not text:
+        raise HTTPException(422, "Reply cannot be blank.")
+    request_id = body.request_id.strip() or uuid.uuid4().hex
+    message, created = store.create_sms_message(
+        conversation_id, "outbound", text, request_id=request_id,
+        sender_user_id=body.actor_user_id, sender_name=body.actor_name,
+        sender_number=body.sender_number, zoom_user_id=body.zoom_user_id,
+    )
+    if created:
+        try:
+            result = zoom_sms.send_sms(
+                conversation["candidate_phone"], text,
+                sender_number=body.sender_number,
+                sender_user_id=body.zoom_user_id,
+            )
+            message_id = str(
+                result.get("message_id") or result.get("id") or result.get("sid") or ""
+            )
+            store.update_sms_message(message["id"], status="accepted", zoom_message_id=message_id)
+        except zoom_sms.ZoomSmsError as exc:
+            store.update_sms_message(
+                message["id"], status="failed", failure_reason=str(exc),
+            )
+            raise HTTPException(502, str(exc)) from exc
+    conversation = store.get_sms_conversation(conversation_id)
+    return _halo_conversation_public(conversation, include_messages=True)
 
 
 @app.get("/analytics/me")
@@ -1029,6 +1047,9 @@ def _profile_row(body: ProfileImportIn, default_job_id: int | None = None):
         add_evidence_line(evidence_lines, "School", value)
     for value in source_values(body.specialties, limit=20):
         add_evidence_line(evidence_lines, "Specialty", value)
+    npi = re.sub(r"\D", "", body.npi or "")
+    if len(npi) == 10:
+        add_evidence_line(evidence_lines, "NPI", npi)
     for value in source_values(body.alternate_names, limit=8, max_chars=160):
         alternate = person_name.normalize_person_name(value)
         if len(person_name.identity_tokens(alternate)) >= 2:
@@ -1071,21 +1092,23 @@ def _profile_row(body: ProfileImportIn, default_job_id: int | None = None):
     }
 
 
-def _import_profile(body: ProfileImportIn):
+def _import_profile(body: ProfileImportIn, actor: dict | None = None):
     row = _profile_row(body)
     if row["job_id"] is not None and not store.get_job(row["job_id"]):
         raise HTTPException(404, "job not found")
     result = store.upsert_candidate_profiles([row])[0]
-    return {**result, "candidate": _public_candidate(result["candidate"])}
+    return {**result, "candidate": _public_candidate(result["candidate"], actor)}
 
 
 @app.post("/candidates/import")
-def import_candidate(body: ProfileImportIn):
-    return _import_profile(body)
+def import_candidate(body: ProfileImportIn, request: Request):
+    actor = _request_user(request)
+    return _import_profile(body, actor)
 
 
 @app.post("/candidates/import/batch")
-def import_candidate_batch(body: ProfileBatchImportIn):
+def import_candidate_batch(body: ProfileBatchImportIn, request: Request):
+    actor = _request_user(request)
     if not body.profiles:
         raise HTTPException(400, "At least one profile is required.")
     if len(body.profiles) > 100:
@@ -1101,7 +1124,7 @@ def import_candidate_batch(body: ProfileBatchImportIn):
         {
             "id": result["id"],
             "imported": result["imported"],
-            "candidate": _public_candidate(result["candidate"]),
+            "candidate": _public_candidate(result["candidate"], actor),
         }
         for result in upserted
     ]
@@ -1116,18 +1139,20 @@ def import_candidate_batch(body: ProfileBatchImportIn):
 
 
 @app.get("/candidates")
-def candidates(job_id: int | None = None, stage: str | None = None):
+def candidates(request: Request, job_id: int | None = None, stage: str | None = None):
+    actor = _request_user(request)
     return [
-        _public_candidate(row)
+        _public_candidate(row, actor)
         for row in store.list_candidates(job_id=job_id, stage=stage)
     ]
 
 @app.get("/candidates/{cid}")
-def candidate(cid: int):
+def candidate(cid: int, request: Request):
+    actor = _request_user(request)
     c = store.get_candidate(cid)
     if not c:
         raise HTTPException(404, "not found")
-    projected = _public_candidate(c)
+    projected = _public_candidate(c, actor)
     projected["outreach"] = store.list_outreach(cid)
     projected["resumes"] = [
         _public_resume(resume) for resume in store.list_resumes(cid)
@@ -1174,19 +1199,20 @@ def create_campaign(body: CampaignCreateIn):
         raise HTTPException(400, str(exc))
 
 
-def _store_resume_pdf(cid: int, filename: str, data: bytes):
+def _upload_ceipal_candidate(candidate_id: int, resume_id: int, user_id: str) -> str:
+    return ceipal_delivery.queue_resume(candidate_id, resume_id, user_id)
+
+
+def _store_resume_pdf(cid: int, filename: str, data: bytes, user_id: str = "local"):
     candidate = store.get_candidate(cid)
     if not candidate:
         raise HTTPException(404, "candidate not found")
     contactable = contact_access.project_candidate(candidate)
-    # Strip any previous Medhunt cover before reprocessing, then attach one
-    # cover for this candidate. Resume contents are supplied by the source site.
-    try:
-        data, extraction, _resume_name = resume_enrichment.prepare_candidate_resume(
-            data, candidate,
-        )
-    except resume_enrichment.ContactSheetRefreshError as exc:
-        raise HTTPException(409, str(exc)) from exc
+    # Read the original PDF before the Medhunt contact page is prepended. Text
+    # PDFs stay local and fast; only sparse/image-only pages invoke local OCR.
+    # Extraction failure is fail-open for capture and fail-closed for identity:
+    # no low-confidence value can replace captured platform data.
+    extraction = resume_extraction.extract(data, candidate)
     accepted_resume_fields = extraction.get("accepted") or {}
     contact_sheet_candidate = dict(contactable)
     if isinstance(accepted_resume_fields, dict):
@@ -1194,10 +1220,11 @@ def _store_resume_pdf(cid: int, filename: str, data: bytes):
             contact_sheet_candidate["name"] = accepted_resume_fields.get("full_name") or ""
         if not str(contact_sheet_candidate.get("location") or "").strip():
             contact_sheet_candidate["location"] = accepted_resume_fields.get("location") or ""
-    delivery_route = store.get_candidate_delivery_route(cid) or {}
+    destination = ats_routing.stored(candidate, user_id).get("destination") or "nexus"
+    ceipal_sync_status = "disabled"
     nexus_contact_ready = bool(
-        config.NEXUS_SYNC_ENABLED
-        and delivery_route.get("nexus_enabled")
+        destination == "nexus"
+        and nexus_delivery.enabled_for(user_id)
         and contactable.get("contacts_trusted") is True
         and (contactable.get("phones") or contactable.get("emails"))
     )
@@ -1219,19 +1246,26 @@ def _store_resume_pdf(cid: int, filename: str, data: bytes):
     existing = store.get_resume_by_checksum(cid, checksum)
     if existing:
         store.save_resume_extraction(existing["id"], cid, extraction)
-        nexus_delivery = (
-            store.enqueue_nexus_delivery(cid, existing["id"], checksum)
+        nexus_delivery_job = (
+            store.enqueue_nexus_delivery(
+                cid, existing["id"], checksum, requested_by=user_id,
+            )
             if queue_nexus else None
         )
-        return {
+        if destination == "ceipal":
+            ceipal_sync_status = _upload_ceipal_candidate(cid, int(existing["id"]), user_id)
+        result = {
             **existing,
             "contact_sheet_embedded": contact_sheet_embedded,
             "contacts_saved": bool(contactable.get("phones") or contactable.get("emails")),
             "deduplicated": True,
             "nexus_sync_status": (
-                nexus_delivery.get("status") if nexus_delivery else nexus_skip_status
+                nexus_delivery_job.get("status") if nexus_delivery_job else nexus_skip_status
             ),
         }
+        if destination == "ceipal":
+            result["ceipal_sync_status"] = ceipal_sync_status
+        return result
     if storage.enabled():
         try:
             uploaded = storage.upload_resume(cid, filename, data)
@@ -1243,6 +1277,7 @@ def _store_resume_pdf(cid: int, filename: str, data: bytes):
             b"",
             size=size,
             queue_nexus=queue_nexus,
+            requested_by=user_id,
             extraction=extraction,
             **uploaded,
         )
@@ -1250,13 +1285,18 @@ def _store_resume_pdf(cid: int, filename: str, data: bytes):
         resume = store.attach_resume(
             cid, filename, data, checksum_sha256=checksum,
             queue_nexus=queue_nexus,
+            requested_by=user_id,
             extraction=extraction,
         )
+    if destination == "ceipal":
+        ceipal_sync_status = _upload_ceipal_candidate(cid, int(resume["id"]), user_id)
     result = {
         **resume,
         "contact_sheet_embedded": contact_sheet_embedded,
         "contacts_saved": bool(contactable.get("phones") or contactable.get("emails")),
     }
+    if destination == "ceipal":
+        result["ceipal_sync_status"] = ceipal_sync_status
     if not queue_nexus:
         result["nexus_sync_status"] = nexus_skip_status
     return result
@@ -1269,16 +1309,13 @@ def authenticated_session():
 
 
 @app.post("/candidates/{cid}/resume/from-download")
-def attach_downloaded_resume(cid: int, body: ResumeDownloadIn):
-    candidate = store.get_candidate(cid)
-    if not candidate:
+def attach_downloaded_resume(cid: int, body: ResumeDownloadIn, request: Request):
+    if not store.get_candidate(cid):
         raise HTTPException(404, "candidate not found")
-    contactable = contact_access.project_candidate(candidate)
-    if not (
-        contactable.get("contacts_trusted") is True
-        and (contactable.get("phones") or contactable.get("emails"))
-    ):
-        raise HTTPException(409, "A verified candidate phone or email is required before saving a downloaded resume.")
+    actor = _request_user(request)
+    ats_routing.set_candidate_target(
+        cid, ats_routing.destination_for(actor), str(actor.get("sub") or ""),
+    )
     try:
         path = Path(body.path).resolve(strict=True)
     except (OSError, RuntimeError):
@@ -1296,15 +1333,19 @@ def attach_downloaded_resume(cid: int, body: ResumeDownloadIn):
     if not data.startswith(b"%PDF"):
         raise HTTPException(400, "The downloaded file is not a valid PDF.")
     filename = Path(body.filename or path.name).name[:255] or "resume.pdf"
-    resume = _store_resume_pdf(cid, filename, data)
+    resume = _store_resume_pdf(cid, filename, data, str(actor.get("sub") or "local"))
     return {"attached": True, "resume": _public_resume(resume)}
 
 
 @app.post("/candidates/{cid}/resume/from-browser")
-def attach_captured_resume(cid: int, body: ResumeCaptureIn):
+def attach_captured_resume(cid: int, body: ResumeCaptureIn, request: Request):
     candidate = store.get_candidate(cid)
     if not candidate:
         raise HTTPException(404, "candidate not found")
+    actor = _request_user(request)
+    ats_routing.set_candidate_target(
+        cid, ats_routing.destination_for(actor), str(actor.get("sub") or ""),
+    )
     encoded = body.content_base64.strip()
     if encoded.lower().startswith("data:") and "," in encoded:
         encoded = encoded.split(",", 1)[1]
@@ -1324,7 +1365,7 @@ def attach_captured_resume(cid: int, body: ResumeCaptureIn):
     filename = Path(body.filename or "resume.pdf").name[:255] or "resume.pdf"
     if not filename.lower().endswith(".pdf"):
         filename = f"{filename}.pdf"
-    resume = _store_resume_pdf(cid, filename, data)
+    resume = _store_resume_pdf(cid, filename, data, str(actor.get("sub") or "local"))
     refreshed = contact_access.project_candidate(store.get_candidate(cid))
     return {
         "attached": True,
@@ -1352,20 +1393,7 @@ def get_resume(cid: int, resume_id: int):
             raise HTTPException(502, f"Stored resume could not be retrieved: {exc}")
     if not data:
         raise HTTPException(404, "resume file is unavailable")
-    candidate = store.get_candidate(cid)
-    if not candidate:
-        raise HTTPException(404, "candidate not found")
-    extraction_row = store.get_resume_extraction(resume_id, cid)
-    try:
-        _original, extraction, _resume_name = resume_enrichment.prepare_candidate_resume(
-            data, candidate,
-            extraction_row.get("extraction") if extraction_row else None,
-        )
-    except resume_enrichment.ContactSheetRefreshError as exc:
-        raise HTTPException(409, f"Stored resume could not be prepared: {exc}") from exc
-    if not extraction_row or extraction_row.get("extraction") != extraction:
-        store.save_resume_extraction(resume_id, cid, extraction)
-    current = contact_access.project_candidate(candidate)
+    current = contact_access.project_candidate(store.get_candidate(cid))
     try:
         data, _ = resume_enrichment.refresh_contact_sheet(data, current)
     except resume_enrichment.ContactSheetRefreshError as exc:
@@ -1377,6 +1405,13 @@ def get_resume(cid: int, resume_id: int):
     )
 
 # ---- enrichment ----
+def _route_enriched_lookup(candidate_id: int, lookup: dict, actor: dict) -> dict:
+    destination = ats_routing.destination_for(actor)
+    user_id = str(actor.get("sub") or "local")
+    ats_routing.set_candidate_target(candidate_id, destination, user_id)
+    result = dict(lookup or {})
+    return {**result, "ats_destination": destination}
+
 
 def _quick_sourcer_selected() -> bool:
     """The public Medhunt product has one backend contact-lookup path."""
@@ -1388,25 +1423,27 @@ def _record_enrichment(request: Request | None, candidate_id: int, status: str,
     actor = _request_user(request)
     subject = str(actor.get("sub") or "local")
     normalized_status = str(status or "unknown")
+    store.record_enrichment_event(
+        subject, candidate_id, normalized_status,
+        provider=provider, run_id=run_id,
+    )
     token = str(getattr(
         getattr(request, "state", None), "healthboard_extension_token", "",
     ) or "")
-    targets = actor.get("delivery_targets") or {}
-    store.set_candidate_delivery_route(
-        candidate_id, subject, str(actor.get("email") or ""),
-        ceipal=bool(targets.get("ceipal")), nexus=bool(targets.get("nexus")),
-    )
-    if normalized_status.casefold() in {"found", "success", "enriched"}:
-        ceipal_delivery.queue_candidate(candidate_id)
-    event = store.record_enrichment_event(
-        subject, candidate_id, normalized_status,
-        provider=provider, run_id=run_id,
-        halo_pending=bool(token and healthboard_auth.enabled()),
-    )
     if not token or not healthboard_auth.enabled():
         return
+    source = str((store.get_candidate(candidate_id) or {}).get("source") or provider)
+    identity = f"{subject}|{run_id or time.time_ns()}|{candidate_id}|{normalized_status}"
+    event_id = hashlib.sha256(identity.encode()).hexdigest()[:32]
     try:
-        analytics_delivery.deliver(event, token=token)
+        healthboard_auth.report_enrichment(
+            token,
+            event_id=event_id,
+            candidate_id=candidate_id,
+            status=normalized_status,
+            source=source,
+            run_id=run_id,
+        )
     except Exception as exc:
         # The paid/contact result is already complete. Analytics delivery must
         # never discard it; the local event remains available for reconciliation.
@@ -1418,21 +1455,30 @@ def _record_enrichment(request: Request | None, candidate_id: int, status: str,
 
 @app.post("/candidates/{cid}/contact-lookup")
 def enrich_one(cid: int, request: Request = None):
-    _request_user(request)
-    if not store.get_candidate(cid):
+    actor = _request_user(request)
+    if store.contact_lookup_paused(str(actor.get("sub") or "local")):
+        raise HTTPException(409, "Contact lookup requests are paused. Resume them in the extension.")
+    candidate = store.get_candidate(cid)
+    if not candidate:
         raise HTTPException(404, "candidate not found")
     result = quick_sourcer_client.lookup_candidate(cid)
+    result = _route_enriched_lookup(cid, result, actor)
     _record_enrichment(
         request, cid,
         result.get("status") or result.get("enrich_status") or "unknown",
         provider="quick_sourcer",
     )
-    nexus_delivery.queue_latest_resume_if_ready(cid)
+    if (
+        result.get("status") != "blocked"
+        and result.get("ats_destination", "nexus") == "nexus"
+    ):
+        nexus_delivery.queue_latest_resume_if_ready(cid, str(actor.get("sub") or "local"))
     return result
 
 
 @app.post("/candidates/{cid}/identity/review")
-def review_candidate_identity(cid: int, body: IdentityReviewIn):
+def review_candidate_identity(cid: int, body: IdentityReviewIn, request: Request):
+    actor = _request_user(request)
     candidate = store.get_candidate(cid)
     if not candidate:
         raise HTTPException(404, "candidate not found")
@@ -1463,7 +1509,7 @@ def review_candidate_identity(cid: int, body: IdentityReviewIn):
             identity_verified_at=0,
             emails=[], phones=[], addresses=[], enrich_status="no_match",
         )
-    return _public_candidate(store.get_candidate(cid))
+    return _public_candidate(store.get_candidate(cid), actor)
 
 
 def _internal_contact_lookup_batch(
@@ -1613,7 +1659,7 @@ def _annotate_hometown_match(candidate_id: int, result: dict, hometown: str) -> 
     return annotated
 
 
-def _quick_sourcer_lookup_batch(body: ContactLookupBatchIn) -> dict:
+def _quick_sourcer_lookup_batch(body: ContactLookupBatchIn, actor: dict) -> dict:
     """Look each selected candidate up through Quick Sourcer, one at a time.
 
     The external API drives a real browser per person, so these cannot be
@@ -1623,14 +1669,17 @@ def _quick_sourcer_lookup_batch(body: ContactLookupBatchIn) -> dict:
     """
     results = {}
     for candidate_id in dict.fromkeys(body.candidate_ids):
-        if not store.get_candidate(candidate_id):
+        candidate = store.get_candidate(candidate_id)
+        if not candidate:
             results[str(candidate_id)] = {
                 "status": "failed", "emails": [], "phones": [],
                 "phone_contacts": [], "resume_required": False, "location_match": None,
             }
             continue
         try:
-            results[str(candidate_id)] = quick_sourcer_client.lookup_candidate(candidate_id)
+            lookup = quick_sourcer_client.lookup_candidate(candidate_id)
+            lookup = _route_enriched_lookup(candidate_id, lookup, actor)
+            results[str(candidate_id)] = lookup
         except Exception as exc:
             # A malformed provider response or one database row must never turn
             # the entire selection into an HTTP 500. The panel can retry this
@@ -1645,16 +1694,23 @@ def _quick_sourcer_lookup_batch(body: ContactLookupBatchIn) -> dict:
                 "phone_contacts": [], "resume_required": False,
                 "location_match": None,
             }
-        try:
-            nexus_delivery.queue_latest_resume_if_ready(candidate_id)
-        except Exception as exc:
-            # Nexus delivery is asynchronous follow-up. It must not invalidate
-            # a contact result that was already found and stored successfully.
-            logging.getLogger("medhunt.nexus").warning(
-                "Nexus queueing was deferred for candidate %s (%s).",
-                candidate_id,
-                type(exc).__name__,
-            )
+        lookup = results[str(candidate_id)]
+        if (
+            lookup.get("status") == "found"
+            and lookup.get("ats_destination", "nexus") == "nexus"
+        ):
+            try:
+                nexus_delivery.queue_latest_resume_if_ready(
+                    candidate_id, str(actor.get("sub") or "local"),
+                )
+            except Exception as exc:
+                # Nexus delivery is asynchronous follow-up. It must not invalidate
+                # a contact result that was already found and stored successfully.
+                logging.getLogger("medhunt.nexus").warning(
+                    "Nexus queueing was deferred for candidate %s (%s).",
+                    candidate_id,
+                    type(exc).__name__,
+                )
     return {
         "status": "ok",
         "results": results,
@@ -1667,9 +1723,11 @@ def _quick_sourcer_lookup_batch(body: ContactLookupBatchIn) -> dict:
 
 @app.post("/contact-lookup/batch")
 def contact_lookup_batch(body: ContactLookupBatchIn, request: Request = None):
-    _request_user(request)
+    actor = _request_user(request)
+    if store.contact_lookup_paused(str(actor.get("sub") or "local")):
+        raise HTTPException(409, "Contact lookup requests are paused. Resume them in the extension.")
     """Vendor-neutral browser endpoint with a deliberately minimal response."""
-    result = _quick_sourcer_lookup_batch(body)
+    result = _quick_sourcer_lookup_batch(body, actor)
     for candidate_id, item in (result.get("results") or {}).items():
         _record_enrichment(
             request, int(candidate_id), item.get("status") or "unknown",
@@ -1683,332 +1741,313 @@ def enrich_batch(job_id: int | None = None):
     raise HTTPException(410, "Use the candidate contact lookup endpoint.")
 
 
+# ---- Zoom Phone SMS ----
 def _candidate_sms_phone(candidate: dict, supplied: str) -> str:
-    requested = store.contact_key(supplied)
     projected = contact_access.project_candidate(candidate)
-    selected = next((
-        str(item.get('value') or '').strip()
-        for item in projected.get('phone_contacts') or []
-        if str(item.get('kind') or '').casefold() == 'mobile'
-        and store.contact_key(item.get('value')) == requested
-    ), '')
-    if not selected:
-        raise HTTPException(400, 'Select a verified mobile number for this candidate.')
-    try:
-        return twilio_sms.normalize_phone(selected)
-    except twilio_sms.TwilioSmsError as exc:
-        raise HTTPException(400, str(exc)) from exc
+    selected = phone_policy.messaging_phone_detail(projected)
+    phone = str((selected or {}).get("value") or "").strip()
+    if not phone:
+        raise HTTPException(400, "No verified phone number is available for this candidate.")
+    return phone
 
 
-@app.get('/messaging/status')
+@app.get("/messaging/status")
 def messaging_status(request: Request):
     user = _request_user(request)
     zoom_sender = _resolve_zoom_sms_sender(request, strict=False) if zoom_sms.enabled() else None
-    providers = {
-        'twilio': {
-            'enabled': twilio_sms.enabled(),
-            'sender_configured': bool(config.TWILIO_PHONE_NUMBER),
-        },
-        'zoom': {
-            'enabled': zoom_sms.enabled(),
-            'sender_configured': bool(zoom_sender),
-        },
-    }
     return {
-        'enabled': any(item['enabled'] and item['sender_configured'] for item in providers.values()),
-        # Keep these fields for already-installed Twilio-only extension builds.
-        'provider': 'twilio',
-        'sender_configured': providers['twilio']['sender_configured'],
-        'providers': providers,
-        'zoom_sender_required': bool(zoom_sms.enabled() and not zoom_sender),
-        'reply_notifications_configured': sms_notifications.configured(
-            str(user.get('email') or ''),
-        ),
-    }
-
-
-@app.get('/candidates/{candidate_id}/sms-preview')
-def sms_preview(candidate_id: int, phone: str, request: Request):
-    _request_user(request)
-    candidate = store.get_candidate(candidate_id)
-    if not candidate:
-        raise HTTPException(404, 'Candidate not found.')
-    verified_phone = _candidate_sms_phone(candidate, phone)
-    return {
-        'phone': verified_phone,
-        'opted_out': bool(
-            store.is_dnc(verified_phone)
-            or store.candidate_sms_opted_out(candidate_id)
-        ),
-        'already_contacted': bool(
-            store.get_sms_outreach_claim(candidate_id, verified_phone)
-            or store.sms_candidate_contacted(candidate_id, verified_phone)
+        "enabled": zoom_sms.enabled(),
+        "provider": "zoom_phone",
+        "sender_configured": bool(zoom_sender),
+        "sender_number": str((zoom_sender or {}).get("sender_number") or ""),
+        "zoom_sender_required": bool(zoom_sms.enabled() and not zoom_sender),
+        "reply_notifications_configured": bool(
+            config.MEDHUNT_HEALTHBOARD_SERVICE_TOKEN and healthboard_auth.enabled()
         ),
     }
 
 
 def _resolve_zoom_sms_sender(request: Request, *, strict: bool) -> dict | None:
     if healthboard_auth.enabled():
-        token = str(getattr(request.state, 'healthboard_extension_token', '') or '')
+        token = str(getattr(request.state, "healthboard_extension_token", "") or "")
         try:
-            return healthboard_auth.medhunt_zoom_sms_sender(token)
-        except (httpx.HTTPError, ValueError) as exc:
-            logging.getLogger('medhunt.zoom_sms').warning(
-                'Could not load the recruiter Zoom sender assignment (%s).',
+            sender = healthboard_auth.medhunt_zoom_sms_sender(token)
+            if sender and sender.get("employer_id"):
+                sender["access_token"] = healthboard_auth.organization_zoom_access(
+                    str(sender["employer_id"]),
+                )
+                if not sender["access_token"]:
+                    raise RuntimeError("The organization Zoom connection is unavailable")
+            return sender
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            try:
+                detail = str(exc.response.json().get("detail") or "")
+            except (ValueError, AttributeError):
+                detail = ""
+            logging.getLogger("medhunt.zoom_sms").warning(
+                "Halo rejected the recruiter Zoom sender assignment (%s).", status,
+            )
+            if strict and status in {401, 403, 404, 409, 422}:
+                raise HTTPException(
+                    status,
+                    detail or "Your Halo administrator has not enabled Zoom messaging for your account.",
+                ) from exc
+            if strict:
+                raise HTTPException(
+                    503,
+                    "Could not verify your Zoom sender assignment. Try again or contact your Halo administrator.",
+                ) from exc
+            return None
+        except Exception as exc:
+            logging.getLogger("medhunt.zoom_sms").warning(
+                "Could not load the recruiter Zoom sender assignment (%s).",
                 type(exc).__name__,
             )
             if strict:
                 raise HTTPException(
                     503,
-                    'Could not verify your Zoom sender assignment. Try again or contact your Halo administrator.',
+                    "Could not verify your Zoom sender assignment. Try again or contact your Halo administrator.",
                 ) from exc
             return None
-    # Standalone local deployments retain their environment-configured sender.
     if config.ZOOM_SMS_SENDER_NUMBER and config.ZOOM_SMS_SENDER_USER_ID:
         return {
-            'sender_number': config.ZOOM_SMS_SENDER_NUMBER,
-            'zoom_user_id': config.ZOOM_SMS_SENDER_USER_ID,
+            "sender_number": config.ZOOM_SMS_SENDER_NUMBER,
+            "zoom_user_id": config.ZOOM_SMS_SENDER_USER_ID,
         }
     return None
 
 
-@app.post('/messaging/sms')
+@app.get("/candidates/{candidate_id}/sms-preview")
+def sms_preview(candidate_id: int, phone: str, request: Request):
+    _request_user(request)
+    candidate = store.get_candidate(candidate_id)
+    if not candidate:
+        raise HTTPException(404, "Candidate not found.")
+    verified_phone = _candidate_sms_phone(candidate, phone)
+    return {
+        "phone": verified_phone,
+        "opted_out": store.is_dnc(verified_phone),
+        "already_contacted": store.sms_candidate_contacted(candidate_id),
+    }
+
+
+@app.post("/messaging/sms")
 def send_sms(body: SmsSendIn, request: Request):
     user = _request_user(request)
-    provider = body.provider.strip().lower()
-    if provider not in {'twilio', 'zoom'}:
-        raise HTTPException(422, 'Choose Twilio or Zoom Phone as the SMS provider.')
-    provider_client = twilio_sms if provider == 'twilio' else zoom_sms
-    if not provider_client.enabled():
-        raise HTTPException(503, f'{provider.title()} SMS is not configured.')
-    zoom_sender = (
-        _resolve_zoom_sms_sender(request, strict=True)
-        if provider == 'zoom' else None
-    )
-    if provider == 'zoom' and not zoom_sender:
+    if not zoom_sms.enabled():
+        raise HTTPException(503, "Zoom Phone SMS is not configured.")
+    zoom_sender = _resolve_zoom_sms_sender(request, strict=True)
+    if not zoom_sender:
         raise HTTPException(
             409,
-            'Ask your Halo administrator to assign your Zoom Phone number before sending.',
+            "Ask your Halo administrator to assign your Zoom Phone number before sending.",
         )
     candidate = store.get_candidate(body.candidate_id)
     if not candidate:
-        raise HTTPException(404, 'Candidate not found.')
+        raise HTTPException(404, "Candidate not found.")
     phone = _candidate_sms_phone(candidate, body.phone)
-    message_text = body.message.strip()
-    if not message_text:
-        raise HTTPException(400, 'Write a message before sending.')
-    if len(message_text.split()) > 29:
-        raise HTTPException(422, 'SMS messages are limited to 29 words.')
-    if store.is_dnc(phone) or store.candidate_sms_opted_out(body.candidate_id):
-        raise HTTPException(409, 'This candidate opted out and cannot be messaged.')
-    if store.sms_candidate_contacted(body.candidate_id, phone):
-        raise HTTPException(409, 'This candidate has already been sent SMS outreach.')
+    if store.is_dnc(phone):
+        raise HTTPException(409, "This number has opted out and cannot be messaged.")
+    text = body.message.strip()
+    if not text:
+        raise HTTPException(400, "Write a message before sending.")
+    if len(text.split()) > 29:
+        raise HTTPException(422, "SMS messages are limited to 29 words.")
+    if "reply stop" not in text.casefold():
+        text = f"{text}\n\nMedhunt recruiting. Reply STOP to opt out."
+    if len(text) > 500:
+        raise HTTPException(400, "Message is too long after the required opt-out notice.")
     request_id = body.request_id.strip() or uuid.uuid4().hex
-    claim = store.claim_sms_outreach(body.candidate_id, phone, request_id)
-    if not claim['created']:
-        raise HTTPException(409, 'This candidate has already been sent SMS outreach.')
-    sender_number = (
-        config.TWILIO_PHONE_NUMBER if provider == 'twilio'
-        else str(zoom_sender['sender_number'])
-    )
-    sender_provider_id = (
-        'twilio' if provider == 'twilio' else str(zoom_sender['zoom_user_id'])
-    )
+    existing_message = store.get_sms_message_by_request_id(request_id)
+    if existing_message:
+        existing_conversation = store.get_sms_conversation(
+            existing_message["conversation_id"]
+        )
+        same_request = bool(
+            existing_conversation
+            and int(existing_conversation.get("candidate_id") or 0) == body.candidate_id
+            and str(existing_conversation.get("phone_key") or "") == store.contact_key(phone)
+            and str(existing_conversation.get("initiated_by") or "") == str(user.get("sub") or "")
+            and str(existing_message.get("body") or "") == text
+        )
+        if not same_request:
+            raise HTTPException(409, "This SMS request ID has already been used.")
+        return {"conversation": existing_conversation, "message": existing_message}
+    if store.sms_candidate_contacted(body.candidate_id):
+        raise HTTPException(409, "This candidate has already received SMS outreach.")
+    if not store.claim_sms_outreach(body.candidate_id, phone):
+        raise HTTPException(409, "This candidate has already received SMS outreach.")
     conversation = store.get_or_create_sms_conversation(
         body.candidate_id, phone,
-        candidate_name=str(candidate.get('name') or ''),
-        initiated_by=str(user.get('sub') or ''),
-        sender_number=sender_number, sender_user_id=sender_provider_id,
+        candidate_name=str(candidate.get("name") or ""),
+        initiated_by=str(user.get("sub") or ""),
+        sender_number=str(zoom_sender["sender_number"]),
+        sender_user_id=str(zoom_sender["zoom_user_id"]),
     )
     message, created = store.create_sms_message(
-        conversation['id'], 'outbound', message_text, request_id=request_id,
-        sender_user_id=str(user.get('sub') or ''),
-        sender_name=str(user.get('email') or ''),
-        sender_number=sender_number, zoom_user_id=sender_provider_id,
+        conversation["id"], "outbound", text, request_id=request_id,
+        sender_user_id=str(user.get("sub") or ""),
+        sender_name=str(user.get("email") or user.get("name") or ""),
+        sender_number=str(zoom_sender["sender_number"]),
+        zoom_user_id=str(zoom_sender["zoom_user_id"]),
     )
     if not created:
-        raise HTTPException(409, 'This candidate has already been sent SMS outreach.')
+        return {"conversation": store.get_sms_conversation(conversation["id"]), "message": message}
     try:
-        if provider == 'zoom':
-            result = provider_client.send_sms(
-                phone, message_text,
-                sender_number=sender_number,
-                sender_user_id=sender_provider_id,
-            )
-        else:
-            result = provider_client.send_sms(phone, message_text)
-        sid = str(result.get('sid') or result.get('message_id') or result.get('id') or '')
+        result = zoom_sms.send_sms(
+            phone, text,
+            sender_number=str(zoom_sender["sender_number"]),
+            sender_user_id=str(zoom_sender["zoom_user_id"]),
+            access_token=str(zoom_sender.get("access_token") or ""),
+        )
+        zoom_message_id = str(result.get("message_id") or result.get("id") or "")
+        session_id = str(result.get("session_id") or "")
         message = store.update_sms_message(
-            message['id'], status='accepted', zoom_message_id=sid,
+            message["id"], status="accepted", zoom_message_id=zoom_message_id,
         )
-        store.update_sms_outreach_claim(
-            body.candidate_id, status='accepted', message_id=message['id'],
-        )
-        store.set_stage(body.candidate_id, 'contacted')
-    except (twilio_sms.TwilioSmsError, zoom_sms.ZoomSmsError) as exc:
-        store.update_sms_message(message['id'], status='failed', failure_reason=str(exc))
-        store.update_sms_outreach_claim(
-            body.candidate_id, status='failed', message_id=message['id'],
-        )
+        store.update_sms_outreach_claim(body.candidate_id, "sent")
+        if session_id:
+            conversation = store.update_sms_conversation(
+                conversation["id"], zoom_session_id=session_id,
+            )
+        store.set_stage(body.candidate_id, "contacted")
+        try:
+            healthboard_auth.report_message_event(
+                event_id=f"sent:{request_id}", conversation=conversation,
+                event_type="sent", message_preview=text,
+            )
+        except Exception:
+            logging.getLogger("medhunt.healthboard").exception("Send reporting failed")
+    except zoom_sms.ZoomSmsError as exc:
+        store.update_sms_message(message["id"], status="failed", failure_reason=str(exc))
+        store.update_sms_outreach_claim(body.candidate_id, "failed")
         raise HTTPException(502, str(exc)) from exc
-    return {'provider': provider, 'message': message}
+    return {"conversation": store.get_sms_conversation(conversation["id"]), "message": message}
 
 
-@app.post('/integrations/twilio/webhook')
-async def twilio_webhook(request: Request):
-    raw = await request.body()
+@app.get("/messaging/conversations")
+def conversations(request: Request):
+    user = _request_user(request)
+    return {"items": store.list_sms_conversations(str(user.get("sub") or ""))}
+
+
+@app.get("/messaging/conversations/{conversation_id}")
+def conversation(conversation_id: int, request: Request):
+    user = _request_user(request)
+    result = store.get_sms_conversation(conversation_id)
+    if not result:
+        raise HTTPException(404, "Conversation not found.")
+    if str(user.get("role") or "").casefold() not in {"admin", "owner", "super_admin"} and str(user.get("sub")) not in {
+        str(result.get("initiated_by") or ""), str(result.get("assigned_recruiter_id") or ""),
+    }:
+        raise HTTPException(403, "Conversation access denied.")
+    return result
+
+
+@app.get("/messaging/recruiters")
+def messaging_recruiters(request: Request):
+    _request_user(request)
+    token = getattr(request.state, "healthboard_extension_token", "")
+    if not token:
+        return {"items": []}
     try:
-        decoded = raw.decode('utf-8')
-    except UnicodeDecodeError as exc:
-        raise HTTPException(400, 'Invalid Twilio webhook body.') from exc
-    form = parse_qs(decoded, keep_blank_values=True)
-    webhook_url = config.TWILIO_WEBHOOK_URL or str(request.url)
-    if not twilio_sms.validate_webhook(
-        webhook_url, form, request.headers.get('x-twilio-signature', ''),
-    ):
-        raise HTTPException(403, 'Invalid Twilio webhook signature.')
-    sender_phone = str((form.get('From') or [''])[0])
-    text = str((form.get('Body') or [''])[0])
-    message_sid = str((form.get('MessageSid') or form.get('SmsSid') or [''])[0])
-    event_key = f'twilio:received:{message_sid or hashlib.sha256(raw).hexdigest()}'
-    if not store.claim_sms_webhook(event_key, 'twilio.sms_received'):
-        return Response(content='<Response/>', media_type='application/xml')
-    current = store.find_sms_conversation(phone=sender_phone)
+        return {"items": healthboard_auth.list_recruiters(token)}
+    except Exception as exc:
+        logging.getLogger("medhunt.healthboard").warning("Recruiter lookup failed (%s).", type(exc).__name__)
+        raise HTTPException(502, "Recruiter list is temporarily unavailable.") from exc
+
+
+@app.post("/messaging/conversations/{conversation_id}/assign")
+def assign_conversation(conversation_id: int, body: SmsAssignIn, request: Request):
+    _request_user(request)
+    current = store.get_sms_conversation(conversation_id)
     if not current:
-        sms_notifications.send_reply_email(
-            conversation={
-                'candidate_name': 'Unknown candidate',
-                'candidate_phone': sender_phone,
-            },
-            reply=text,
-            original='Unavailable (message sent by an older extension)',
+        raise HTTPException(404, "Conversation not found.")
+    token = getattr(request.state, "healthboard_extension_token", "")
+    try:
+        assigned = healthboard_auth.assign_conversation(
+            token, conversation=current, recruiter_user_id=body.recruiter_user_id,
         )
-        store.complete_sms_webhook(event_key)
-        return Response(content='<Response/>', media_type='application/xml')
-    store.create_sms_message(
-        current['id'], 'inbound', text, request_id=event_key, status='received',
+    except Exception as exc:
+        raise HTTPException(502, "Healthboard could not assign this conversation.") from exc
+    result = store.update_sms_conversation(
+        conversation_id,
+        status="assigned",
+        assigned_recruiter_id=str(assigned.get("user_id") or body.recruiter_user_id),
+        assigned_recruiter_email=str(assigned.get("email") or ""),
+        assigned_recruiter_name=str(assigned.get("name") or ""),
     )
-    tokens = re.findall(r'[a-z]+', text.casefold())
-    stop_reply = any(
-        token in {'stop', 'stopall', 'unsubscribe', 'cancel', 'end', 'quit'}
-        for token in tokens
-    )
-    current = store.update_sms_conversation(
-        current['id'], status='opted_out' if stop_reply else 'replied',
-    )
-    store.set_stage(int(current['candidate_id']), 'replied')
-    if stop_reply:
-        store.record_sms_consent(
-            int(current['candidate_id']), current['candidate_phone'], 'opted_out',
-            'inbound_sms', f'Twilio webhook {event_key}', captured_by='twilio',
-        )
-        current = store.update_sms_conversation(current['id'], status='opted_out')
-    saved = store.get_sms_conversation(current['id'])
-    outbound = [
-        item for item in saved.get('messages', [])
-        if item.get('direction') == 'outbound'
-    ]
-    original = str(outbound[-1].get('body') or '') if outbound else ''
-    recruiter_email = next((
-        str(item.get('sender_name') or '') for item in reversed(outbound)
-        if str(item.get('sender_name') or '').strip()
-    ), '')
-    sms_notifications.send_reply_email(
-        conversation={**saved, 'initiated_by_email': recruiter_email},
-        reply=text, original=original,
-    )
-    store.complete_sms_webhook(event_key)
-    return Response(content='<Response/>', media_type='application/xml')
+    return {"conversation": result, "assignment": assigned}
 
 
-@app.post('/integrations/zoom/webhook')
+@app.post("/integrations/zoom/webhook")
 async def zoom_webhook(request: Request):
     raw = await request.body()
     try:
-        payload = json.loads(raw.decode('utf-8'))
+        payload = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, ValueError) as exc:
-        raise HTTPException(400, 'Invalid Zoom webhook payload.') from exc
-    if payload.get('event') == 'endpoint.url_validation':
-        plain = str((payload.get('payload') or {}).get('plainToken') or '')
+        raise HTTPException(400, "Invalid webhook payload.") from exc
+    if payload.get("event") == "endpoint.url_validation":
+        plain = str((payload.get("payload") or {}).get("plainToken") or "")
         if not config.ZOOM_WEBHOOK_SECRET_TOKEN or not plain:
-            raise HTTPException(403, 'Zoom webhook validation is not configured.')
-        return {'plainToken': plain, 'encryptedToken': zoom_sms.validation_token(plain)}
+            raise HTTPException(403, "Webhook validation is not configured.")
+        return {"plainToken": plain, "encryptedToken": zoom_sms.validation_token(plain)}
     if not zoom_sms.validate_webhook(
-        request.headers.get('x-zm-request-timestamp', ''), raw,
-        request.headers.get('x-zm-signature', ''),
+        request.headers.get("x-zm-request-timestamp", ""), raw,
+        request.headers.get("x-zm-signature", ""),
     ):
-        raise HTTPException(403, 'Invalid Zoom webhook signature.')
-    event_type = str(payload.get('event') or '')
-    obj = ((payload.get('payload') or {}).get('object') or {})
-    message_id = str(obj.get('message_id') or '')
-    session_id = str(obj.get('session_id') or '')
-    event_key = (
-        f'zoom:{event_type}:{message_id or payload.get("event_ts") or hashlib.sha256(raw).hexdigest()}'
-    )
+        raise HTTPException(403, "Invalid Zoom webhook signature.")
+    event_type = str(payload.get("event") or "")
+    obj = ((payload.get("payload") or {}).get("object") or {})
+    message_id = str(obj.get("message_id") or "")
+    session_id = str(obj.get("session_id") or "")
+    event_key = f"{event_type}:{message_id or payload.get('event_ts') or hashlib.sha256(raw).hexdigest()}"
     if not store.claim_sms_webhook(event_key, event_type):
-        return {'received': True, 'duplicate': True}
-    sender_phone = str((obj.get('sender') or {}).get('phone_number') or '')
-    recipients = obj.get('to_members') or []
-    recipient_phone = str((recipients[0] if recipients else {}).get('phone_number') or '')
-    lookup_phone = sender_phone if event_type == 'phone.sms_received' else recipient_phone
+        return {"received": True, "duplicate": True}
+    sender_phone = str((obj.get("sender") or {}).get("phone_number") or "")
+    recipients = obj.get("to_members") or []
+    recipient_phone = str((recipients[0] if recipients else {}).get("phone_number") or "")
+    lookup_phone = sender_phone if event_type == "phone.sms_received" else recipient_phone
     current = store.find_sms_conversation(session_id=session_id, phone=lookup_phone)
     if not current:
-        store.complete_sms_webhook(event_key)
-        return {'received': True, 'matched': False}
-    if session_id and not current.get('zoom_session_id'):
-        current = store.update_sms_conversation(current['id'], zoom_session_id=session_id)
-    if event_type == 'phone.sms_received':
-        reply = str(obj.get('message') or '')
-        store.create_sms_message(
-            current['id'], 'inbound', reply, request_id=event_key, status='received',
-        )
-        stop_reply = any(
-            token in {'stop', 'stopall', 'unsubscribe', 'cancel', 'end', 'quit'}
-            for token in re.findall(r'[a-z]+', reply.casefold())
-        )
-        current = store.update_sms_conversation(
-            current['id'], status='opted_out' if stop_reply else 'replied',
-        )
-        store.set_stage(int(current['candidate_id']), 'replied')
-        if stop_reply:
+        return {"received": True, "matched": False}
+    if session_id and not current.get("zoom_session_id"):
+        current = store.update_sms_conversation(current["id"], zoom_session_id=session_id)
+    if event_type == "phone.sms_received":
+        text = str(obj.get("message") or "")
+        store.create_sms_message(current["id"], "inbound", text, request_id=event_key, status="received")
+        current = store.update_sms_conversation(current["id"], status="replied")
+        store.set_stage(int(current["candidate_id"]), "replied")
+        keyword = text.strip().casefold()
+        if keyword in {"stop", "stopall", "unsubscribe", "cancel", "end", "quit"}:
             store.record_sms_consent(
-                int(current['candidate_id']), current['candidate_phone'], 'opted_out',
-                'inbound_sms', f'Zoom webhook {event_key}', captured_by='zoom',
+                int(current["candidate_id"]), current["candidate_phone"], "opted_out",
+                "inbound_sms", f"Zoom webhook {event_key}", captured_by="zoom",
             )
-        saved = store.get_sms_conversation(current['id'])
-        outbound = [
-            item for item in saved.get('messages', [])
-            if item.get('direction') == 'outbound'
-        ]
-        original = str(outbound[-1].get('body') or '') if outbound else ''
-        recruiter_email = next((
-            str(item.get('sender_name') or '') for item in reversed(outbound)
-            if str(item.get('sender_name') or '').strip()
-        ), '')
-        sms_notifications.send_reply_email(
-            conversation={**saved, 'initiated_by_email': recruiter_email},
-            reply=reply, original=original,
-        )
-    elif event_type in {'phone.sms_sent', 'phone.sms_sent_failed'}:
-        failed = bool(obj.get('failure_reason')) or event_type.endswith('failed')
+            current = store.update_sms_conversation(current["id"], status="opted_out")
+        try:
+            healthboard_auth.report_message_event(
+                event_id=event_key, conversation=current, event_type="received",
+                message_preview=text,
+            )
+        except Exception:
+            logging.getLogger("medhunt.healthboard").exception("Reply reporting failed")
+    elif event_type in {"phone.sms_sent", "phone.sms_sent_failed"}:
+        failed = bool(obj.get("failure_reason")) or event_type.endswith("failed")
         store.reconcile_outbound_sms(
-            current['id'], zoom_message_id=message_id,
-            status='failed' if failed else 'sent',
-            failure_reason=str(obj.get('failure_reason') or ''),
+            current["id"], zoom_message_id=message_id,
+            status="failed" if failed else "sent",
+            failure_reason=str(obj.get("failure_reason") or ""),
         )
-    for opt in obj.get('phone_number_campaign_opt_statuses') or []:
-        if (
-            str(opt.get('opt_status') or '').casefold() == 'opt_out'
-            or int(opt.get('opt_in_status') or 0) == 4
-        ):
+    for opt in obj.get("phone_number_campaign_opt_statuses") or []:
+        if str(opt.get("opt_status") or "").casefold() == "opt_out" or int(opt.get("opt_in_status") or 0) == 4:
             store.record_sms_consent(
-                int(current['candidate_id']), current['candidate_phone'], 'opted_out',
-                'inbound_sms', f'Zoom campaign opt-out {event_key}', captured_by='zoom',
+                int(current["candidate_id"]), current["candidate_phone"], "opted_out",
+                "inbound_sms", f"Zoom campaign opt-out {event_key}", captured_by="zoom",
             )
-            store.update_sms_conversation(current['id'], status='opted_out')
-    store.complete_sms_webhook(event_key)
-    return {'received': True, 'matched': True}
-
+            current = store.update_sms_conversation(current["id"], status="opted_out")
+    return {"received": True, "matched": True}
 
 # ---- ranking ----
 @app.post("/jobs/{job_id}/rank")
@@ -2073,7 +2112,7 @@ def records_status():
 
 
 @app.post("/candidates/{cid}/professional-profile-resume")
-def build_professional_profile_resume(cid: int, body: ProfessionalProfileResumeIn):
+def build_professional_profile_resume(cid: int, body: ProfessionalProfileResumeIn, request: Request):
     """Render and store an explicitly labeled public-profile résumé.
 
     Storage and Nexus delivery intentionally pass through the same audited
@@ -2083,11 +2122,14 @@ def build_professional_profile_resume(cid: int, body: ProfessionalProfileResumeI
     candidate = store.get_candidate(cid)
     if not candidate:
         raise HTTPException(404, "candidate not found")
+    actor = _request_user(request)
+    user_id = str(actor.get("sub") or "local")
+    ats_routing.set_candidate_target(cid, ats_routing.destination_for(actor), user_id)
     candidate_source = str(candidate.get("source") or "").strip().casefold()
     source_rules = {
         "usnews": (
             lambda host, path: host == "health.usnews.com"
-            and bool(re.match(r"^/(?:doctors|nurse-practitioners)/", path, re.IGNORECASE)),
+            and bool(re.match(r"^/(?:doctors|nurse-practitioners|physician-assistants|dentists)/", path, re.IGNORECASE)),
             "U.S. News",
         ),
         "medifind": (
@@ -2107,8 +2149,13 @@ def build_professional_profile_resume(cid: int, body: ProfessionalProfileResumeI
         ),
         "webmd": (
             lambda host, path: host == "doctor.webmd.com"
-            and bool(re.match(r"^/doctor/[^/]+-overview/?$", path, re.IGNORECASE)),
+            and bool(re.match(r"^/doctor/[^/?#]+-overview/?$", path, re.IGNORECASE)),
             "WebMD",
+        ),
+        "npino": (
+            lambda host, path: (host == "npino.com" or host.endswith(".npino.com"))
+            and bool(re.match(r"^/[^/]+/\d{10}(?:-[^/]+)?/?$", path, re.IGNORECASE)),
+            "NPI No.",
         ),
     }
     rule = source_rules.get(candidate_source)
@@ -2124,12 +2171,6 @@ def build_professional_profile_resume(cid: int, body: ProfessionalProfileResumeI
         or not rule[0]((source.hostname or "").casefold(), source.path)
     ):
         raise HTTPException(400, f"A valid {rule[1]} provider profile URL is required.")
-    contactable = contact_access.project_candidate(candidate)
-    if not (
-        contactable.get("contacts_trusted") is True
-        and (contactable.get("phones") or contactable.get("emails"))
-    ):
-        raise HTTPException(409, "A verified candidate phone or email is required before generating a resume.")
     profile = body.model_dump()
     if not any((
         profile["education"], profile["certifications"], profile["licenses"],
@@ -2143,10 +2184,24 @@ def build_professional_profile_resume(cid: int, body: ProfessionalProfileResumeI
             "Professional profile PDF rendering failed for candidate %s", cid,
         )
         raise HTTPException(500, "Professional profile PDF could not be generated.") from exc
+    # Older published extensions send structured specialty data with the
+    # profile PDF but may not include it in the earlier candidate import.
+    # Persist it before storing the PDF, which also queues Nexus delivery.
+    existing_notes = str(candidate.get("notes") or "")
+    existing_lines = {line.strip().casefold() for line in existing_notes.splitlines()}
+    specialty_lines = [
+        f"Specialty: {' '.join(str(value).split())[:240]}"
+        for value in profile["specialties"][:20]
+        if str(value).strip()
+    ]
+    new_lines = [line for line in specialty_lines if line.casefold() not in existing_lines]
+    if new_lines:
+        store.update_candidate(cid, notes="\n".join([*new_lines, existing_notes])[:20000])
     resume = _store_resume_pdf(
         cid,
         profile_resume.filename(candidate, profile),
         rendered,
+        user_id,
     )
     return {
         "attached": True,

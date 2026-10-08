@@ -1,6 +1,6 @@
 """Quick Sourcer external contact lookup.
 
-Quick Sourcer answers a name (plus an optional location) with a person's
+Quick Sourcer answers a name and location with a person's
 contact details and the full public record behind them.  Behind its API a real
 browser visits the underlying people-search site, so one uncached search takes
 30-90 seconds; found records are cached locally so the panel can reopen them
@@ -9,10 +9,9 @@ instantly.
 The API key is read only by this backend.  The browser extension calls the
 local ``/quick-sourcer/*`` endpoints and never receives or stores the key.
 
-A Quick Sourcer record is returned to the panel as its own clearly attributed
-result.  It is deliberately never written into the candidate contact columns:
-those stay reserved for the PDL/Enformion pipeline, whose trust policy decides
-what may be reused for outreach.
+Quick Sourcer's `found` result is authoritative for this provider. The backend
+normalizes returned contact fields and applies do-not-contact suppression, but
+does not discard a found response based on a second name or location check.
 """
 from __future__ import annotations
 
@@ -21,7 +20,7 @@ import time
 
 import httpx
 
-from . import config, person_name, store
+from . import config, contact_access, person_name, store
 
 _PROVIDER = "quick_sourcer"
 _MASKED_EMAIL_RE = re.compile(r"\*")
@@ -53,12 +52,25 @@ def configured() -> bool:
 
 def status() -> dict:
     """Return internal readiness; public API code applies a stricter projection."""
+    try:
+        monitor = store.api_request_monitor(
+            _PROVIDER, stale_seconds=float(config.QUICK_SOURCER_TIMEOUT) + 30,
+        )
+    except Exception:
+        monitor = {
+            "provider": _PROVIDER, "active": 0, "started_5m": 0,
+            "completed_5m": 0, "failed_5m": 0,
+            "average_response_ms_5m": None, "measured_responses_5m": 0,
+            "oldest_active_seconds": 0, "measured_at": time.time(),
+            "available": False,
+        }
     return {
         "enabled": bool(config.QUICK_SOURCER_ENABLED),
         "configured": bool(config.QUICK_SOURCER_API_KEY),
         "base_url": config.QUICK_SOURCER_BASE_URL,
         "search_pool": "dedicated" if config.QUICK_SOURCER_DEDICATED_IP else "shared",
         "typical_seconds": [30, 90],
+        "requests": monitor,
     }
 
 
@@ -119,28 +131,52 @@ def _empty(status_value: str, error: str = "") -> dict:
 
 def _phones(payload: dict, summary: dict) -> list[dict]:
     output, seen = [], set()
-    rows = summary.get("phones") or (payload.get("profile") or {}).get("phones") or []
-    for row in rows if isinstance(rows, list) else []:
-        value = _text(row.get("number") if isinstance(row, dict) else row)
+    profile = payload.get("profile") or {}
+    rows = []
+    for collection in (
+        summary.get("phones"), profile.get("phones"),
+        profile.get("currentPhone"), profile.get("current_phone"),
+        payload.get("phones"), payload.get("currentPhone"),
+        payload.get("current_phone"),
+    ):
+        if isinstance(collection, list):
+            rows.extend(collection)
+        elif collection:
+            rows.append(collection)
+    for row in rows:
+        details = row if isinstance(row, dict) else {}
+        value = _text(
+            details.get("number") or details.get("value") or details.get("phone")
+            if details else row
+        )
         if not value or value in seen:
             continue
         seen.add(value)
-        details = row if isinstance(row, dict) else {}
         output.append({
             "value": value,
-            "type": _text(details.get("type")),
+            "type": _text(
+                details.get("type") or details.get("phoneType")
+                or details.get("phone_type") or details.get("lineType")
+                or details.get("line_type")
+            ),
             "carrier": _text(details.get("carrier")),
             "last_reported": _text(details.get("lastReported")),
             "primary": bool(details.get("isPrimary")),
         })
-    fallback = _text(payload.get("phone"))
-    if fallback and fallback not in seen:
-        output.insert(0, {
-            "value": fallback, "type": "", "carrier": "",
-            "last_reported": "", "primary": True,
-        })
+    fallback = payload.get("phone")
+    if fallback:
+        fallback_row = fallback if isinstance(fallback, dict) else {"number": fallback}
+        value = _text(fallback_row.get("number") or fallback_row.get("value") or fallback_row.get("phone"))
+        if value and value not in seen:
+            output.append({
+                "value": value,
+                "type": _text(fallback_row.get("type") or fallback_row.get("phoneType") or fallback_row.get("phone_type")),
+                "carrier": _text(fallback_row.get("carrier")),
+                "last_reported": _text(fallback_row.get("lastReported")),
+                "primary": bool(fallback_row.get("isPrimary", True)),
+            })
     output.sort(key=lambda item: not item["primary"])
-    return output[:40]
+    return output
 
 
 def _people(rows) -> list[dict]:
@@ -162,15 +198,25 @@ def _people(rows) -> list[dict]:
 
 def _current_address(payload: dict) -> dict:
     profile = payload.get("profile") or {}
-    current = profile.get("currentAddress")
+    current = (
+        profile.get("currentAddress") or profile.get("current_address")
+        or payload.get("currentAddress") or payload.get("current_address")
+    )
     if isinstance(current, dict):
-        return {
-            "address": _text(current.get("address")),
-            "county": _text(current.get("county")),
-            "date_range": _text(current.get("dateRange")),
-            "property_details": _text(current.get("propertyDetails")),
-        }
-    line = _text(current) or _text(payload.get("address"))
+        line = _text(
+            current.get("address") or current.get("value")
+            or current.get("formattedAddress") or current.get("formatted_address")
+        )
+        if line:
+            return {
+                "address": line,
+                "county": _text(current.get("county")),
+                "date_range": _text(current.get("dateRange") or current.get("date_range")),
+                "property_details": _text(
+                    current.get("propertyDetails") or current.get("property_details")
+                ),
+            }
+    line = (_text(current) if not isinstance(current, dict) else "") or _text(payload.get("address"))
     if not line:
         return {}
     return {"address": line, "county": "", "date_range": "", "property_details": ""}
@@ -183,17 +229,70 @@ def normalize(payload: dict | None) -> dict:
     in the richer per-site detail the panel shows underneath the contacts.
     """
     source_payload = payload if isinstance(payload, dict) else {}
-    if not source_payload.get("found"):
+    top_level_data = any(
+        source_payload.get(key)
+        for key in (
+            "name", "email", "phone", "address", "source", "profile",
+            "summary", "currentAddress", "current_address",
+        )
+    )
+    root_found = source_payload.get("found")
+    root_explicit_not_found = (
+        root_found is False or root_found == 0
+        or (isinstance(root_found, str) and root_found.strip().casefold()
+            in {"false", "0", "no", "not_found", "not found"})
+    )
+    if not top_level_data and not root_explicit_not_found:
+        for envelope in ("data", "result", "candidate", "record"):
+            nested = source_payload.get(envelope)
+            if isinstance(nested, dict):
+                source_payload = nested
+                break
+
+    has_record_data = any(
+        source_payload.get(key)
+        for key in (
+            "name", "email", "phone", "address", "source", "profile",
+            "summary", "currentAddress", "current_address",
+        )
+    )
+    raw_found = source_payload.get("found")
+    if isinstance(raw_found, str):
+        normalized_found = raw_found.strip().casefold()
+        provider_found = normalized_found in {"true", "1", "yes", "found"}
+        provider_not_found = normalized_found in {"false", "0", "no", "not_found", "not found"}
+    else:
+        provider_found = raw_found is True or raw_found == 1
+        provider_not_found = raw_found is False or raw_found == 0
+    # Some successful responses carry useful profile/contact fields while
+    # omitting `found` or returning it in a non-boolean form. Keep those
+    # records; only an explicit empty/not-found response becomes a miss.
+    if provider_not_found:
         return _empty("not_found")
+    if not provider_found and not has_record_data:
+        return _empty(
+            "error",
+            "Quick Sourcer response did not include a found result or record data.",
+        )
 
     summary = source_payload.get("summary") or {}
     profile = source_payload.get("profile") or {}
     emails, masked, seen = [], [], set()
-    raw_emails = list(summary.get("emails") or [])
-    if source_payload.get("email"):
-        raw_emails.append(source_payload["email"])
+    raw_emails = []
+    profile_emails = profile.get("emails")
+    for collection in (summary.get("emails"), profile_emails, source_payload.get("emails")):
+        if isinstance(collection, list):
+            raw_emails.extend(collection)
+        elif collection:
+            raw_emails.append(collection)
+    for single in (summary.get("email"), profile.get("email"), source_payload.get("email")):
+        if single:
+            raw_emails.append(single)
     for value in raw_emails:
-        address = _text(value)
+        address = _text(
+            value.get("email") or value.get("address") or value.get("value")
+            if isinstance(value, dict) else value
+        )
         key = address.casefold()
         if not address or key in seen:
             continue
@@ -214,9 +313,12 @@ def normalize(payload: dict | None) -> dict:
     result = _empty("found")
     result.update({
         "external_id": source_payload.get("candidate_id"),
-        "name": _text(source_payload.get("name") or profile.get("fullName")),
+        "name": _text(
+            source_payload.get("name") or profile.get("fullName")
+            or next(iter(summary.get("names") or []), "")
+        ),
         "source": _text(source_payload.get("source")),
-        "emails": emails[:20],
+        "emails": emails,
         "masked_emails": masked[:20],
         "phones": _phones(source_payload, summary),
         "addresses": addresses[:40],
@@ -259,40 +361,44 @@ def _call(method: str, path: str, payload: dict | None = None) -> dict:
     # 502/503/504 early while the live-browser worker is being recycled; one
     # retry inside the remaining budget fixes that transient case without
     # allowing a single candidate to outlive the extension's request timeout.
+    activity_id = store.begin_api_request(_PROVIDER, f"{method.upper()} {path}")
+    outcome = "failed"
     deadline = time.monotonic() + config.QUICK_SOURCER_TIMEOUT
     response = None
-    for attempt in range(2):
-        remaining = deadline - time.monotonic()
-        if remaining <= 1:
-            raise httpx.TimeoutException("Quick Sourcer request budget expired.")
-        try:
-            response = httpx.request(
-                method,
-                f"{config.QUICK_SOURCER_BASE_URL}{path}",
-                json=payload,
-                headers={"X-API-Key": config.QUICK_SOURCER_API_KEY},
-                timeout=remaining,
-            )
-        except httpx.TransportError:
-            if attempt or deadline - time.monotonic() <= 2:
-                raise
+    try:
+        for attempt in range(2):
+            remaining = deadline - time.monotonic()
+            if remaining <= 1:
+                raise httpx.TimeoutException("Quick Sourcer request budget expired.")
+            try:
+                response = httpx.request(
+                    method,
+                    f"{config.QUICK_SOURCER_BASE_URL}{path}",
+                    json=payload,
+                    headers={"X-API-Key": config.QUICK_SOURCER_API_KEY},
+                    timeout=remaining,
+                )
+            except httpx.TransportError:
+                if attempt or deadline - time.monotonic() <= 2:
+                    raise
+                time.sleep(min(0.5, max(0.0, deadline - time.monotonic() - 1)))
+                continue
+            if response.status_code not in {502, 503, 504} or attempt:
+                break
+            if deadline - time.monotonic() <= 2:
+                break
             time.sleep(min(0.5, max(0.0, deadline - time.monotonic() - 1)))
-            continue
-        if response.status_code not in {502, 503, 504} or attempt:
-            break
-        if deadline - time.monotonic() <= 2:
-            break
-        time.sleep(min(0.5, max(0.0, deadline - time.monotonic() - 1)))
 
-    if response is None:  # defensive; the loop either returns a response or raises
-        raise httpx.TransportError("Quick Sourcer returned no response.")
-    if response.status_code in (401, 403):
-        raise PermissionError("Quick Sourcer rejected the configured API key.")
-    if response.status_code == 404:
-        return {"found": False}
-    response.raise_for_status()
-    body = response.json()
-    return body if isinstance(body, dict) else {}
+        if response is None:
+            raise httpx.TransportError("Quick Sourcer returned no response.")
+        if response.status_code in (401, 403):
+            raise PermissionError("Quick Sourcer rejected the configured API key.")
+        response.raise_for_status()
+        body = response.json()
+        outcome = "completed"
+        return body if isinstance(body, dict) else {}
+    finally:
+        store.finish_api_request(activity_id, outcome)
 
 
 def _failure(exc: Exception, *, dedicated_ip: bool = False) -> dict:
@@ -316,27 +422,6 @@ def _failure(exc: Exception, *, dedicated_ip: bool = False) -> dict:
             f"Quick Sourcer returned HTTP {exc.response.status_code}. Try this candidate again.",
         )
     return _empty("error", f"Quick Sourcer request failed ({type(exc).__name__}).")
-
-
-def _is_person(result: dict, searched_name: str = "") -> bool:
-    """Reject a "found" record that is page furniture rather than a person.
-
-    The upstream search answers with its single best guess and has no way to
-    say "nobody like that". A blocked or missing source page can therefore come
-    back as a record whose name is a nav label and whose only address is the
-    site's own error line. Require something contactable, and — when the caller
-    searched by name — require the answer to actually be about that name.
-    """
-    if result.get("status") != "found":
-        return False
-    if not (result.get("phones") or result.get("emails") or result.get("addresses")):
-        return False
-    if not searched_name:
-        return True
-    returned = set(person_name.identity_tokens(result.get("name") or ""))
-    if not returned:
-        return False
-    return bool(returned & set(person_name.identity_tokens(searched_name)))
 
 
 def find(name: str, location: str = "", candidate_id: int = 0,
@@ -365,8 +450,8 @@ def find(name: str, location: str = "", candidate_id: int = 0,
     except Exception as exc:
         return _failure(exc, dedicated_ip=use_dedicated)
     result = normalize(payload)
-    if not _is_person(result, person):
-        return _empty("not_found")
+    if result.get("status") != "found":
+        return result
     _remember(request_key, candidate_id, result)
     return result
 
@@ -381,6 +466,10 @@ def fetch(external_id: int, refresh: bool = False) -> dict:
         return _empty("disabled", "Quick Sourcer is not configured on this backend.")
 
     request_key = _external_key(identifier)
+    row = store.get_provider_lookup(_PROVIDER, request_key)
+    candidate = store.get_candidate(int(row.get("candidate_id") or 0)) if row else None
+    if not candidate:
+        return _empty("error", "No saved Quick Sourcer record is linked to that id.")
     if not refresh:
         hit = _cached(request_key)
         if hit:
@@ -390,8 +479,8 @@ def fetch(external_id: int, refresh: bool = False) -> dict:
     except Exception as exc:
         return _failure(exc)
     result = normalize(payload)
-    if not _is_person(result):
-        return _empty("not_found")
+    if result.get("status") != "found":
+        return result
     _remember(request_key, 0, result)
     return result
 
@@ -407,7 +496,10 @@ CONTACT_SOURCE = "quick_sourcer"
 
 def phone_kind(phone: dict) -> str:
     """Map a reported line type onto the two kinds the panel renders."""
-    return "mobile" if "wireless" in _text(phone.get("type")).casefold() else "other"
+    phone_type = _text(phone.get("type")).casefold()
+    return "mobile" if any(
+        token in phone_type for token in ("wireless", "mobile", "cellular", "cell")
+    ) else "other"
 
 
 def public_lookup_result(result: dict | None) -> dict:
@@ -430,17 +522,24 @@ def public_lookup_result(result: dict | None) -> dict:
         ]
         emails = list(allowed.get("emails") or [])
         phones = [row["value"] for row in phone_contacts]
-        found = bool(emails or phones)
+        has_usable_contact = bool(emails or phones)
     else:
-        emails, phones, phone_contacts, found = [], [], [], False
+        emails, phones, phone_contacts, has_usable_contact = [], [], [], False
     return {
-        "status": "found" if found else ("failed" if status in ("error", "disabled") else "not_found"),
-        "emails": emails[:20],
-        "phones": phones[:40],
-        "phone_contacts": phone_contacts[:40],
+        # The upstream `found` field determines match status. Contact
+        # suppression can remove a channel, but it must not rewrite a found
+        # API record into a no-match result.
+        "status": (
+            "found" if status == "found"
+            else "not_found" if status == "not_found"
+            else "failed"
+        ),
+        "emails": emails,
+        "phones": phones,
+        "phone_contacts": phone_contacts,
         # A usable phone or email is sufficient for Indeed resume capture.
         # Masked provider email labels remain display-only/non-contact data.
-        "resume_required": bool(found and (emails or phones)),
+        "resume_required": bool(status == "found" and has_usable_contact),
         "location_match": None,
     }
 
@@ -465,12 +564,13 @@ def _stored_record(result: dict) -> dict:
 def apply_to_candidate(candidate_id: int, result: dict) -> dict:
     """Persist one Quick Sourcer record against a stored candidate."""
     public = public_lookup_result(result)
-    found = public["status"] == "found"
+    found = result.get("status") == "found"
+    has_usable_contact = bool(public["emails"] or public["phones"])
     now = time.time()
     expires = now + max(3600, config.QUICK_SOURCER_CACHE_TTL_SECONDS or 0)
     verification = {
         "source": CONTACT_SOURCE,
-        "identity_status": "public_record",
+        "identity_status": "provider_found" if found else "unverified",
         "checked_at": now,
         "record": _stored_record(result) if result.get("status") == "found" else {},
         "evidence": {
@@ -491,87 +591,44 @@ def apply_to_candidate(candidate_id: int, result: dict) -> dict:
         ),
         identity_provider=CONTACT_SOURCE,
         verification=verification,
-        contact_verified_at=now if found else 0,
-        contact_expires_at=expires if found else 0,
+        contact_verified_at=now if has_usable_contact else 0,
+        contact_expires_at=expires if has_usable_contact else 0,
     )
     return public
 
 
-def _stored_candidate_result(candidate: dict | None) -> dict | None:
-    """Rehydrate a previously accepted Quick Sourcer result from Neon.
+def lookup_candidate(
+    candidate_id: int, refresh: bool = False, *, candidate: dict | None = None,
+) -> dict:
+    """Reuse trusted saved contacts, or look the candidate up through Quick Sourcer.
 
-    A candidate may be selected by several recruiters, or the extension panel
-    may be reopened after the first lookup.  In both cases the candidate row
-    is the durable source of the already accepted contact result.  Reusing it
-    here prevents a second paid/live Quick Sourcer search (the explicit
-    ``refresh`` path remains available for an intentional re-check).
+    An uncached search takes 30-90 seconds because the API drives a real
+    browser, so callers must run these one at a time rather than in parallel.
+    Fresh, trusted contacts already saved for this exact candidate are returned
+    directly without spending a Quick Sourcer request. Quick Sourcer contacts
+    themselves continue to use the provider lookup cache and its TTL.
     """
-    source = candidate or {}
-    verification = source.get("verification") or {}
-    verification_source = str(verification.get("source") or "").strip().casefold()
-    emails = [
-        str(value).strip() for value in source.get("emails") or []
-        if str(value).strip()
-    ]
-    record = verification.get("record") or {}
-    phones = []
-    for row in record.get("phones") or []:
-        if isinstance(row, dict):
-            value = _text(row.get("value")) or _text(row.get("number"))
-            if value:
-                phones.append({**row, "value": value})
-    if not phones:
-        phones = [
-            {"value": _text(value), "type": ""}
-            for value in source.get("phones") or []
-            if _text(value)
-        ]
-    phones = [row for row in phones if _text(row.get("value"))]
-    if not emails and not phones:
-        return None
-    if verification_source != CONTACT_SOURCE:
-        # A prior PDL/Enformion result is already persisted on the candidate.
-        # Reuse only a currently valid successful row; otherwise this endpoint
-        # must perform its configured provider lookup as usual.
-        if str(source.get("enrich_status") or "").casefold() not in {
-            "success", "found",
-        }:
-            return None
-        try:
-            if float(source.get("contact_expires_at") or 0) <= time.time():
-                return None
-        except (TypeError, ValueError):
-            return None
-    return {
-        "status": "found",
-        "name": _text(record.get("name") or source.get("name")),
-        "source": _text(record.get("source_site") or verification_source or CONTACT_SOURCE),
-        "external_id": record.get("external_id"),
-        "emails": emails,
-        "phones": phones,
-        "addresses": list(source.get("addresses") or []),
-        "cached": True,
-    }
-
-
-def lookup_candidate(candidate_id: int, refresh: bool = False) -> dict:
-    """Return stored contacts first, then look up through Quick Sourcer.
-
-    A database hit avoids a duplicate provider call. An uncached search takes
-    30-90 seconds because the API drives a real browser, so callers must run
-    these one at a time rather than in parallel.
-    """
-    candidate = store.get_candidate(candidate_id)
+    candidate = candidate or store.get_candidate(candidate_id)
     if not candidate:
         return {"status": "failed", "emails": [], "phones": [], "phone_contacts": [],
                 "resume_required": False, "location_match": None}
-    if not refresh:
-        stored = _stored_candidate_result(candidate)
-        if stored:
-            # Apply DNC filtering and return the same minimal browser contract
-            # as a live lookup, without rewriting the Neon row or calling the
-            # external provider.
-            return {**public_lookup_result(stored), "cached": True}
+
+    verification = candidate.get("verification") or {}
+    if not refresh and verification.get("source") != CONTACT_SOURCE:
+        saved = contact_access.project_candidate(candidate)
+        if saved.get("contacts_trusted") and (saved.get("emails") or saved.get("phones")):
+            return {
+                "status": "found",
+                "cached": True,
+                "source": str(saved.get("contact_source") or "saved_contact"),
+                "emails": list(saved.get("emails") or []),
+                "phones": list(saved.get("phones") or []),
+                "phone_contacts": list(saved.get("phone_contacts") or []),
+                "addresses": list(saved.get("addresses") or []),
+                "resume_required": True,
+                "location_match": None,
+            }
+
     name = person_name.normalize_person_name(candidate.get("name") or "") or str(
         candidate.get("name") or ""
     )
@@ -582,20 +639,3 @@ def lookup_candidate(candidate_id: int, refresh: bool = False) -> dict:
         refresh=refresh,
     )
     return apply_to_candidate(candidate_id, result)
-
-
-def needs_provider_lookup(candidate_id: int) -> bool:
-    """Whether this contact lookup is expected to make a fresh provider call."""
-    if not configured():
-        return False
-    candidate = store.get_candidate(candidate_id)
-    if not candidate or _stored_candidate_result(candidate):
-        return False
-    name = person_name.normalize_person_name(candidate.get("name") or "") or str(
-        candidate.get("name") or ""
-    )
-    key = _request_key(
-        name, str(candidate.get("location") or ""),
-        config.QUICK_SOURCER_DEDICATED_IP,
-    )
-    return _cached(key) is None

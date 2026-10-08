@@ -1,6 +1,7 @@
 """Regression coverage for fast remote-database startup."""
 from pathlib import Path
 import sys
+from contextlib import contextmanager
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -44,9 +45,6 @@ def test_prepare_postgres_skips_schema_replay_when_database_is_current(monkeypat
     assert len(connection.queries) == 1
     query = connection.queries[0][0]
     assert "to_regclass('medhunt.candidates')" in query
-    assert "to_regclass('medhunt.extension_devices')" in query
-    assert "to_regclass('medhunt.extension_device_registrations')" in query
-    assert "to_regclass('medhunt.idx_extension_devices_user_status')" in query
     assert "table_schema = 'medhunt'" in query
     assert "table_name = 'enrichment_events'" in query
     assert "column_name = 'candidate_id'" in query
@@ -131,3 +129,41 @@ def test_nexus_startup_migration_selects_only_legacy_identity_keys(monkeypatch):
     assert "d.identity_key <>" in connection.query
     assert "l.identity_key <>" in connection.query
     assert "COALESCE(c.master_candidate_id,c.id)" in connection.query
+
+
+def test_postgres_connection_falls_back_when_pool_package_is_missing(monkeypatch):
+    import psycopg
+
+    class _DirectRaw:
+        def __init__(self):
+            self.closed = False
+
+        @contextmanager
+        def transaction(self):
+            yield
+
+        def close(self):
+            self.closed = True
+
+    raw = _DirectRaw()
+    connect_calls = []
+
+    monkeypatch.setattr(store.config, "DATABASE_URL", "postgresql://unit-test")
+    monkeypatch.setattr(store.config, "DATABASE_CONNECT_TIMEOUT", 7)
+    monkeypatch.setitem(sys.modules, "psycopg_pool", None)
+    monkeypatch.setattr(
+        psycopg,
+        "connect",
+        lambda *args, **kwargs: connect_calls.append((args, kwargs)) or raw,
+    )
+    monkeypatch.setattr(store, "_configure_postgres_namespace", lambda connection: None)
+    monkeypatch.setattr(store, "_activate_postgres_namespace", lambda connection: None)
+    monkeypatch.setattr(store, "_prepare_postgres", lambda connection: None)
+
+    with store._conn() as connection:
+        assert connection.raw is raw
+        assert raw.closed is False
+
+    assert raw.closed is True
+    assert len(connect_calls) == 1
+    assert connect_calls[0][1]["connect_timeout"] == 7

@@ -1,8 +1,8 @@
 (() => {
   "use strict";
 
-  const ADAPTER_REVISION = "indeed-capture-v6";
-  const ADAPTER_REQUEST = "RADIXSOL_INDEED_V6_REQUEST";
+  const ADAPTER_REVISION = "indeed-capture-v5";
+  const ADAPTER_REQUEST = "RADIXSOL_INDEED_V5_REQUEST";
   if (window.__radixsolIndeedAdapterRevision === ADAPTER_REVISION) return;
   window.__radixsolIndeedAdapterRevision = ADAPTER_REVISION;
   window.__radixsolIndeedCaptureLoaded = true;
@@ -333,10 +333,10 @@
 
   function looksLikeName(value) {
     const text = String(value || "").trim();
-    if (text.length < 3 || text.length > 140 || /\d|@|https?:/i.test(text)) return false;
+    if (text.length < 3 || text.length > 90 || /\d|@|http/i.test(text)) return false;
     const parts = text.split(/\s+/);
-    return parts.length >= 2 && parts.length <= 10 &&
-      parts.every((part) => /\p{L}/u.test(part) && /^[\p{L}\p{M}.'\u2019,\-]+$/u.test(part));
+    return parts.length >= 2 && parts.length <= 6 &&
+      parts.every((part) => /^[A-Za-zÀ-ÖØ-öø-ÿ.'’\-]+$/.test(part));
   }
 
   function commonAncestor(first, second) {
@@ -753,8 +753,7 @@
       let previousCount = captured.size;
       let previousHeight = Number(container?.scrollHeight) || 0;
 
-      let lateLoadChecks = 0;
-      for (let step = 0; step < 80 && captured.size < 100; step += 1) {
+      for (let step = 0; step < 36 && captured.size < 100; step += 1) {
         const clientHeight = Math.max(1, Number(container?.clientHeight) || window.innerHeight || 720);
         const beforeHeight = Number(container?.scrollHeight) || clientHeight;
         const maxTop = Math.max(0, beforeHeight - clientHeight);
@@ -777,14 +776,7 @@
         // A lazy loader may append rows just after reaching the old bottom.
         // Requiring three unchanged observations avoids stopping on that
         // transient state, even when the initial expected count was too low.
-        if (bottomStableRounds >= 4) {
-          if (expected > captured.size && lateLoadChecks < 3) {
-            lateLoadChecks += 1;
-            await sleep(600);
-            await mergeSnapshot();
-            bottomStableRounds = 0;
-          } else break;
-        }
+        if (bottomStableRounds >= 4) break;
       }
 
       const profiles = Array.from(captured.values()).slice(0, 100);

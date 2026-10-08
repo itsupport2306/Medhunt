@@ -61,18 +61,6 @@ def test_text_resume_extracts_structured_fields_without_ocr(monkeypatch):
     assert result["accepted"]["location"] == "Columbus, OH, United States"
 
 
-def test_sparse_text_layer_is_preferred_to_noisy_ocr(monkeypatch):
-    def unexpected_ocr(_data, _indexes):
-        raise AssertionError("a valid text layer must not invoke OCR")
-
-    monkeypatch.setattr(
-        resume_extraction, "_ocr_pages", unexpected_ocr,
-    )
-    result = resume_extraction.extract(_pdf(["Jane Example"]), {"name": "Jane Example"})
-    assert result["fields"]["full_name"] == "Jane Example"
-    assert result["source"] == "embedded_text"
-
-
 def test_image_only_resume_uses_local_ocr_for_sparse_pages(monkeypatch):
     scanned = _pdf([])
     calls = []

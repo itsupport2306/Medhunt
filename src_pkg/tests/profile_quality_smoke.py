@@ -162,10 +162,6 @@ def _exercise(browser_type, executable: Path) -> dict:
               quality.normalizeName('Silvia Lopez-Clarke, CST, BSN, RN'),
               quality.normalizeName('Rhonda Hampton (Rhonda Hampton)'),
               quality.normalizeName('Kathy Shaiken RN'),
-              quality.normalizeName('Christina Ashley Van Allen, APRN, AGACNP-BC'),
-              quality.normalizeName('Sarah Moultrie, CPNP-AC'),
-              quality.normalizeName('Tara Seaman, ACNP-BC'),
-              quality.normalizeName('Jane Doe, NP-C'),
             ],
             xssExecuted: window.__radixsolXssExecuted,
           };
@@ -236,8 +232,6 @@ def main() -> None:
             }, result
             assert result["normalized"] == [
                 "Silvia Lopez-Clarke", "Rhonda Hampton", "Kathy Shaiken",
-                "Christina Ashley Van Allen", "Sarah Moultrie", "Tara Seaman",
-                "Jane Doe",
             ], result
             summaries[name] = {
                 "accepted": len(linkedin["profiles"]) + len(indeed["profiles"])

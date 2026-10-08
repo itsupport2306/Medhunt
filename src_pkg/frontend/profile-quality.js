@@ -6,19 +6,9 @@
 (() => {
   const MAX_PROFILES = 100;
   const CREDENTIALS = new Set([
-    // Credential tokens are compared after punctuation is removed by
-    // credentialToken(). Keep both the common short forms and the board /
-    // population-specific NP suffixes so a credentialed name is still a
-    // person name on every supported source.
-    "aa", "acls", "acnp", "acnpbc", "agacnp", "agacnpbc", "agnp", "agnpc", "agnpbc",
-    "agpcnp", "agpcnpc", "agpcnpbc", "anp", "anpbc",
-    "apn", "aprn", "bls", "bsn", "bsnrn", "ccrn", "cdces", "cde", "cnm", "cna", "cnor", "cnp",
-    "cmsrn", "cns", "cpnp", "cpnpac", "cpnpbc", "cpnppc", "cph", "cphq", "crna", "crnp", "cst", "dds",
-    "dmd", "dnp", "dpt", "do", "edd", "emt", "facog", "facp", "facs", "fnp", "fnpbc", "fnpc", "gnp",
-    "lcce", "lcsw", "lmft", "lmhc", "lmsw", "lpn", "lvn", "ma", "mba", "md", "mha", "mph", "mpt", "msn",
-    "np", "npc", "npbc", "nnp", "ot", "otd", "pac", "pals", "pccn", "pharmd", "phd", "phn", "pmhnp",
-    "pmhnpbc", "pnp", "pnpbc", "pt", "rd", "rma", "rn", "rnbc", "rph", "slp", "sw", "whnp", "jr", "sr",
-    "ii", "iii", "iv", "v", "nursepractitioner", "whnpc", "whnpbc", "nnpc", "nnpbc",
+    "acls", "aprn", "bls", "bsn", "cna", "cnor", "crna", "cst", "dnp",
+    "do", "dds", "dmd", "lpn", "lvn", "ma", "mba", "md", "ms", "msn", "np", "pa", "pac", "pals", "pccn", "phd",
+    "phn", "physicianassistant", "rma", "rn", "rpac", "scd",
   ]);
   const NON_PERSON_LABELS = new Set([
     "add friend", "candidate", "candidates", "connect", "contact info",
@@ -59,6 +49,7 @@
 
   function normalizeName(value) {
     let name = cleanText(value, 140)
+      .replace(/^(?:dr\.?|doctor|mr\.?|mrs\.?|ms\.?|miss)\s+/i, "")
       .replace(/\s+(?:\u00b7|\u2022)\s*(?:1st|2nd|3rd\+?|out of network).*$/i, "")
       .replace(/\s*\([^()]{1,100}\)\s*/g, " ")
       .replace(/\s+[\u2013\u2014-]\s+(?:registered\s+nurse|licensed\s+practical\s+nurse|nurse|rn|lpn|lvn)\b.*$/i, "")
@@ -118,9 +109,9 @@
       npiprofile: "npiprofile.com",
       usnews: "health.usnews.com",
       medifind: "medifind.com",
+      webmd: "doctor.webmd.com",
       commonspirit: "commonspirit.org",
       sharecare: "providers.sharecare.com",
-      webmd: "doctor.webmd.com",
     };
     const root = roots[platform];
     return Boolean(root && (host === root || host.endsWith(`.${root}`)));
@@ -143,8 +134,9 @@
       if (platform === "linkedin") return /^\/in\/[^/?#]+\/?$/i.test(url.pathname);
       if (platform === "facebook") return facebookProfilePath(url);
       if (platform === "usnews") {
-        return /^\/(?:doctors|nurse-practitioners)(?:\/|$)/i.test(url.pathname);
+        return /^\/(?:doctors|nurse-practitioners|physician-assistants|dentists)(?:\/|$)/i.test(url.pathname);
       }
+      if (platform === "npino") return /^\/[^/]+\/\d{10}(?:-[^/]*)?\/?$/i.test(url.pathname);
       if (platform === "medifind") return /^\/doctors\/[^/?#]+\/\d+\/?$/i.test(url.pathname);
       if (platform === "commonspirit") return /^\/find-a-doctor\/[^/?#]+-\d+\/?$/i.test(url.pathname);
       if (platform === "sharecare") return /^\/doctor\/[^/?#]+\/?$/i.test(url.pathname);
@@ -172,7 +164,7 @@
 
   function sanitizeProfileDocument(value, platform, sourceUrl) {
     if (
-      !["usnews", "medifind", "commonspirit", "sharecare", "webmd"].includes(platform) || !value || typeof value !== "object"
+      !["usnews", "medifind", "commonspirit", "sharecare", "webmd", "npino"].includes(platform) || !value || typeof value !== "object"
       || value.kind !== "public_professional_profile"
     ) return null;
     const documentUrl = cleanText(value.source_url || sourceUrl, 1200);
@@ -194,8 +186,7 @@
       source_label: cleanText(value.source_label, 100)
         || (platform === "medifind" ? "MediFind"
           : platform === "commonspirit" ? "CommonSpirit Health"
-            : platform === "sharecare" ? "Sharecare"
-              : platform === "webmd" ? "WebMD" : "U.S. News Doctor Finder"),
+            : platform === "sharecare" ? "Sharecare" : "U.S. News Doctor Finder"),
       source_url: documentUrl,
       headline: cleanText(value.headline, 300),
       summary,

@@ -1,8 +1,8 @@
 (() => {
   "use strict";
 
-  const ADAPTER_REVISION = "linkedin-capture-v5";
-  const ADAPTER_REQUEST = "RADIXSOL_LINKEDIN_V5_REQUEST";
+  const ADAPTER_REVISION = "linkedin-capture-v4";
+  const ADAPTER_REQUEST = "RADIXSOL_LINKEDIN_V2_REQUEST";
   if (window.__radixsolLinkedinAdapterRevision === ADAPTER_REVISION) return;
   window.__radixsolLinkedinAdapterRevision = ADAPTER_REVISION;
   window.__radixsolLinkedinCaptureLoaded = true;
@@ -16,8 +16,8 @@
     "[data-chameleon-result-urn]",
     "[data-entity-urn*='urn:li:fsd_profile']",
   ].join(",");
-  const PROFESSIONAL_CREDENTIAL = /^(?:RN|LPN|LVN|APRN(?:-(?:C|BC|CNP))?|APN|NP(?:-(?:C|BC))?|CNP|CRNP|FNP(?:-(?:C|BC))?|ACNP(?:-BC)?|AGNP(?:-(?:C|BC))?|AGACNP(?:-BC)?|CPNP(?:-(?:AC|PC|C|BC))?|PNP(?:-(?:AC|PC|C|BC))?|PMHNP(?:-(?:C|BC))?|CNM|CRNA|CNS|PA-C|MD|DO|DDS|DMD|PharmD|RPh|PT|DPT|OT|OTR|OTR\/L|SLP|CCC-SLP|CNA|CST|CNOR|PCCN|PHN|BSN|MSN|DNP|ADN|ASN|AAS|BScN|MBA|MPH|MHA|PhD|EdD|PMP|SHRM-CP|SHRM-SCP)$/i;
-  const CREDENTIAL_SEQUENCE = /^(?:(?:RN|LPN|LVN|APRN(?:-(?:C|BC|CNP))?|APN|NP(?:-(?:C|BC))?|CNP|CRNP|FNP(?:-(?:C|BC))?|ACNP(?:-BC)?|AGNP(?:-(?:C|BC))?|AGACNP(?:-BC)?|CPNP(?:-(?:AC|PC|C|BC))?|PNP(?:-(?:AC|PC|C|BC))?|PMHNP(?:-(?:C|BC))?|CNM|CRNA|CNS|PA-C|MD|DO|DDS|DMD|PharmD|RPh|PT|DPT|OT|OTR(?:\/L)?|SLP|CCC-SLP|CNA|CST|CNOR|PCCN|PHN|BSN|MSN|DNP|ADN|ASN|AAS|BScN|MBA|MPH|MHA|PhD|EdD|PMP|SHRM-CP|SHRM-SCP)\s*(?:[,/]|[\u00b7\u2022])?\s*)+$/i;
+  const PROFESSIONAL_CREDENTIAL = /^(?:RN|LPN|LVN|APRN|NP|CNP|FNP|FNP-C|AGNP|AGNP-C|CRNA|CNS|PA-C|MD|DO|DDS|DMD|PharmD|RPh|PT|DPT|OT|OTR|OTR\/L|SLP|CCC-SLP|CNA|CST|CNOR|PCCN|PHN|BSN|MSN|DNP|ADN|ASN|AAS|BScN|MBA|MPH|MHA|PhD|EdD|PMP|SHRM-CP|SHRM-SCP)$/i;
+  const CREDENTIAL_SEQUENCE = /^(?:(?:RN|LPN|LVN|APRN|NP|CNP|FNP(?:-C)?|AGNP(?:-C)?|CRNA|CNS|PA-C|MD|DO|DDS|DMD|PharmD|RPh|PT|DPT|OT|OTR(?:\/L)?|SLP|CCC-SLP|CNA|CST|CNOR|PCCN|PHN|BSN|MSN|DNP|ADN|ASN|AAS|BScN|MBA|MPH|MHA|PhD|EdD|PMP|SHRM-CP|SHRM-SCP)\s*(?:[,/]|[\u00b7\u2022])?\s*)+$/i;
 
   function clean(value) {
     return String(value ?? "")
@@ -1009,7 +1009,7 @@
       await new Promise((resolve) => setTimeout(resolve, 320));
       merge();
       let stableAtBottom = 0;
-      for (let step = 0; step < 80 && captured.size < 100; step += 1) {
+      for (let step = 0; step < 24 && captured.size < 100; step += 1) {
         const viewport = Math.max(500, Number(container?.clientHeight) || window.innerHeight || 800);
         const maxTop = Math.max(0, Number(container?.scrollHeight || 0) - viewport);
         const currentTop = Number(container?.scrollTop) || 0;
@@ -1023,7 +1023,7 @@
         const updatedMax = Math.max(0, Number(container?.scrollHeight || 0) - viewport);
         const atBottom = nextTop >= updatedMax - 3;
         stableAtBottom = atBottom && captured.size === before ? stableAtBottom + 1 : 0;
-        if (stableAtBottom >= 6) break;
+        if (stableAtBottom >= 3) break;
       }
 
       const profiles = [...captured.values()].slice(0, 100)

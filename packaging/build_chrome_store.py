@@ -18,8 +18,10 @@ from build_frontend import build as build_frontend, release_javascript
 
 FORBIDDEN_CLIENT_TERMS = (
     "people data labs", "people_data_labs", "enformion", "endato",
-    "usphonebook", "neverbounce", "quick sourcer",
-    "quick_sourcer", "quick-sourcer", "nexus", "api_key",
+    "usphonebook", "neverbounce", "twilio", "quick sourcer",
+    # Nexus is an intentional user-facing eligibility state in the extension;
+    # credentials and API implementation remain backend-only.
+    "quick_sourcer", "quick-sourcer", "api_key",
     "client_secret", "access_key", "secret_key",
 )
 BRAND_REPLACEMENTS = (
@@ -60,16 +62,9 @@ def harden(stage: Path, api_base: str) -> None:
     app_path = stage / "app.js"
     app = app_path.read_text(encoding="utf-8")
     expected = 'const DEFAULT_BACKEND = "http://127.0.0.1:8091";'
-    if app.count(expected) == 1:
-        app = app.replace(expected, f'const DEFAULT_BACKEND = {json.dumps(api_base)};')
-    else:
-        # Development sources may already contain a previously selected hosted
-        # backend. Replace that single declaration as well so package builds
-        # remain reproducible after switching deployment targets.
-        matches = re.findall(r'const DEFAULT_BACKEND = "[^"]*";', app)
-        if len(matches) != 1:
-            raise RuntimeError("Could not locate the backend marker exactly once.")
-        app = app.replace(matches[0], f'const DEFAULT_BACKEND = {json.dumps(api_base)};')
+    if app.count(expected) != 1:
+        raise RuntimeError("Could not locate the development backend marker exactly once.")
+    app = app.replace(expected, f'const DEFAULT_BACKEND = {json.dumps(api_base)};')
     local_validation = (
         '  const local = parsed.protocol === "http:" && '
         '["127.0.0.1", "localhost"].includes(parsed.hostname);\n'
@@ -82,8 +77,9 @@ def harden(stage: Path, api_base: str) -> None:
         '    throw new Error("Use an HTTPS hosted backend.");\n'
         '  }'
     )
-    if app.count(local_validation) == 1:
-        app = app.replace(local_validation, public_validation)
+    if app.count(local_validation) != 1:
+        raise RuntimeError("Could not locate the development URL validation exactly once.")
+    app = app.replace(local_validation, public_validation)
     app_path.write_text(app, encoding="utf-8", newline="\n")
 
     manifest_path = stage / "manifest.json"
