@@ -156,7 +156,7 @@ CREATE TABLE IF NOT EXISTS nexus_deliveries(
   lease_until REAL DEFAULT 0, nexus_candidate_id TEXT DEFAULT '',
   operation TEXT DEFAULT '', last_error TEXT DEFAULT '',
   created REAL, updated REAL);
-CREATE TABLE IF NOT EXISTS ceipal_deliveries(
+CREATE TABLE IF NOT EXISTS ceipal_resume_deliveries(
   id INTEGER PRIMARY KEY AUTOINCREMENT, candidate_id INTEGER NOT NULL,
   user_id TEXT NOT NULL, resume_id INTEGER NOT NULL,
   status TEXT NOT NULL DEFAULT 'pending', lease_until REAL DEFAULT 0,
@@ -190,8 +190,8 @@ CREATE INDEX IF NOT EXISTS idx_contact_lookup_priority
   ON contact_lookup_queue(status, job_source, priority, next_attempt_at, created);
 CREATE INDEX IF NOT EXISTS idx_nexus_deliveries_ready
   ON nexus_deliveries(status, next_attempt_at, lease_until);
-CREATE INDEX IF NOT EXISTS idx_ceipal_deliveries_ready
-  ON ceipal_deliveries(status, created);
+CREATE INDEX IF NOT EXISTS idx_ceipal_resume_deliveries_ready
+  ON ceipal_resume_deliveries(status, created);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_nexus_one_processing_identity
   ON nexus_deliveries(identity_key) WHERE status='processing';
 CREATE UNIQUE INDEX IF NOT EXISTS idx_nexus_one_active_identity
@@ -320,7 +320,7 @@ _POSTGRES_SCHEMA = (
          last_error TEXT DEFAULT '', created DOUBLE PRECISION,
           updated DOUBLE PRECISION
         )""",
-    """CREATE TABLE IF NOT EXISTS ceipal_deliveries(
+    """CREATE TABLE IF NOT EXISTS ceipal_resume_deliveries(
          id BIGSERIAL PRIMARY KEY, candidate_id BIGINT NOT NULL,
          user_id TEXT NOT NULL, resume_id BIGINT NOT NULL,
          status TEXT NOT NULL DEFAULT 'pending', lease_until DOUBLE PRECISION DEFAULT 0,
@@ -470,8 +470,8 @@ _POSTGRES_SCHEMA = (
     "ON contact_lookup_queue(status, job_source, priority, next_attempt_at, created)",
     "CREATE INDEX IF NOT EXISTS idx_nexus_deliveries_ready "
     "ON nexus_deliveries(status, next_attempt_at, lease_until)",
-    "CREATE INDEX IF NOT EXISTS idx_ceipal_deliveries_ready "
-    "ON ceipal_deliveries(status, created)",
+    "CREATE INDEX IF NOT EXISTS idx_ceipal_resume_deliveries_ready "
+    "ON ceipal_resume_deliveries(status, created)",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_nexus_one_processing_identity "
     "ON nexus_deliveries(identity_key) WHERE status='processing'",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_nexus_one_active_identity "
@@ -510,7 +510,7 @@ _POSTGRES_REQUIRED_TABLES = (
     "campaigns", "campaign_members", "dnc", "resumes", "resume_extractions",
     "provider_lookups", "lookup_runs", "lookup_run_items", "api_request_activity",
     "contact_lookup_queue", "contact_lookup_controls",
-    "nexus_candidate_links", "nexus_candidate_checks", "resume_capture_locks", "nexus_deliveries", "ceipal_deliveries",
+    "nexus_candidate_links", "nexus_candidate_checks", "resume_capture_locks", "nexus_deliveries", "ceipal_resume_deliveries",
     "watcher_email_deliveries",
     "sms_consents", "sms_conversations", "sms_messages", "sms_webhook_events",
     "sms_outreach_claims",
@@ -551,7 +551,7 @@ _POSTGRES_REQUIRED_INDEXES = (
     "idx_contact_lookup_queue_ready", "idx_contact_lookup_processing_lease",
     "idx_contact_lookup_priority",
     "idx_nexus_deliveries_ready",
-    "idx_ceipal_deliveries_ready",
+    "idx_ceipal_resume_deliveries_ready",
     "idx_nexus_one_processing_identity", "idx_nexus_one_active_identity",
     "idx_watcher_email_delivery_status",
     "idx_sms_conversations_candidate", "idx_sms_conversations_session",
@@ -995,19 +995,19 @@ def enqueue_ceipal_delivery(candidate_id: int, resume_id: int, user_id: str) -> 
     now = time.time()
     with _conn() as connection:
         connection.execute(
-            """INSERT INTO ceipal_deliveries(
+            """INSERT INTO ceipal_resume_deliveries(
                  candidate_id,user_id,resume_id,status,created,updated
                ) VALUES(?,?,?,'pending',?,?)
                ON CONFLICT(candidate_id,user_id) DO UPDATE SET
                  resume_id=excluded.resume_id,
-                 status=CASE WHEN ceipal_deliveries.status IN
+                 status=CASE WHEN ceipal_resume_deliveries.status IN
                    ('uploaded','already_in_ceipal','writing','indeterminate')
-                   THEN ceipal_deliveries.status ELSE 'pending' END,
+                   THEN ceipal_resume_deliveries.status ELSE 'pending' END,
                  updated=excluded.updated""",
             (int(candidate_id), str(user_id or "local")[:200], int(resume_id), now, now),
         )
         row = connection.execute(
-            "SELECT * FROM ceipal_deliveries WHERE candidate_id=? AND user_id=?",
+            "SELECT * FROM ceipal_resume_deliveries WHERE candidate_id=? AND user_id=?",
             (int(candidate_id), str(user_id or "local")[:200]),
         ).fetchone()
     return dict(row)
@@ -1019,14 +1019,14 @@ def claim_ceipal_delivery(lease_seconds: float = 300) -> dict | None:
     lease_until = now + max(30.0, float(lease_seconds))
     with _conn() as connection, connection.transaction():
         connection.execute(
-            """UPDATE ceipal_deliveries
+            """UPDATE ceipal_resume_deliveries
                SET status='indeterminate',lease_until=0,
                    last_error='CEIPAL request outcome unknown after worker interruption',updated=?
                WHERE status IN ('processing','writing') AND lease_until<=?""",
             (now, now),
         )
         query = (
-            "SELECT * FROM ceipal_deliveries WHERE status='pending' "
+            "SELECT * FROM ceipal_resume_deliveries WHERE status='pending' "
             "ORDER BY created,id LIMIT 1"
         )
         if connection.postgres:
@@ -1035,7 +1035,7 @@ def claim_ceipal_delivery(lease_seconds: float = 300) -> dict | None:
         if not row:
             return None
         updated = connection.execute(
-            """UPDATE ceipal_deliveries SET status='processing',lease_until=?,updated=?
+            """UPDATE ceipal_resume_deliveries SET status='processing',lease_until=?,updated=?
                WHERE id=? AND status='pending'""",
             (lease_until, now, int(row["id"])),
         )
@@ -1047,7 +1047,7 @@ def claim_ceipal_delivery(lease_seconds: float = 300) -> dict | None:
 def mark_ceipal_delivery_writing(delivery_id: int, lease_until: float) -> bool:
     with _conn() as connection:
         updated = connection.execute(
-            """UPDATE ceipal_deliveries SET status='writing',updated=?
+            """UPDATE ceipal_resume_deliveries SET status='writing',updated=?
                WHERE id=? AND status='processing' AND lease_until=?""",
             (time.time(), int(delivery_id), float(lease_until)),
         )
@@ -1061,7 +1061,7 @@ def finish_ceipal_delivery(delivery_id: int, lease_until: float,
         raise ValueError("Unsupported CEIPAL delivery status")
     with _conn() as connection:
         updated = connection.execute(
-            """UPDATE ceipal_deliveries SET status=?,lease_until=0,last_error=?,updated=?
+            """UPDATE ceipal_resume_deliveries SET status=?,lease_until=0,last_error=?,updated=?
                WHERE id=? AND status='writing' AND lease_until=?""",
             (status, str(error or "")[:240], time.time(), int(delivery_id), float(lease_until)),
         )
@@ -1071,7 +1071,7 @@ def finish_ceipal_delivery(delivery_id: int, lease_until: float,
 def get_ceipal_delivery(candidate_id: int, user_id: str) -> dict | None:
     with _conn() as connection:
         row = connection.execute(
-            "SELECT * FROM ceipal_deliveries WHERE candidate_id=? AND user_id=?",
+            "SELECT * FROM ceipal_resume_deliveries WHERE candidate_id=? AND user_id=?",
             (int(candidate_id), str(user_id or "local")[:200]),
         ).fetchone()
     return dict(row) if row else None

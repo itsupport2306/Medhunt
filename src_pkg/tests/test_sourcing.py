@@ -181,6 +181,33 @@ def test_ceipal_unknown_outcome_is_not_retried_or_requeued(monkeypatch):
     assert store.get_ceipal_delivery(candidate_id, "recruiter-1")["status"] == "indeterminate"
 
 
+def test_ceipal_resume_queue_coexists_with_legacy_table(monkeypatch):
+    store.reset()
+    with store._conn() as connection:
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS ceipal_deliveries("
+            "candidate_id INTEGER PRIMARY KEY,status TEXT,created REAL)"
+        )
+        connection.execute(
+            "INSERT OR REPLACE INTO ceipal_deliveries(candidate_id,status,created) "
+            "VALUES(999,'failed',0)"
+        )
+    candidate_id = store.add_candidate("Jane Smith", "Boston, MA", source="indeed")
+    store.set_candidate_ats_route(candidate_id, "recruiter-1", "ceipal")
+    resume = store.attach_resume(candidate_id, "jane.pdf", b"%PDF-test")
+    monkeypatch.setattr(contact_access, "project_candidate", lambda _candidate: {
+        "contacts_trusted": True, "emails": ["jane@example.test"],
+        "phones": [], "phone_contacts": [],
+    })
+    assert ceipal_delivery.queue_resume(candidate_id, resume["id"], "recruiter-1") == "queued"
+    assert store.get_ceipal_delivery(candidate_id, "recruiter-1")["status"] == "pending"
+    with store._conn() as connection:
+        legacy = connection.execute(
+            "SELECT status FROM ceipal_deliveries WHERE candidate_id=999"
+        ).fetchone()
+    assert legacy["status"] == "failed"
+
+
 def test_public_api_requires_healthboard_session_without_origin_header(monkeypatch):
     """Hosted clients cannot bypass sign-in by simply omitting Origin."""
     monkeypatch.setattr(config, "HEALTHBOARD_BASE_URL", "https://board.example.test")
