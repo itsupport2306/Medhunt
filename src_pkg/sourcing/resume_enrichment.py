@@ -38,6 +38,66 @@ def enriched_filename(filename: str) -> str:
     return f"{stem} - enriched.pdf"
 
 
+def remove_contact_sheet(data: bytes) -> tuple[bytes, bool]:
+    """Return original resume pages, stripping a generated Medhunt cover."""
+    marked = (
+        b"/RadixsolCandidateId" in data
+        or b"Medhunt Sourcing Assistant" in data
+    )
+    try:
+        from pypdf import PdfReader, PdfWriter
+
+        reader = PdfReader(BytesIO(data), strict=False)
+        metadata = reader.metadata or {}
+        marked = marked or bool(
+            metadata.get("/RadixsolCandidateId") is not None
+            or str(metadata.get("/Author") or "").strip()
+            == "Medhunt Sourcing Assistant"
+        )
+        if not marked:
+            return data, False
+        if len(reader.pages) <= 1:
+            raise ContactSheetRefreshError(
+                "The marked PDF does not contain an original resume page."
+            )
+        writer = PdfWriter()
+        for source_page in reader.pages[1:]:
+            writer.add_page(source_page)
+        output = BytesIO()
+        writer.write(output)
+        return output.getvalue(), True
+    except ContactSheetRefreshError:
+        raise
+    except Exception as exc:
+        if marked:
+            raise ContactSheetRefreshError(
+                "The existing Medhunt contact page could not be removed safely."
+            ) from exc
+        return data, False
+
+
+def prepare_candidate_resume(data: bytes, candidate: dict, extraction=None):
+    """Remove a Medhunt cover and parse the original resume with current rules."""
+    from . import resume_extraction
+
+    original, _ = remove_contact_sheet(data)
+    parsed = extraction or {}
+    fields = parsed.get("fields") or {}
+    confidence = parsed.get("confidence") or {}
+    try:
+        parsed_name_confidence = float(confidence.get("full_name") or 0)
+    except (TypeError, ValueError):
+        parsed_name_confidence = 0.0
+    if (
+        int(parsed.get("schema_version") or 0) != resume_extraction.SCHEMA_VERSION
+        or not fields.get("full_name")
+        or parsed_name_confidence < resume_extraction.config.RESUME_OCR_ACCEPT_CONFIDENCE
+    ):
+        parsed = resume_extraction.extract(original, candidate)
+    name = str((parsed.get("fields") or {}).get("full_name") or "").strip()
+    return original, parsed, name
+
+
 def add_contact_sheet(data: bytes, candidate: dict) -> tuple[bytes, bool]:
     """Return ``(pdf_bytes, embedded)`` for a captured PDF.
 

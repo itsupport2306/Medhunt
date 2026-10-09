@@ -114,6 +114,33 @@ def test_no_duplicate_creates_candidate_with_whitelisted_trusted_fields():
     }
 
 
+@pytest.mark.parametrize(
+    ("email", "phone", "present", "absent"),
+    [
+        ("jane@example.com", "", {"email", "primaryEmail"}, {"phone", "cellPhone"}),
+        ("", "+16145550123", {"phone", "cellPhone"}, {"email", "primaryEmail"}),
+    ],
+)
+def test_profile_omits_missing_contact_channel(email, phone, present, absent):
+    profile = nexus_sync._build_profile(
+        object(),
+        {
+            "firstName": "Jane", "middleName": "", "lastName": "Example",
+            "email": email, "phone": phone, "city": "Columbus", "state": "OH",
+            "country": "United States", "role": "Registered Nurse",
+            "source_specialties": [], "resume_specialties": [], "specialties": [],
+        },
+        {
+            "professionId": 10, "specialtyId": 20, "stateIds": {"OH": 30},
+            "countryId": 40, "statusId": 50, "referralSourceId": 60,
+            "jobTypeIds": ["PERM"],
+        },
+    )
+
+    assert present <= profile.keys()
+    assert absent.isdisjoint(profile.keys())
+
+
 def test_nursing_role_resolves_exact_rn_and_unknown_specialty_defaults():
     master_calls = []
 

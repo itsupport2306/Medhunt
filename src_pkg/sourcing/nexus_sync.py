@@ -1208,22 +1208,25 @@ def _build_profile(
     referral_name = str(profile.pop("referralSourceName", "") or "").strip()
     status_name = str(profile.pop("statusName", "") or "").strip()
     country_name = str(profile.pop("countryName", "") or "").strip()
+    for contact_key in ("email", "primaryEmail", "phone", "cellPhone"):
+        profile.pop(contact_key, None)
 
     profile.update(
         {
             "firstName": identity["firstName"],
             "lastName": identity["lastName"],
-            "email": identity["email"],
-            "primaryEmail": identity["email"],
-            "phone": identity["phone"],
-            # Nexus webhook validation expects the canonical mobile field in
-            # addition to the parser-compatible phone field. Medhunt's phone
-            # policy has already selected the latest trusted number here.
-            "cellPhone": identity["phone"],
             "sendMassEmails": False,
             "sendMassSms": False,
         }
     )
+    # Nexus rejects an empty companion contact field. Send only the verified
+    # channels that exist; either email or phone is sufficient.
+    if identity.get("email"):
+        profile["email"] = identity["email"]
+        profile["primaryEmail"] = identity["email"]
+    if identity.get("phone"):
+        profile["phone"] = identity["phone"]
+        profile["cellPhone"] = identity["phone"]
     if identity.get("middleName"):
         profile["middleName"] = identity["middleName"]
     city_text = str(identity.get("city") or "").strip()
@@ -1239,7 +1242,7 @@ def _build_profile(
             "Candidate first and last name are required for Nexus creation.",
             operation="payload_validation",
         )
-    if not profile["email"] and not profile["phone"]:
+    if not identity.get("email") and not identity.get("phone"):
         raise NexusPermanentError(
             "Nexus creation requires at least one trusted email or phone.",
             operation="payload_validation",

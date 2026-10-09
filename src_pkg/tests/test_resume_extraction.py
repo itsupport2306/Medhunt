@@ -10,7 +10,7 @@ from reportlab.pdfgen import canvas
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from sourcing import resume_extraction
+from sourcing import resume_extraction, resume_enrichment
 from sourcing import nexus_sync
 from sourcing import store
 
@@ -84,6 +84,28 @@ def test_short_nursing_unit_acronyms_require_uppercase():
     ]), {})
     assert "OR" in clinical["fields"]["specialties"]
     assert "ER" in clinical["fields"]["specialties"]
+
+
+def test_resume_upload_preparation_parses_specialty_and_reparses_old_schema():
+    pdf = _pdf([
+        "Jane Example",
+        "Operating Room Registered Nurse",
+        "OR and ICU experience",
+    ])
+    original, parsed, name = resume_enrichment.prepare_candidate_resume(
+        pdf,
+        {"name": "Jane Example"},
+        {
+            "schema_version": 1,
+            "fields": {"full_name": "Jane Example"},
+            "confidence": {"full_name": 0.95},
+        },
+    )
+
+    assert original == pdf
+    assert name == "Jane Example"
+    assert parsed["schema_version"] == resume_extraction.SCHEMA_VERSION
+    assert parsed["fields"]["specialties"][:3] == ["Operating Room", "OR", "ICU"]
 
 
 def test_real_pdf_nursing_specialties_reach_nexus_profile():
