@@ -244,3 +244,98 @@ def test_resume_extraction_is_persisted_with_the_resume_atomically():
     saved = store.get_resume_extraction(resume["id"], candidate_id)
     assert saved is not None
     assert saved["extraction"] == extraction
+
+
+def test_location_header_is_not_taken_as_the_person_name():
+    """A bare "City ST" header line must not become the candidate's name.
+
+    Returning a place as the person's name conflicts with the captured
+    platform identity, and that conflict discards every resume specialty
+    before Nexus sees it, so the candidate is filed as Unknown.
+    """
+    pdf = _pdf([
+        "Dedicated and compassionate Registered Nurse with progressive",
+        "career history in direct patient care and care coordination.",
+        "Manchester KY",
+        "Experience",
+        "Med Surg Unit, 2024-present",
+        "ICU Unit, 2020-2023",
+    ])
+    candidate = {
+        "contacts_trusted": True, "name": "Ginny Minton",
+        "location": "Manchester, KY", "job_title": "Registered Nurse",
+        "emails": ["ginny@example.com"], "phones": [],
+    }
+    result = resume_extraction.extract(pdf, candidate)
+
+    assert not result["fields"].get("full_name")
+    assert "name" not in result["conflicts"]
+
+    identity = nexus_sync._trusted_identity({
+        "candidate": candidate, "resume_extraction": result,
+    })
+    assert identity["firstName"] == "Ginny"
+    assert identity["lastName"] == "Minton"
+    assert identity["specialties"], "resume specialties must reach Nexus"
+
+
+def test_middle_dot_header_extracts_the_person_name():
+    """Headers use U+00B7; splitting only on U+2022 loses the whole line."""
+    result = resume_extraction.extract(_pdf([
+        "Kimberly Gaiser, BSN, RN  \u00b7 Florence, KY 41042",
+        "Professional Summary",
+        "Emergency registered nurse",
+        "ER Unit, 2022-present",
+    ]), {})
+    assert result["fields"]["full_name"] == "Kimberly Gaiser"
+
+
+def test_name_printed_one_word_per_line_is_joined():
+    """Header layouts that stack one word per line never meet the 2-word
+    minimum on a single line, so the name used to be lost entirely."""
+    result = resume_extraction.extract(_pdf([
+        "AMANDA",
+        "WILBUR",
+        "REGISTERED",
+        "NURSE",
+        "BSN",
+        "Experience",
+        "ICU Unit, 2024-present",
+    ]), {})
+    assert result["fields"]["full_name"] == "AMANDA WILBUR"
+
+
+def test_wrapped_summary_prose_is_never_returned_as_a_person_name():
+    """Rejecting the location header lets the scan continue into the summary
+    paragraph; a clause such as "and monitored responses." must not win."""
+    result = resume_extraction.extract(_pdf([
+        "Dedicated and compassionate Registered Nurse",
+        "and monitored responses.",
+        "optimal healing and comfort.",
+        "Experience",
+    ]), {})
+    assert not result["fields"].get("full_name")
+    assert result["conflicts"] == []
+
+
+def test_contact_only_candidate_still_gets_a_nexus_name_from_the_resume():
+    """Nexus requires a first and last name, so a candidate captured with
+    nothing but an email or a phone depends entirely on the resume header."""
+    pdf = _pdf([
+        "AMANDA",
+        "WILBUR",
+        "REGISTERED",
+        "NURSE",
+        "Experience",
+        "ICU Unit, 2024-present",
+    ])
+    identity = nexus_sync._trusted_identity({
+        "candidate": {
+            "contacts_trusted": True, "name": "",
+            "emails": ["amanda@example.com"], "phones": [],
+        },
+        "resume_extraction": resume_extraction.extract(pdf, {}),
+    })
+    assert identity["firstName"] == "AMANDA"
+    assert identity["lastName"] == "WILBUR"
+    assert identity["email"] == "amanda@example.com"

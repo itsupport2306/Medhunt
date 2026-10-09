@@ -46,6 +46,12 @@ _EMAIL_RE = re.compile(r"(?<![\w.+-])([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})(?![
 _PHONE_RE = re.compile(
     r"(?<!\d)(?:\+?1[\s.()-]*)?(?:\(\s*)?\d{3}(?:\s*\))?[\s.-]*\d{3}[\s.-]*\d{4}(?!\d)"
 )
+# Header separators actually used by resume PDFs: pipe, bullet, middle dot,
+# triangular/hyphen bullets and tab.  A header such as
+# ``Kimberly Gaiser, BSN, RN  · Florence, KY 41042`` only splits on the
+# middle dot; without it the whole line arrives as one 40-word segment,
+# fails the length test, and no name is recovered at all.
+_NAME_SEGMENT_SPLIT = re.compile(r"[|\u2022\u00b7\u2023\u2043\u2027\u25aa\t]")
 _LOCATION_LABEL_RE = re.compile(
     r"^(?:address|based\s+in|city|current\s+location|location|lives\s+in|resides\s+in)\s*[:\-]\s*(.+)$",
     re.I,
@@ -256,6 +262,23 @@ def _split_name(value: str) -> dict[str, str]:
     }
 
 
+# Function words that never occur inside a personal name.  Resumes are prose,
+# so a wrapped summary line such as "and monitored responses." otherwise
+# reaches the two-word/character-only tests and is returned as the person's
+# name.  Particles that do appear in real names ("de", "van", "von", "di",
+# "la") are deliberately absent from this set.
+_NAME_CONNECTORS = {
+    "a", "an", "and", "about", "after", "also", "are", "as", "at", "be",
+    "been", "before", "between", "both", "but", "by", "can", "did", "do",
+    "does", "each", "every", "for", "from", "had", "has", "have", "if", "in",
+    "into", "is", "it", "its", "many", "more", "most", "much", "my", "no",
+    "not", "of", "on", "or", "our", "over", "some", "such", "than", "that",
+    "the", "their", "them", "then", "there", "these", "they", "those", "through",
+    "to", "under", "was", "we", "were", "which", "while", "who", "will", "with",
+    "would", "your",
+}
+
+
 def _looks_like_name(value: str) -> bool:
     cleaned = normalize_person_name(value)
     words = cleaned.split()
@@ -263,18 +286,82 @@ def _looks_like_name(value: str) -> bool:
         return False
     if any(char.isdigit() for char in cleaned) or "@" in cleaned:
         return False
+    # A trailing uppercase postal abbreviation is a place, not a surname.
+    # Resumes routinely print the location on its own header line, and a
+    # header with no person name would otherwise resolve to e.g.
+    # ``Manchester KY``.  That wrong name then conflicts with the captured
+    # platform identity, and the conflict discards every resume specialty
+    # before Nexus sees it, so the candidate is filed as Unknown.
+    if words[-1].isupper() and words[-1] in _US_CODES:
+        return False
+    # A multi-letter word closed by a full stop is a sentence terminator, not
+    # an initial: "and monitored responses." is a clause, "JOHN A." is not.
+    tail = words[-1].rstrip(".")
+    if tail != words[-1] and len(tail) > 1:
+        return False
+    # Names in a resume header are written in capitals or title case.  Wrapped
+    # body prose is lower case, which is the clearest available separator
+    # between "Ginny Minton" and a fragment of the summary paragraph.
+    if not words[0][:1].isupper():
+        return False
     tokens = {_key(word) for word in words}
-    if tokens & _NAME_STOP:
+    if tokens & _NAME_STOP or tokens & _NAME_CONNECTORS:
         return False
     return all(re.fullmatch(r"[^\W\d_]+(?:['\u2019-][^\W\d_]+)*\.?", word, re.UNICODE) for word in words)
 
 
+def _joinable_header_line(value: str) -> bool:
+    """Return whether a short title-case line may hold part of a split name.
+
+    Header layouts that print the name one word per line, or split it across
+    two or three short lines, can never satisfy the per-line two-word minimum.
+    Only short lines whose words are all capitalised qualify, so lowercase body
+    prose (``allows`` / ``growth`` / ``for``) can never be joined into a person.
+    """
+    cleaned = _clean(value)
+    words = cleaned.split()
+    if not 1 <= len(words) <= 3 or len(cleaned) > 40:
+        return False
+    return all(word[:1].isupper() for word in words)
+
+
+def _header_name(value: str) -> bool:
+    """Accept a joined header name while excluding titles and employers.
+
+    Joined lines are looser than a single-line match, so a role or an employer
+    printed across two short lines must not become the person's name: a wrong
+    resume name creates the identity conflict that drops the specialties.
+    """
+    if not _looks_like_name(value):
+        return False
+    return not (
+        _HEALTHCARE_ROLE_RE.search(value)
+        or _LOCATION_ORGANIZATION_RE.search(value)
+        or _CREDENTIAL_RE.search(value)
+    )
+
+
 def _name(lines: list[str]) -> tuple[dict[str, str], float]:
     for position, line in enumerate(lines[:20]):
-        for segment in re.split(r"[|\u2022\t]", line):
+        for segment in _NAME_SEGMENT_SPLIT.split(line):
             segment = re.sub(r"^(?:candidate\s+name|name)\s*[:\-]\s*", "", segment, flags=re.I)
             candidate = normalize_person_name(segment)
             if _looks_like_name(candidate):
+                return _split_name(candidate), 0.91 if position < 5 else 0.84
+    # A name spread across short header lines never reaches the two-word
+    # minimum on its own. Join up to three adjacent qualified lines before
+    # giving up so a candidate is not left without a name.
+    for position in range(min(15, len(lines) - 1)):
+        if not _joinable_header_line(lines[position]):
+            continue
+        for span in (2, 3):
+            chunk = lines[position:position + span]
+            if len(chunk) < span or not all(
+                _joinable_header_line(part) for part in chunk
+            ):
+                continue
+            candidate = normalize_person_name(" ".join(chunk))
+            if _header_name(candidate):
                 return _split_name(candidate), 0.91 if position < 5 else 0.84
     return {}, 0.0
 
