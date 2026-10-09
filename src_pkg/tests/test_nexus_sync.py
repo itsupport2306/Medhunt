@@ -228,6 +228,7 @@ def test_source_specialty_precedes_role_in_nexus_classification():
         if request.url.path.endswith("/candidate/webhook/create"):
             content = request.content.decode("latin-1")
             assert '"specialtyId":321' in content
+            assert '"specialtyIds":[321,322]' in content
             return httpx.Response(201, json={"id": 721})
         raise AssertionError(request.url)
 
@@ -252,6 +253,153 @@ def test_stored_resume_specialty_is_read_only_during_nexus_delivery():
     assert identity["resume_specialties"] == ["ICU"]
     payload["resume_extraction"]["conflicts"] = ["name"]
     assert nexus_sync._trusted_identity(payload)["resume_specialties"] == []
+
+
+def test_resume_headline_disambiguates_multiple_nursing_units():
+    payload = _payload(job_title="Registered Nurse")
+    payload["resume_extraction"] = {
+        "fields": {"job_title": "ICU Registered Nurse", "specialties": ["ICU", "Med Surg"]},
+        "confidence": {"job_title": 0.82, "specialties": 0.76},
+        "accepted": {}, "conflicts": [],
+    }
+    assert nexus_sync._trusted_identity(payload)["resume_specialties"] == ["ICU", "Med Surg"]
+
+
+def test_new_candidate_creation_sends_nursing_resume_specialty_to_nexus():
+    payload = _payload(job_title="Registered Nurse")
+    payload["resume_extraction"] = {
+        "fields": {"job_title": "ICU Registered Nurse", "specialties": ["ICU", "Med Surg"]},
+        "confidence": {"job_title": 0.82, "specialties": 0.76},
+        "accepted": {}, "conflicts": [],
+    }
+
+    def handler(request):
+        if request.url.path.endswith("/master/specialties"):
+            return httpx.Response(200, json=[
+                {"specialtyId": 321, "professionId": 10, "name": "ICU", "active": True},
+                {"specialtyId": 322, "professionId": 10, "name": "Med Surg", "active": True},
+                {"specialtyId": 20, "professionId": 10, "name": "Unknown", "active": True},
+            ])
+        if request.url.path.endswith("/candidate/webhook/create"):
+            content = request.content.decode("latin-1")
+            assert '"professionIds":[10]' in content
+            assert '"specialtyIds":[321,322]' in content
+            assert '"primarySpecialtyId":321' in content
+            return httpx.Response(201, json={"id": 722})
+        raise AssertionError(request.url)
+
+    settings = _settings()
+    result = nexus_sync.process_delivery(
+        payload, PDF, settings=settings, client=_client(settings, handler),
+    )
+    assert result["nexus_candidate_id"] == 722
+
+
+def test_linked_candidate_unknown_specialty_is_updated_before_resume_upload():
+    payload = _payload(job_title="Registered Nurse")
+    payload["nexus_candidate_id"] = "88"
+    payload["resume_extraction"] = {
+        "fields": {"job_title": "ICU Registered Nurse", "specialties": ["ICU", "Med Surg"]},
+        "confidence": {"job_title": 0.82, "specialties": 0.76},
+        "accepted": {}, "conflicts": [],
+    }
+    patched = False
+
+    def handler(request):
+        nonlocal patched
+        if request.url.path.endswith("/master/specialties"):
+            return httpx.Response(200, json=[
+                {"specialtyId": 321, "professionId": 10, "name": "ICU", "active": True},
+                {"specialtyId": 322, "professionId": 10, "name": "Med Surg", "active": True},
+                {"specialtyId": 20, "professionId": 10, "name": "Unknown", "active": True},
+            ])
+        if request.url.path.endswith("/master/professions"):
+            return httpx.Response(200, json=[
+                {"professionId": 10, "name": "RN", "active": True},
+                {"professionId": 99, "name": "Unknown", "active": True},
+            ])
+        if request.url.path.endswith("/candidates/88") and request.method == "GET":
+            return httpx.Response(200, json={
+                "professionIds": [10],
+                "specialtyIds": [321, 322] if patched else [20],
+                "primarySpecialtyId": 321 if patched else 20,
+            })
+        if request.url.path.endswith("/candidates/88") and request.method == "PATCH":
+            assert json.loads(request.content) == {
+                "professionIds": [10], "specialtyIds": [321, 322], "primarySpecialtyId": 321,
+            }
+            patched = True
+            return httpx.Response(200, json={"id": 88})
+        if request.url.path.endswith("/candidates/88/upload/documents"):
+            assert patched
+            return httpx.Response(204)
+        raise AssertionError(request.url)
+
+    settings = _settings()
+    writes = []
+    result = nexus_sync.process_delivery(
+        payload, PDF, settings=settings, client=_client(settings, handler),
+        before_write=writes.append,
+    )
+    assert result["classification_updated"] is True
+    assert result["action"] == "resume_uploaded"
+    assert writes == ["candidate_classification_update"]
+
+
+def test_linked_candidate_specific_specialty_is_preserved():
+    payload = _payload(job_title="RN ICU")
+    payload["nexus_candidate_id"] = "88"
+
+    def handler(request):
+        if request.url.path.endswith("/master/specialties"):
+            return httpx.Response(200, json=[
+                {"specialtyId": 321, "professionId": 10, "name": "ICU", "active": True},
+                {"specialtyId": 322, "professionId": 10, "name": "Telemetry", "active": True},
+                {"specialtyId": 20, "professionId": 10, "name": "Unknown", "active": True},
+            ])
+        if request.url.path.endswith("/master/professions"):
+            return httpx.Response(200, json=[
+                {"professionId": 10, "name": "RN", "active": True},
+            ])
+        if request.url.path.endswith("/candidates/88") and request.method == "GET":
+            return httpx.Response(200, json={
+                "professionIds": [10], "specialtyIds": [322],
+                "primarySpecialtyId": 322,
+            })
+        if request.url.path.endswith("/candidates/88/upload/documents"):
+            return httpx.Response(204)
+        raise AssertionError(request.url)
+
+    settings = _settings()
+    result = nexus_sync.process_delivery(
+        payload, PDF, settings=settings, client=_client(settings, handler),
+    )
+    assert result["classification_updated"] is False
+
+
+def test_unmatched_specialty_preserves_known_nursing_profession():
+    def handler(request):
+        if request.url.path.endswith("/master/professions"):
+            return httpx.Response(200, json=[
+                {"professionId": 10, "name": "RN", "active": True},
+                {"professionId": 99, "name": "Unknown", "active": True},
+            ])
+        if request.url.path.endswith("/master/specialties"):
+            return httpx.Response(200, json=[
+                {"specialtyId": 20, "professionId": 10, "name": "Unknown", "active": True},
+                {"specialtyId": 199, "professionId": 99, "name": "Unknown", "active": True},
+            ])
+        raise AssertionError(request.url)
+
+    settings = _settings(default_profile={
+        "stateIds": {"OH": 30}, "countryId": 40, "statusId": 50,
+        "referralSourceId": 60, "jobTypeIds": ["PERM"],
+    })
+    client = _client(settings, handler)
+    identity = nexus_sync._trusted_identity(_payload(job_title="RN", specialty="Unlisted Unit"))
+    profile = nexus_sync._build_profile(client, identity, settings.default_profile)
+    assert profile["professionId"] == 10
+    assert profile["specialtyId"] == 20
 
 
 def test_unmatched_candidate_specialty_uses_unknown_classification():

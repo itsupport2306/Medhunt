@@ -61,6 +61,68 @@ def test_text_resume_extracts_structured_fields_without_ocr(monkeypatch):
     assert result["accepted"]["location"] == "Columbus, OH, United States"
 
 
+def test_resume_specialties_keep_document_order_for_primary_choice():
+    result = resume_extraction.extract(_pdf([
+        "Med Surg Registered Nurse",
+        "Experience",
+        "Med Surg Unit, 2024-present",
+        "ICU Unit, 2020-2023",
+    ]), {})
+    assert result["fields"]["specialties"][:2] == ["Med Surg", "ICU"]
+
+
+def test_short_nursing_unit_acronyms_require_uppercase():
+    ordinary = resume_extraction.extract(_pdf([
+        "Registered Nurse",
+        "ICU or telemetry experience for emergency patients",
+    ]), {})
+    assert "OR" not in ordinary["fields"]["specialties"]
+    assert "ER" not in ordinary["fields"]["specialties"]
+    clinical = resume_extraction.extract(_pdf([
+        "OR Registered Nurse",
+        "ER experience",
+    ]), {})
+    assert "OR" in clinical["fields"]["specialties"]
+    assert "ER" in clinical["fields"]["specialties"]
+
+
+def test_real_pdf_nursing_specialties_reach_nexus_profile():
+    pdf = _pdf([
+        "Jane Example",
+        "Location: Columbus, OH",
+        "ICU Registered Nurse",
+        "Experience",
+        "ICU Unit, 2024-present",
+        "Med Surg Unit, 2020-2023",
+    ])
+    candidate = {
+        "contacts_trusted": True, "name": "Jane Example",
+        "location": "Columbus, OH", "job_title": "Registered Nurse",
+        "emails": ["jane@example.com"], "phones": [],
+    }
+    identity = nexus_sync._trusted_identity({
+        "candidate": candidate,
+        "resume_extraction": resume_extraction.extract(pdf, candidate),
+    })
+
+    class MasterClient:
+        def get_master(self, name):
+            if name == "specialties":
+                return [
+                    {"specialtyId": 21, "professionId": 10, "name": "ICU", "active": True},
+                    {"specialtyId": 22, "professionId": 10, "name": "MedSurg", "active": True},
+                ]
+            raise AssertionError(name)
+
+    profile = nexus_sync._build_profile(MasterClient(), identity, {
+        "professionId": 10, "specialtyId": 20, "stateIds": {"OH": 30},
+        "countryId": 40, "statusId": 50, "referralSourceId": 60,
+        "jobTypeIds": ["PERM"],
+    })
+    assert profile["specialtyIds"] == [21, 22]
+    assert profile["primarySpecialtyId"] == 21
+
+
 def test_image_only_resume_uses_local_ocr_for_sparse_pages(monkeypatch):
     scanned = _pdf([])
     calls = []

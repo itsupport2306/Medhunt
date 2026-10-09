@@ -26,7 +26,7 @@ from . import config
 from .person_name import identity_signature, normalize_person_name
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 _MAX_FIELD_ITEMS = 20
 _NAME_STOP = {
     "address", "availability", "certifications", "contact", "curriculum",
@@ -435,9 +435,19 @@ def _fields(text: str) -> tuple[dict[str, Any], dict[str, float]]:
             values[key] = items
             confidence[key] = 0.72
 
+    # Preserve document order. When a résumé has no explicit specialty in its
+    # headline, the first mentioned clinical unit is the deterministic primary
+    # choice and later units can still be sent as additional specialties.
+    specialty_matches = []
+    for specialty in _SPECIALTIES:
+        # OR/ER are common English words when case is ignored. Only the
+        # uppercase clinical acronyms count as specialty evidence.
+        flags = 0 if specialty in {"OR", "ER"} else re.I
+        match = re.search(rf"\b{re.escape(specialty)}\b", text, flags)
+        if match:
+            specialty_matches.append((match.start(), -len(specialty), specialty))
     specialties = _bounded_unique(
-        specialty for specialty in _SPECIALTIES
-        if re.search(rf"\b{re.escape(specialty)}\b", text, re.I)
+        specialty for _, _, specialty in sorted(specialty_matches)
     )
     if specialties:
         values["specialties"] = specialties
