@@ -89,7 +89,8 @@ def prepare_candidate_resume(data: bytes, candidate: dict, extraction=None):
     except (TypeError, ValueError):
         parsed_name_confidence = 0.0
     if (
-        not fields.get("full_name")
+        int(parsed.get("schema_version") or 0) != resume_extraction.SCHEMA_VERSION
+        or not fields.get("full_name")
         or parsed_name_confidence < resume_extraction.config.RESUME_OCR_ACCEPT_CONFIDENCE
     ):
         parsed = resume_extraction.extract(original, candidate)

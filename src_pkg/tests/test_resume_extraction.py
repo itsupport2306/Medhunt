@@ -11,6 +11,7 @@ from reportlab.pdfgen import canvas
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from sourcing import resume_extraction
+from sourcing import resume_enrichment
 from sourcing import nexus_sync
 from sourcing import store
 
@@ -71,6 +72,20 @@ def test_specialties_follow_resume_order_and_ignore_lowercase_or_er():
     ]), {})
     assert result["schema_version"] == 2
     assert result["fields"]["specialties"] == ["Med Surg", "ICU", "Operating Room", "OR"]
+
+
+def test_stored_old_schema_resume_is_reparsed_with_current_specialty_rules():
+    parsed = resume_enrichment.prepare_candidate_resume(
+        _pdf(["Jane Example", "Registered Nurse", "Operating Room (OR)"]),
+        {"name": "Jane Example"},
+        {
+            "schema_version": 1,
+            "fields": {"full_name": "Jane Example"},
+            "confidence": {"full_name": 0.91},
+        },
+    )[1]
+    assert parsed["schema_version"] == 2
+    assert parsed["fields"]["specialties"] == ["Operating Room", "OR"]
 
 
 def test_sparse_text_layer_is_preferred_to_noisy_ocr(monkeypatch):
