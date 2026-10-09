@@ -135,10 +135,14 @@ def test_candidate_creation_accepts_either_trusted_contact(
             assert f'"{expected_search_key}"' in content or expected_search_key == "phone"
             if expected_search_key == "email":
                 assert '"email":"email-only@example.test"' in content
-                assert '"phone":""' in content
+                assert '"primaryEmail":"email-only@example.test"' in content
+                assert '"phone":' not in content
+                assert '"cellPhone":' not in content
             else:
-                assert '"email":""' in content
                 assert '"phone":"(614) 555-0142"' in content
+                assert '"cellPhone":"(614) 555-0142"' in content
+                assert '"email":' not in content
+                assert '"primaryEmail":' not in content
             return httpx.Response(201, json={"id": 703})
         raise AssertionError(request.url)
 
@@ -190,6 +194,128 @@ def test_nursing_role_resolves_exact_rn_and_unknown_specialty_defaults():
     )
     assert master_calls == ["professions", "specialties"]
     assert result["nexus_candidate_id"] == 702
+
+
+def test_resume_extraction_specialties_reach_nexus_identity_in_document_order():
+    identity = nexus_sync._trusted_identity({
+        "candidate": {
+            "contacts_trusted": True,
+            "name": "Jane Example",
+            "emails": ["jane@example.test"],
+            "phones": [],
+            "job_title": "Registered Nurse",
+        },
+        "resume_extraction": {
+            "schema_version": 2,
+            "status": "extracted",
+            "fields": {"specialties": ["Med Surg", "ICU"]},
+            "confidence": {"specialties": 0.76},
+            "conflicts": [],
+        },
+    })
+    assert identity["source_specialties"] == []
+    assert identity["resume_specialties"] == ["Med Surg", "ICU"]
+    assert identity["specialties"] == ["Med Surg", "ICU"]
+
+
+def test_resume_specialty_extraction_keeps_source_specialty_primary():
+    identity = nexus_sync._trusted_identity({
+        "candidate": {
+            "contacts_trusted": True,
+            "name": "Jane Example",
+            "emails": ["jane@example.test"],
+            "phones": [],
+            "specialty": "Emergency",
+        },
+        "resume_extraction": {
+            "schema_version": 2,
+            "status": "extracted",
+            "fields": {"specialties": ["ICU"]},
+            "confidence": {"specialties": 0.76},
+            "conflicts": [],
+        },
+    })
+    assert identity["specialties"] == ["Emergency", "ICU"]
+
+
+def test_multiple_resume_specialties_map_primary_and_additional_ids():
+    def handler(request):
+        if request.url.path.endswith("/master/specialties"):
+            return httpx.Response(200, json=[
+                {"specialtyId": 20, "professionId": 10, "name": "Unknown", "active": True},
+                {"specialtyId": 21, "professionId": 10, "name": "ICU", "active": True},
+                {"specialtyId": 22, "professionId": 10, "name": "Med Surg", "active": True},
+            ])
+        raise AssertionError(request.url)
+
+    settings = _settings()
+    profile = nexus_sync._build_profile(
+        _client(settings, handler),
+        {
+            "firstName": "Jane", "lastName": "Example", "email": "jane@example.test",
+            "phone": "", "state": "OH", "country": "United States",
+            "role": "Registered Nurse", "source_specialties": [],
+            "resume_specialties": ["Med Surg", "ICU"],
+        },
+        settings.default_profile,
+    )
+    assert profile["professionId"] == 10
+    assert profile["specialtyIds"] == [22, 21]
+    assert profile["primarySpecialtyId"] == 22
+
+
+def test_linked_unknown_classification_is_repaired_before_resume_upload():
+    requests = []
+    candidate_reads = 0
+
+    def handler(request):
+        requests.append(request)
+        if request.url.path.endswith("/master/specialties"):
+            return httpx.Response(200, json=[
+                {"specialtyId": 20, "professionId": 10, "name": "Unknown", "active": True},
+                {"specialtyId": 21, "professionId": 10, "name": "ICU", "active": True},
+            ])
+        if request.url.path.endswith("/master/professions"):
+            return httpx.Response(200, json=[
+                {"professionId": 10, "name": "RN", "active": True},
+                {"professionId": 99, "name": "Unknown", "active": True},
+            ])
+        if request.method == "GET" and request.url.path.endswith("/candidates/701"):
+            nonlocal candidate_reads
+            candidate_reads += 1
+            if candidate_reads == 1:
+                return httpx.Response(200, json={
+                    "professionIds": [99], "specialtyIds": [20], "primarySpecialtyId": 20,
+                })
+            return httpx.Response(200, json={
+                "professionIds": [10], "specialtyIds": [21], "primarySpecialtyId": 21,
+            })
+        if request.method == "PATCH" and request.url.path.endswith("/candidates/701"):
+            patch = json.loads(request.content)
+            assert patch == {
+                "professionIds": [10], "specialtyIds": [21], "primarySpecialtyId": 21,
+            }
+            return httpx.Response(200, json={})
+        if request.method == "POST" and request.url.path.endswith("/upload/documents"):
+            return httpx.Response(200, json={"id": 1})
+        raise AssertionError((request.method, request.url))
+
+    settings = _settings()
+    result = nexus_sync.process_delivery(
+        {
+            **_payload(emails=["jane@example.test"], phones=[]),
+            "nexus_candidate_id": "701",
+            "resume_extraction": {
+                "schema_version": 2, "status": "extracted",
+                "fields": {"specialties": ["ICU"]},
+                "confidence": {"specialties": 0.76}, "conflicts": [],
+            },
+        },
+        PDF, settings=settings, client=_client(settings, handler),
+    )
+    assert result["classification_updated"] is True
+    assert result["nexus_candidate_id"] == "701"
+    assert any(request.method == "PATCH" for request in requests)
 
 
 def test_actual_candidate_specialty_overrides_generic_default_and_aligns_profession():

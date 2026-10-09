@@ -23,6 +23,12 @@ def _resume_pdf(name="Jane Doe"):
     return output.getvalue()
 
 
+def _enable_nexus_delivery(candidate_id):
+    return store.set_candidate_delivery_route(
+        candidate_id, "test-user", nexus=True,
+    )
+
+
 def test_role_prefers_clinical_resume_role_over_mislabeled_employer():
     candidate = {
         "name": "Candace Robertson",
@@ -231,6 +237,7 @@ def test_oversized_nexus_resume_is_saved_but_not_queued(monkeypatch):
     monkeypatch.setattr(config, "NEXUS_SYNC_ENABLED", True)
     monkeypatch.setattr(config, "NEXUS_MAX_RESUME_BYTES", 10)
     candidate_id = store.add_candidate("Jane Doe", "Atlanta, GA", source="indeed")
+    _enable_nexus_delivery(candidate_id)
     candidate = store.get_candidate(candidate_id)
     monkeypatch.setattr(
         api_module.contact_access,
@@ -265,6 +272,7 @@ def test_existing_latest_resume_is_queued_when_trusted_contacts_arrive(monkeypat
     store.reset()
     monkeypatch.setattr(config, "NEXUS_SYNC_ENABLED", True)
     candidate_id = store.add_candidate("Jane Doe", "Atlanta, GA", source="indeed")
+    _enable_nexus_delivery(candidate_id)
     older = store.attach_resume(
         candidate_id, "older.pdf", b"%PDF-older", checksum_sha256="a" * 64,
     )
@@ -297,6 +305,7 @@ def test_approved_quick_sourcer_record_queues_existing_resume(monkeypatch):
     candidate_id = store.add_candidate(
         "Jane Doe", "Atlanta, GA", source="indeed", source_id="qs-sync",
     )
+    _enable_nexus_delivery(candidate_id)
     latest = store.attach_resume(
         candidate_id, "latest.pdf", b"%PDF-latest", checksum_sha256="d" * 64,
     )
@@ -327,6 +336,7 @@ def test_existing_latest_resume_queues_with_either_contact(monkeypatch, emails, 
     store.reset()
     monkeypatch.setattr(config, "NEXUS_SYNC_ENABLED", True)
     candidate_id = store.add_candidate("Jane Doe", "Atlanta, GA", source="indeed")
+    _enable_nexus_delivery(candidate_id)
     latest = store.attach_resume(
         candidate_id, "latest.pdf", b"%PDF-latest", checksum_sha256="e" * 64,
     )
@@ -406,6 +416,7 @@ def test_worker_delivers_source_name_mismatch_with_candidate_cover(monkeypatch):
     store.reset()
     monkeypatch.setattr(config, "NEXUS_SYNC_ENABLED", True)
     candidate_id = store.add_candidate("Jane Doe", "Atlanta, GA", source="indeed")
+    _enable_nexus_delivery(candidate_id)
     resume = store.attach_resume(
         candidate_id, "wrong-person.pdf", _resume_pdf("Jennifer Merlo"),
         queue_nexus=True,

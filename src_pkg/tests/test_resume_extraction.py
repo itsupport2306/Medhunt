@@ -61,6 +61,18 @@ def test_text_resume_extracts_structured_fields_without_ocr(monkeypatch):
     assert result["accepted"]["location"] == "Columbus, OH, United States"
 
 
+def test_specialties_follow_resume_order_and_ignore_lowercase_or_er():
+    result = resume_extraction.extract(_pdf([
+        "Registered Nurse",
+        "Orientation or patient support in every department",
+        "Med Surg",
+        "ICU",
+        "Operating Room (OR)",
+    ]), {})
+    assert result["schema_version"] == 2
+    assert result["fields"]["specialties"] == ["Med Surg", "ICU", "Operating Room", "OR"]
+
+
 def test_sparse_text_layer_is_preferred_to_noisy_ocr(monkeypatch):
     def unexpected_ocr(_data, _indexes):
         raise AssertionError("a valid text layer must not invoke OCR")

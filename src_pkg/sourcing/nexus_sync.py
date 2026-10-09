@@ -56,6 +56,12 @@ _SPECIALTY_ALIASES: Mapping[str, tuple[str, ...]] = {
     "emergency medicine": ("Emergency Medicine",),
     "ob gyn": ("Obstetrics & Gynecology",),
     "obgyn": ("Obstetrics & Gynecology",),
+    "or": ("Operating Room",),
+    "er": ("Emergency Room",),
+    "med surg": ("MedSurg",),
+    "medical surgical": ("MedSurg",),
+    "emergency": ("ER",),
+    "endoscopy": ("GI / Endoscopy",),
 }
 
 # A source directory often uses a credential/role label that is semantically
@@ -884,6 +890,34 @@ def _trusted_identity(payload: Mapping[str, Any]) -> dict[str, Any]:
         state = parts[-2] if len(parts) >= 3 else parts[-1]
     if not country and len(parts) >= 3:
         country = parts[-1]
+    source_specialties = _candidate_specialties(candidate, {})
+    resume_specialties = _text_values([
+        *_text_values(accepted.get("specialty")),
+        *_text_values(accepted.get("specialties")),
+    ])
+    if not resume_specialties and isinstance(extraction, Mapping):
+        fields = extraction.get("fields")
+        confidence = extraction.get("confidence")
+        conflicts = extraction.get("conflicts") or []
+        try:
+            specialty_confidence = float(
+                confidence.get("specialties") if isinstance(confidence, Mapping) else 0
+            )
+        except (TypeError, ValueError):
+            specialty_confidence = 0
+        if (
+            isinstance(fields, Mapping)
+            and specialty_confidence >= 0.75
+            and "name" not in conflicts
+        ):
+            resume_specialties = _text_values(fields.get("specialties"))
+            if int(extraction.get("schema_version") or 0) < 2:
+                # Older parser versions could mistake ordinary "or"/"er"
+                # prose for clinical specialty acronyms.
+                resume_specialties = [
+                    value for value in resume_specialties
+                    if value.casefold() not in {"or", "er"}
+                ]
     return {
         "firstName": first_name,
         "middleName": middle_name,
@@ -894,7 +928,9 @@ def _trusted_identity(payload: Mapping[str, Any]) -> dict[str, Any]:
         "state": state,
         "country": country,
         "role": _candidate_role(candidate, accepted),
-        "specialties": _candidate_specialties(candidate, accepted),
+        "source_specialties": source_specialties,
+        "resume_specialties": resume_specialties,
+        "specialties": _text_values([*source_specialties, *resume_specialties]),
     }
 
 
@@ -1136,6 +1172,48 @@ def _unknown_classification(client: NexusClient) -> tuple[int, int]:
     return profession_id, specialty_id
 
 
+def _unknown_specialty_for_profession(
+    client: NexusClient, profession_id: int,
+) -> int | None:
+    """Keep a known profession when Nexus has its own Unknown specialty."""
+    try:
+        return _preferred_master_id(
+            client, "specialties", ("Unknown",), description="specialty",
+            extra_predicate=lambda row: (
+                bool(row.get("professionId"))
+                and int(row["professionId"]) == profession_id
+            ),
+        )
+    except NexusPermanentError:
+        return None
+
+
+def _matching_specialties(
+    client: NexusClient, profession_id: int, labels: Sequence[str],
+) -> list[Mapping[str, Any]]:
+    """Resolve specialties in evidence order under one Nexus profession."""
+    matches: list[Mapping[str, Any]] = []
+    seen: set[int] = set()
+    for label in labels:
+        try:
+            row = _preferred_master_row(
+                client, "specialties", _specialty_master_labels([label]),
+                description="candidate specialty",
+                extra_predicate=lambda item: (
+                    _label(item.get("name")) != "unknown"
+                    and (not item.get("professionId")
+                         or int(item["professionId"]) == profession_id)
+                ),
+            )
+        except NexusPermanentError:
+            continue
+        row_id = int(_master_id(row, "specialties"))
+        if row_id not in seen:
+            seen.add(row_id)
+            matches.append(row)
+    return matches
+
+
 def _build_profile(
     client: NexusClient,
     identity: Mapping[str, Any],
@@ -1156,17 +1234,19 @@ def _build_profile(
         {
             "firstName": identity["firstName"],
             "lastName": identity["lastName"],
-            "email": identity["email"],
-            "primaryEmail": identity["email"],
-            "phone": identity["phone"],
-            # Nexus webhook validation expects the canonical mobile field in
-            # addition to the parser-compatible phone field. Medhunt's phone
-            # policy has already selected the latest trusted number here.
-            "cellPhone": identity["phone"],
             "sendMassEmails": False,
             "sendMassSms": False,
         }
     )
+    # Nexus tenants validate empty contact strings inconsistently. Send the
+    # verified channel(s) only; either one is sufficient for a candidate.
+    if identity.get("email"):
+        profile["email"] = identity["email"]
+        profile["primaryEmail"] = identity["email"]
+    if identity.get("phone"):
+        profile["phone"] = identity["phone"]
+        # Nexus accepts the canonical mobile field in addition to phone.
+        profile["cellPhone"] = identity["phone"]
     if identity.get("middleName"):
         profile["middleName"] = identity["middleName"]
     if identity.get("city"):
@@ -1177,7 +1257,7 @@ def _build_profile(
             "Candidate first and last name are required for Nexus creation.",
             operation="payload_validation",
         )
-    if not profile["email"] and not profile["phone"]:
+    if not identity.get("email") and not identity.get("phone"):
         raise NexusPermanentError(
             "Nexus creation requires at least one trusted email or phone.",
             operation="payload_validation",
@@ -1271,53 +1351,63 @@ def _build_profile(
         profile["professionIds"] = [profession_id]
 
     specialty_id = _default_id(profile, "specialtyId", "specialtyIds")
-    actual_specialties = _text_values(identity.get("specialties"))
+    source_specialties = _text_values(identity.get("source_specialties"))
+    resume_specialties = _text_values(identity.get("resume_specialties"))
+    if "source_specialties" not in identity and "resume_specialties" not in identity:
+        source_specialties = _text_values(identity.get("specialties"))
+    # Source specialties take primary priority. When absent, the first
+    # specialty mentioned in the résumé becomes primary; later matches remain
+    # additional Nexus specialties.
+    actual_specialties = _text_values([*source_specialties, *resume_specialties])
+    specialty_ids: list[int] = []
     if actual_specialties:
-        # The captured specialty is candidate data, not a tenant default. It
-        # therefore takes precedence over a configured generic specialty ID.
-        # Try the source label first and then only approved semantic aliases.
-        # This keeps the mapping deterministic and profession-aware.
-        specialty_values = _specialty_master_labels(actual_specialties)
-        specialty_row = None
-        if profession_id:
-            try:
-                specialty_row = _preferred_master_row(
-                    client,
-                    "specialties",
-                    specialty_values,
-                    description="candidate specialty",
-                    extra_predicate=lambda row: (
-                        not row.get("professionId")
-                        or int(row["professionId"]) == profession_id
-                    ),
-                )
-            except NexusPermanentError:
-                specialty_row = None
-        if specialty_row is None:
-            try:
-                specialty_row = _preferred_master_row(
-                    client,
-                    "specialties",
-                    specialty_values,
-                    description="candidate specialty",
-                )
-            except NexusPermanentError:
-                specialty_row = None
-        if specialty_row is None:
-            profession_id, specialty_id = _unknown_classification(client)
-            profile["professionId"] = profession_id
-            profile["professionIds"] = [profession_id]
-        else:
-            specialty_id = int(_master_id(specialty_row, "specialties"))
-            related_profession = specialty_row.get("professionId")
-            if related_profession:
+        specialty_rows = (
+            _matching_specialties(client, profession_id, actual_specialties)
+            if profession_id else []
+        )
+        if not specialty_rows:
+            # If profession was unknown/defaulted, a clear specialty can
+            # determine its profession. Resolve the first evidence only, then
+            # constrain all additional specialty IDs to that profession.
+            first_row = None
+            for label in actual_specialties:
                 try:
-                    profession_id = int(related_profession)
+                    first_row = _preferred_master_row(
+                        client, "specialties", _specialty_master_labels([label]),
+                        description="candidate specialty",
+                        extra_predicate=lambda row: _label(row.get("name")) != "unknown",
+                    )
+                    break
+                except NexusPermanentError:
+                    continue
+            if first_row is not None and first_row.get("professionId"):
+                try:
+                    profession_id = int(first_row["professionId"])
                 except (TypeError, ValueError) as exc:
                     raise NexusPermanentError(
                         "Nexus specialty contains an invalid profession ID.",
                         operation="master_data",
                     ) from exc
+                profile["professionId"] = profession_id
+                profile["professionIds"] = [profession_id]
+                specialty_rows = _matching_specialties(
+                    client, profession_id, actual_specialties,
+                )
+            elif first_row is not None:
+                specialty_rows = [first_row]
+        if specialty_rows:
+            specialty_ids = [int(_master_id(row, "specialties")) for row in specialty_rows]
+            specialty_id = specialty_ids[0]
+        else:
+            # Preserve a known profession if this tenant has a profession
+            # specific Unknown specialty; use the global Unknown pair only
+            # when that mapping is unavailable.
+            specialty_id = (
+                _unknown_specialty_for_profession(client, profession_id)
+                if profession_id else None
+            )
+            if specialty_id is None:
+                profession_id, specialty_id = _unknown_classification(client)
                 profile["professionId"] = profession_id
                 profile["professionIds"] = [profession_id]
     elif not profile.get("jobId") and not specialty_id:
@@ -1347,7 +1437,7 @@ def _build_profile(
     if specialty_id:
         profile["specialtyId"] = specialty_id
         profile["primarySpecialtyId"] = specialty_id
-        profile["specialtyIds"] = [specialty_id]
+        profile["specialtyIds"] = specialty_ids or [specialty_id]
 
     job_types = profile.get("jobTypeIds")
     allowed = {"LOCAL", "PERDIEM", "PERM", "TRAVEL"}
@@ -1499,6 +1589,87 @@ def _resume_doc_type_id(client: NexusClient) -> int:
     )
 
 
+def _repair_linked_classification(
+    client: NexusClient,
+    candidate_id: str,
+    identity: Mapping[str, Any],
+    defaults: Mapping[str, Any],
+    before_write: Any = None,
+) -> bool:
+    """Replace only Unknown Nexus classifications when fresh evidence is clear."""
+    role = str(identity.get("role") or "")
+    source = _text_values(identity.get("source_specialties"))
+    resume = _text_values(identity.get("resume_specialties"))
+    if not (source or resume):
+        return False
+    try:
+        proposed = _build_profile(client, identity, defaults)
+    except NexusPermanentError:
+        # Resume upload must remain possible if creation-only fields are absent.
+        return False
+    proposed_profession = int(proposed["professionId"])
+    proposed_specialty = int(proposed["specialtyId"])
+    proposed_specialties = [int(value) for value in proposed["specialtyIds"]]
+    unknown_specialties = {
+        int(_master_id(row, "specialties"))
+        for row in _active(client.get_master("specialties"))
+        if _master_id(row, "specialties") is not None
+        and _label(row.get("name")) == "unknown"
+    }
+    if proposed_specialty in unknown_specialties:
+        return False
+    unknown_professions = {
+        int(_master_id(row, "professions"))
+        for row in _active(client.get_master("professions"))
+        if _master_id(row, "professions") is not None
+        and _label(row.get("name")) == "unknown"
+    }
+    path = f"/api/api-integration/v1/candidates/{quote(candidate_id, safe='')}"
+    remote = client.request("GET", path, operation="linked candidate lookup").json()
+    if not isinstance(remote, Mapping):
+        raise NexusRetryableError(
+            "Nexus linked candidate lookup returned an unreadable record.",
+            operation="linked candidate lookup",
+        )
+    raw_current_specialties = [
+        *(remote.get("specialtyIds") or []), remote.get("primarySpecialtyId"),
+    ]
+    current_specialties = {
+        int(value) for value in raw_current_specialties if value not in (None, "")
+    }
+    if current_specialties and not current_specialties <= unknown_specialties:
+        return False
+    current_professions = {
+        int(value) for value in (remote.get("professionIds") or [])
+        if value not in (None, "")
+    }
+    known_professions = current_professions - unknown_professions
+    if known_professions and proposed_profession not in known_professions:
+        return False
+    patch = {
+        "professionIds": sorted(known_professions | {proposed_profession}),
+        "specialtyIds": proposed_specialties,
+        "primarySpecialtyId": proposed_specialty,
+    }
+    if before_write:
+        before_write("candidate_classification_update")
+    client.request("PATCH", path, operation="candidate classification update", write=True, json=patch)
+    verified = client.request(
+        "GET", path, operation="candidate classification verification",
+    ).json()
+    if (
+        not isinstance(verified, Mapping)
+        or proposed_profession not in (verified.get("professionIds") or [])
+        or not set(proposed_specialties) <= set(verified.get("specialtyIds") or [])
+        or int(verified.get("primarySpecialtyId") or 0) != proposed_specialty
+    ):
+        raise NexusIndeterminateError(
+            "Nexus did not retain the linked candidate specialty update.",
+            operation="candidate classification update",
+        )
+    return True
+
+
 _CLIENT_LOCK = threading.Lock()
 _SHARED_CLIENT: NexusClient | None = None
 
@@ -1567,8 +1738,12 @@ def process_delivery(
                 operation="payload_validation",
                 code="nexus_candidate_id_invalid",
             )
+        classification_updated = _repair_linked_classification(
+            client, linked_candidate_id, identity, settings.default_profile,
+            before_write=before_write,
+        )
         doc_type_id = _resume_doc_type_id(client)
-        if before_write:
+        if before_write and not classification_updated:
             before_write("resume_upload")
         client.upload_resume(
             linked_candidate_id,
@@ -1580,6 +1755,7 @@ def process_delivery(
         return {
             "status": "delivered",
             "action": "resume_uploaded",
+            "classification_updated": classification_updated,
             "nexus_candidate_id": linked_candidate_id,
             "matched_by": ["stored_link"],
             "resume_id": resume_id,
