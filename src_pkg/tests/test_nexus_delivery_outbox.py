@@ -10,6 +10,17 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from sourcing import config, nexus_delivery, nexus_sync, store
 
 
+def _resume_pdf(name="Jane Doe"):
+    from reportlab.pdfgen import canvas
+
+    output = BytesIO()
+    pdf = canvas.Canvas(output)
+    pdf.drawString(72, 720, name)
+    pdf.drawString(72, 690, "Registered Nurse")
+    pdf.save()
+    return output.getvalue()
+
+
 def test_role_prefers_clinical_resume_role_over_mislabeled_employer():
     candidate = {
         "name": "Candace Robertson",
@@ -65,7 +76,7 @@ def test_nexus_outbox_claim_retry_and_link_are_idempotent(monkeypatch):
     monkeypatch.setattr(config, "NEXUS_SYNC_ENABLED", True)
     candidate_id = store.add_candidate("Jane Doe", "Atlanta, GA", source="indeed")
     resume = store.attach_resume(
-        candidate_id, "jane.pdf", b"%PDF-test", queue_nexus=True,
+        candidate_id, "jane.pdf", _resume_pdf(), queue_nexus=True,
     )
 
     first = store.claim_nexus_delivery()
@@ -120,7 +131,7 @@ def test_stale_worker_cannot_ack_a_released_nexus_lease(monkeypatch):
     monkeypatch.setattr(config, "NEXUS_SYNC_ENABLED", True)
     candidate_id = store.add_candidate("Jane Doe", "Atlanta, GA", source="indeed")
     resume = store.attach_resume(
-        candidate_id, "jane.pdf", b"%PDF-test", queue_nexus=True,
+        candidate_id, "jane.pdf", _resume_pdf(), queue_nexus=True,
     )
     claimed = store.claim_nexus_delivery(lease_seconds=600)
 
@@ -324,7 +335,7 @@ def test_worker_delivers_projected_contact_and_persists_link(monkeypatch):
         "Jane Doe", "Atlanta, GA", source="indeed", notes="Role: Registered Nurse",
     )
     resume = store.attach_resume(
-        candidate_id, "jane.pdf", b"%PDF-test", queue_nexus=True,
+        candidate_id, "jane.pdf", _resume_pdf(), queue_nexus=True,
         checksum_sha256="b" * 64,
     )
     candidate = store.get_candidate(candidate_id)
@@ -340,8 +351,9 @@ def test_worker_delivers_projected_contact_and_persists_link(monkeypatch):
     )
     captured = {}
 
-    def deliver(payload, resume_pdf, *, before_write=None):
+    def deliver(payload, resume_pdf, *, settings=None, before_write=None):
         captured.update(payload)
+        captured["delivered_checksum"] = hashlib.sha256(resume_pdf).hexdigest()
         assert resume_pdf.startswith(b"%PDF")
         assert before_write is not None
         before_write("candidate_creation")
@@ -352,15 +364,15 @@ def test_worker_delivers_projected_contact_and_persists_link(monkeypatch):
 
     monkeypatch.setattr(nexus_delivery.nexus_sync, "process_delivery", deliver)
 
-    assert nexus_delivery.process_once() == {
+    result = nexus_delivery.process_once()
+    delivery_state = store.get_nexus_delivery_for_resume(resume["id"])
+    assert result == {
         "status": "succeeded", "delivery_id": 1,
-    }
+    }, (delivery_state["operation"], delivery_state["last_error"])
     assert captured["candidate"]["latest_phone"] == "(404) 555-0199"
     assert captured["candidate"]["primary_email"] == "jane@example.test"
     assert captured["candidate"]["job_title"] == "Registered Nurse"
-    assert captured["resume"]["checksum_sha256"] == hashlib.sha256(
-        b"%PDF-test"
-    ).hexdigest()
+    assert captured["resume"]["checksum_sha256"] == captured["delivered_checksum"]
     delivery = store.get_nexus_delivery_for_resume(resume["id"])
     assert delivery["status"] == "succeeded"
     assert delivery["nexus_candidate_id"] == "7001"
@@ -374,7 +386,7 @@ def test_worker_holds_duplicate_conflict_for_review(monkeypatch):
     monkeypatch.setattr(config, "NEXUS_SYNC_ENABLED", True)
     candidate_id = store.add_candidate("Jane Doe", "Atlanta, GA", source="indeed")
     resume = store.attach_resume(
-        candidate_id, "jane.pdf", b"%PDF-test", queue_nexus=True,
+        candidate_id, "jane.pdf", _resume_pdf(), queue_nexus=True,
     )
     monkeypatch.setattr(
         nexus_delivery.contact_access,
@@ -388,7 +400,7 @@ def test_worker_holds_duplicate_conflict_for_review(monkeypatch):
         },
     )
 
-    def conflict(_payload, _resume_pdf, *, before_write=None):
+    def conflict(_payload, _resume_pdf, *, settings=None, before_write=None):
         raise nexus_sync.NexusIndeterminateError(
             "Nexus email and phone belong to different candidates.",
             operation="duplicate_search",
@@ -410,7 +422,7 @@ def test_worker_holds_remote_success_when_identity_link_conflicts(monkeypatch):
     second_id = store.add_candidate("Jane Doe", "Atlanta, GA", source="linkedin")
     store.save_nexus_candidate_link(f"candidate:{first_id}", first_id, "7001")
     resume = store.attach_resume(
-        second_id, "jane.pdf", b"%PDF-test", queue_nexus=True,
+        second_id, "jane.pdf", _resume_pdf(), queue_nexus=True,
     )
     monkeypatch.setattr(
         nexus_delivery.contact_access,
@@ -422,7 +434,7 @@ def test_worker_holds_remote_success_when_identity_link_conflicts(monkeypatch):
             "phones": ["(404) 555-0199"],
         },
     )
-    def remote_success(_payload, _pdf, *, before_write=None):
+    def remote_success(_payload, _pdf, *, settings=None, before_write=None):
         assert before_write is not None
         before_write("resume_upload")
         return {"action": "resume_uploaded", "nexus_candidate_id": "7001"}

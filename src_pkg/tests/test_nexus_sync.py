@@ -63,7 +63,7 @@ def _client(settings, handler):
     return nexus_sync.NexusClient(settings, http_client=http)
 
 
-def test_no_duplicate_creates_candidate_with_whitelisted_trusted_fields():
+def test_unlinked_candidate_is_created_with_whitelisted_trusted_fields():
     requests = []
 
     def handler(request):
@@ -94,16 +94,7 @@ def test_no_duplicate_creates_candidate_with_whitelisted_trusted_fields():
         for request in requests
         if request.url.path.endswith("/candidates/search")
     ]
-    assert searches == [
-        {
-            "pagingSortingDetails": {"start": 0, "maxRowsToFetch": 20},
-            "email": "jane.example@example.com",
-        },
-        {
-            "pagingSortingDetails": {"start": 0, "maxRowsToFetch": 20},
-            "phone": "(614) 555-0123",
-        },
-    ]
+    assert searches == []
     assert result == {
         "status": "delivered",
         "action": "candidate_created",
@@ -585,12 +576,9 @@ def test_primary_email_must_belong_to_trusted_filtered_email_list():
         client=_client(settings, handler),
     )
     assert result["nexus_candidate_id"] == 706
-    searches = [
-        json.loads(request.content)
-        for request in requests
-        if request.url.path.endswith("/candidates/search")
-    ]
-    assert searches[0]["email"] == "safe@example.com"
+    assert not any(
+        request.url.path.endswith("/candidates/search") for request in requests
+    )
 
 
 def test_non_rn_nursing_role_resolves_from_live_profession_catalog():
@@ -669,20 +657,13 @@ def test_successful_create_without_remote_id_is_indeterminate():
     assert raised.value.code == "nexus_create_unbound"
 
 
-def test_consistent_email_and_phone_duplicate_uploads_resume_only():
-    writes = []
+def test_unlinked_candidate_does_not_search_contacts_before_creation():
+    paths = []
 
     def handler(request):
-        if request.url.path.endswith("/candidates/search"):
-            return httpx.Response(
-                200,
-                json={"records": [{"candidateId": 88}]},
-            )
-        if request.url.path.endswith("/candidates/88/upload/documents"):
-            writes.append(request.url.path)
-            return httpx.Response(204)
+        paths.append(request.url.path)
         if request.url.path.endswith("/candidate/webhook/create"):
-            raise AssertionError("existing candidate must not be created again")
+            return httpx.Response(201, json={"id": 88})
         raise AssertionError(request.url)
 
     settings = _settings()
@@ -690,10 +671,10 @@ def test_consistent_email_and_phone_duplicate_uploads_resume_only():
         _payload(), PDF, settings=settings, client=_client(settings, handler)
     )
 
-    assert writes == ["/api/api-integration/v1/candidates/88/upload/documents"]
-    assert result["action"] == "resume_uploaded"
-    assert result["nexus_candidate_id"] == "88"
-    assert result["matched_by"] == ["email", "phone"]
+    assert paths == ["/api/api-integration/v1/candidate/webhook/create"]
+    assert result["action"] == "candidate_created"
+    assert result["nexus_candidate_id"] == 88
+    assert result["matched_by"] == []
 
 
 def test_two_hundred_response_with_failed_document_is_not_acknowledged():
@@ -708,9 +689,11 @@ def test_two_hundred_response_with_failed_document_is_not_acknowledged():
         raise AssertionError(request.url)
 
     settings = _settings()
+    payload = _payload()
+    payload["nexus_candidate_id"] = "88"
     with pytest.raises(nexus_sync.NexusPermanentError) as raised:
         nexus_sync.process_delivery(
-            _payload(), PDF, settings=settings, client=_client(settings, handler),
+            payload, PDF, settings=settings, client=_client(settings, handler),
         )
     assert raised.value.code == "nexus_resume_rejected"
 
@@ -735,8 +718,10 @@ def test_resume_document_type_accepts_one_tenant_resume_label():
         raise AssertionError(request.url)
 
     settings = _settings(resume_doc_type_id="")
+    payload = _payload()
+    payload["nexus_candidate_id"] = "88"
     result = nexus_sync.process_delivery(
-        _payload(), PDF, settings=settings, client=_client(settings, handler),
+        payload, PDF, settings=settings, client=_client(settings, handler),
     )
 
     assert result["action"] == "resume_uploaded"
@@ -763,76 +748,6 @@ def test_durable_candidate_link_skips_duplicate_search_and_create():
     ]
     assert result["matched_by"] == ["stored_link"]
     assert result["nexus_candidate_id"] == "remote_77"
-
-
-def test_conflicting_email_and_phone_matches_are_never_written():
-    writes = []
-
-    def handler(request):
-        if request.url.path.endswith("/candidates/search"):
-            body = json.loads(request.content)
-            return httpx.Response(
-                200,
-                json={"records": [{"candidateId": 1 if "email" in body else 2}]},
-            )
-        writes.append(request.url.path)
-        return httpx.Response(500)
-
-    settings = _settings()
-    with pytest.raises(nexus_sync.NexusIndeterminateError) as raised:
-        nexus_sync.process_delivery(
-            _payload(), PDF, settings=settings, client=_client(settings, handler)
-        )
-    assert "different candidates" in str(raised.value)
-    assert writes == []
-
-
-def test_single_contact_match_with_a_different_name_is_held_for_review():
-    writes = []
-
-    def handler(request):
-        if request.url.path.endswith("/candidates/search"):
-            body = json.loads(request.content)
-            if "email" in body:
-                return httpx.Response(200, json={"records": [{
-                    "candidateId": 88,
-                    "firstName": "Someone",
-                    "lastName": "Else",
-                }]})
-            return httpx.Response(200, json={"records": []})
-        writes.append(request.url.path)
-        return httpx.Response(500)
-
-    settings = _settings()
-    with pytest.raises(
-        nexus_sync.NexusIndeterminateError,
-        match="different name",
-    ) as raised:
-        nexus_sync.process_delivery(
-            _payload(), PDF, settings=settings, client=_client(settings, handler)
-        )
-    assert raised.value.code == "nexus_contact_name_conflict"
-    assert writes == []
-
-
-def test_single_contact_match_without_a_name_is_held_for_review():
-    writes = []
-
-    def handler(request):
-        if request.url.path.endswith("/candidates/search"):
-            body = json.loads(request.content)
-            rows = [{"candidateId": 88}] if "email" in body else []
-            return httpx.Response(200, json={"records": rows})
-        writes.append(request.url.path)
-        return httpx.Response(500)
-
-    settings = _settings()
-    with pytest.raises(nexus_sync.NexusIndeterminateError) as raised:
-        nexus_sync.process_delivery(
-            _payload(), PDF, settings=settings, client=_client(settings, handler),
-        )
-    assert raised.value.code == "nexus_contact_name_missing"
-    assert writes == []
 
 
 def test_write_transport_failure_is_indeterminate_and_sanitized():
