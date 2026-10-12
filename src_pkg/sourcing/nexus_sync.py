@@ -572,6 +572,16 @@ class NexusClient:
             files=[("profile", (filename, content, "application/pdf"))],
         )
 
+    def create_candidate(self, profile: Mapping[str, Any]) -> httpx.Response:
+        """Create through the Candidate API before a separate document upload."""
+        return self.request(
+            "POST",
+            "/api/api-integration/v1/candidates",
+            operation="candidate creation",
+            write=True,
+            json=dict(profile),
+        )
+
     def upload_resume(
         self,
         candidate_id: str | int,
@@ -1794,6 +1804,7 @@ def process_delivery(
     settings: NexusSettings | None = None,
     client: NexusClient | None = None,
     before_write: Callable[[str], None] | None = None,
+    after_create: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     """Deliver one trusted candidate and enriched resume to Nexus.
 
@@ -1869,6 +1880,56 @@ def process_delivery(
     # has a stored Nexus link, the resume is attached above; otherwise submit
     # the candidate directly; any duplicate handling is left to Nexus.
     profile = _build_profile(client, identity, settings.default_profile)
+    if bool(identity.get("email")) != bool(identity.get("phone")):
+        # Nexus's resume webhook returns HTTP 400 for a missing contact
+        # channel. The Candidate API accepts either channel; attach the resume
+        # through its document endpoint after the candidate has an ID.
+        doc_type_id = _resume_doc_type_id(client)
+        candidate_profile = dict(profile)
+        candidate_profile.pop("professionId", None)
+        candidate_profile.pop("specialtyId", None)
+        if before_write:
+            before_write("candidate_creation")
+        response = client.create_candidate(candidate_profile)
+        remote_candidate_id = _response_candidate_id(response)
+        if remote_candidate_id is None:
+            raise NexusIndeterminateError(
+                "Nexus accepted candidate creation without returning a candidate ID.",
+                operation="candidate creation",
+                code="nexus_create_unbound",
+            )
+        remote_id = str(remote_candidate_id)
+        try:
+            if after_create:
+                after_create(remote_id)
+            client.upload_resume(
+                remote_id, doc_type_id=doc_type_id, filename=filename,
+                content=resume_pdf, checksum=checksum,
+            )
+            classification_updated = _ensure_created_classification(
+                client, remote_id, identity, profile,
+            )
+        except Exception as exc:
+            # Candidate creation already committed. The worker records the ID
+            # for reconciliation and must never repeat an unlinked create.
+            error = NexusIndeterminateError(
+                "Nexus candidate was created, but its resume or classification was not confirmed.",
+                operation="candidate follow-up",
+                code="nexus_created_followup_unconfirmed",
+            )
+            error.nexus_candidate_id = remote_id
+            raise error from exc
+        result = {
+            "status": "delivered",
+            "action": "candidate_created",
+            "nexus_candidate_id": remote_candidate_id,
+            "matched_by": [],
+            "resume_id": resume_id,
+            "checksum_sha256": checksum,
+        }
+        if classification_updated is not None:
+            result["classification_updated"] = classification_updated
+        return result
     if before_write:
         before_write("candidate_creation")
     response = client.create_candidate_with_resume(

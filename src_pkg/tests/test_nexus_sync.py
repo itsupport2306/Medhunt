@@ -132,6 +132,70 @@ def test_profile_omits_missing_contact_channel(email, phone, present, absent):
     assert absent.isdisjoint(profile.keys())
 
 
+@pytest.mark.parametrize(
+    ("emails", "phones", "present", "absent"),
+    [
+        (["jane@example.com"], [], "primaryEmail", "cellPhone"),
+        ([], ["6145550123"], "cellPhone", "primaryEmail"),
+    ],
+)
+def test_single_contact_uses_candidate_api_then_uploads_resume(
+    emails, phones, present, absent,
+):
+    calls = []
+
+    def handler(request):
+        calls.append(request.url.path)
+        if request.url.path.endswith("/candidates"):
+            profile = json.loads(request.content)
+            assert present in profile
+            assert absent not in profile
+            assert "professionId" not in profile
+            assert "specialtyId" not in profile
+            assert profile["professionIds"] == [10]
+            assert profile["primarySpecialtyId"] == 20
+            return httpx.Response(201, json={"id": 701})
+        if request.url.path.endswith("/candidates/701/upload/documents"):
+            assert b"uploadedDocuments[0].documentTypeId" in request.content
+            return httpx.Response(200, json={"uploadFailedDocumentNames": []})
+        raise AssertionError(request.url)
+
+    settings = _settings()
+    linked = []
+    result = nexus_sync.process_delivery(
+        _payload(emails=emails, phones=phones), PDF,
+        settings=settings, client=_client(settings, handler),
+        after_create=linked.append,
+    )
+    assert linked == ["701"]
+    assert result["nexus_candidate_id"] == 701
+    assert result["action"] == "candidate_created"
+    assert calls == [
+        "/api/api-integration/v1/candidates",
+        "/api/api-integration/v1/candidates/701/upload/documents",
+    ]
+
+
+def test_single_contact_resume_failure_keeps_created_candidate_id():
+    def handler(request):
+        if request.url.path.endswith("/candidates"):
+            return httpx.Response(201, json={"id": 702})
+        if request.url.path.endswith("/candidates/702/upload/documents"):
+            return httpx.Response(500)
+        raise AssertionError(request.url)
+
+    settings = _settings()
+    linked = []
+    with pytest.raises(nexus_sync.NexusIndeterminateError) as raised:
+        nexus_sync.process_delivery(
+            _payload(emails=[]), PDF,
+            settings=settings, client=_client(settings, handler),
+            after_create=linked.append,
+        )
+    assert linked == ["702"]
+    assert raised.value.nexus_candidate_id == "702"
+
+
 def test_nursing_role_resolves_exact_rn_and_unknown_specialty_defaults():
     master_calls = []
 

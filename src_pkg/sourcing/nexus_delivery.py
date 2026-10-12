@@ -275,10 +275,20 @@ def process_once() -> dict | None:
                     code="nexus_lease_lost",
                 )
 
+        def after_create(nexus_candidate_id: str) -> None:
+            # Persist the remote identity before the separate resume upload.
+            # A later failure can then be reconciled without creating a
+            # duplicate Nexus candidate.
+            store.save_nexus_candidate_link(
+                delivery["identity_key"], int(delivery["candidate_id"]),
+                nexus_candidate_id,
+            )
+
         result = nexus_sync.process_delivery(
             payload, resume_pdf,
             settings=_delivery_settings(str(delivery.get("requested_by") or "")),
             before_write=before_write,
+            after_create=after_create,
         )
         nexus_candidate_id = str(result.get("nexus_candidate_id") or "").strip()
         if not nexus_candidate_id:
@@ -322,7 +332,9 @@ def process_once() -> dict | None:
     except nexus_sync.NexusIndeterminateError as exc:
         status = "review" if exc.operation == "duplicate_search" else "indeterminate"
         store.finish_nexus_delivery(
-            delivery_id, status, operation=exc.operation,
+            delivery_id, status,
+            nexus_candidate_id=str(getattr(exc, "nexus_candidate_id", "")),
+            operation=exc.operation,
             error=f"{exc.code}: {exc}",
             expected_lease_until=lease_until,
         )

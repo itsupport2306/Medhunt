@@ -351,7 +351,8 @@ def test_worker_delivers_projected_contact_and_persists_link(monkeypatch):
     )
     captured = {}
 
-    def deliver(payload, resume_pdf, *, settings=None, before_write=None):
+    def deliver(payload, resume_pdf, *, settings=None, before_write=None,
+                after_create=None):
         captured.update(payload)
         captured["delivered_checksum"] = hashlib.sha256(resume_pdf).hexdigest()
         assert resume_pdf.startswith(b"%PDF")
@@ -381,6 +382,41 @@ def test_worker_delivers_projected_contact_and_persists_link(monkeypatch):
     ] == "7001"
 
 
+def test_worker_keeps_remote_id_when_single_contact_resume_upload_fails(monkeypatch):
+    store.reset()
+    monkeypatch.setattr(config, "NEXUS_SYNC_ENABLED", True)
+    candidate_id = store.add_candidate("Jane Doe", "Atlanta, GA", source="indeed")
+    resume = store.attach_resume(
+        candidate_id, "jane.pdf", _resume_pdf(), queue_nexus=True,
+    )
+    monkeypatch.setattr(
+        nexus_delivery.contact_access, "project_candidate",
+        lambda candidate: {
+            **candidate, "contacts_trusted": True,
+            "emails": ["jane@example.test"], "phones": [],
+        },
+    )
+
+    def partial(_payload, _pdf, *, settings=None, before_write=None,
+                after_create=None):
+        before_write("candidate_creation")
+        after_create("7002")
+        error = nexus_sync.NexusIndeterminateError(
+            "Nexus candidate was created, but the resume was not confirmed.",
+            operation="candidate follow-up",
+        )
+        error.nexus_candidate_id = "7002"
+        raise error
+
+    monkeypatch.setattr(nexus_delivery.nexus_sync, "process_delivery", partial)
+    assert nexus_delivery.process_once()["status"] == "indeterminate"
+    delivery = store.get_nexus_delivery_for_resume(resume["id"])
+    assert delivery["nexus_candidate_id"] == "7002"
+    assert store.get_nexus_candidate_link(delivery["identity_key"])[
+        "nexus_candidate_id"
+    ] == "7002"
+
+
 def test_worker_holds_duplicate_conflict_for_review(monkeypatch):
     store.reset()
     monkeypatch.setattr(config, "NEXUS_SYNC_ENABLED", True)
@@ -400,7 +436,8 @@ def test_worker_holds_duplicate_conflict_for_review(monkeypatch):
         },
     )
 
-    def conflict(_payload, _resume_pdf, *, settings=None, before_write=None):
+    def conflict(_payload, _resume_pdf, *, settings=None, before_write=None,
+                 after_create=None):
         raise nexus_sync.NexusIndeterminateError(
             "Nexus email and phone belong to different candidates.",
             operation="duplicate_search",
@@ -434,7 +471,8 @@ def test_worker_holds_remote_success_when_identity_link_conflicts(monkeypatch):
             "phones": ["(404) 555-0199"],
         },
     )
-    def remote_success(_payload, _pdf, *, settings=None, before_write=None):
+    def remote_success(_payload, _pdf, *, settings=None, before_write=None,
+                       after_create=None):
         assert before_write is not None
         before_write("resume_upload")
         return {"action": "resume_uploaded", "nexus_candidate_id": "7001"}
