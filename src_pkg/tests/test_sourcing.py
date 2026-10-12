@@ -133,7 +133,9 @@ def test_ceipal_upload_runs_after_resume_is_stored(monkeypatch):
         "contacts_trusted": True, "emails": ["jane@example.test"],
         "phones": [], "phone_contacts": [],
     })
-    monkeypatch.setattr(api_module.resume_extraction, "extract", lambda *args: {})
+    monkeypatch.setattr(
+        api_module.resume_extraction, "extract", lambda *args, **kwargs: {},
+    )
     monkeypatch.setattr(api_module.resume_enrichment, "add_contact_sheet", lambda data, _candidate: (data, False))
     attach = store.attach_resume
     def attach_then_record(*args, **kwargs):

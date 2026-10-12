@@ -1208,11 +1208,10 @@ def _store_resume_pdf(cid: int, filename: str, data: bytes, user_id: str = "loca
     if not candidate:
         raise HTTPException(404, "candidate not found")
     contactable = contact_access.project_candidate(candidate)
-    # Read the original PDF before the Medhunt contact page is prepended. Text
-    # PDFs stay local and fast; only sparse/image-only pages invoke local OCR.
-    # Extraction failure is fail-open for capture and fail-closed for identity:
-    # no low-confidence value can replace captured platform data.
-    extraction = resume_extraction.extract(data, candidate)
+    # Read the original PDF before the Medhunt contact page is prepended. Keep
+    # this request fast by reading only embedded text. Image-only pages are
+    # OCR'd by the durable Nexus worker before it sends the candidate.
+    extraction = resume_extraction.extract(data, candidate, allow_ocr=False)
     accepted_resume_fields = extraction.get("accepted") or {}
     contact_sheet_candidate = dict(contactable)
     if isinstance(accepted_resume_fields, dict):

@@ -170,6 +170,36 @@ def test_image_only_resume_uses_local_ocr_for_sparse_pages(monkeypatch):
     assert result["fields"]["country"] == "United States"
 
 
+def test_image_only_resume_uses_packaged_ocr_without_tesseract(monkeypatch):
+    monkeypatch.setattr(resume_extraction, "_tesseract", lambda: ("", ""))
+    monkeypatch.setattr(
+        resume_extraction,
+        "_rapid_ocr_image",
+        lambda _image: "Jane Example, RN\nTelemetry Registered Nurse\n",
+    )
+
+    result = resume_extraction.extract(_pdf([]), {})
+
+    assert result["status"] == "extracted"
+    assert result["source"] == "local_ocr"
+    assert result["pages_ocr"] == 1
+    assert result["fields"]["specialties"] == ["Telemetry"]
+
+
+def test_image_only_resume_can_defer_ocr_from_request_path(monkeypatch):
+    monkeypatch.setattr(
+        resume_extraction,
+        "_ocr_pages",
+        lambda *_args: pytest.fail("request path must not run OCR"),
+    )
+
+    result = resume_extraction.extract(_pdf([]), {}, allow_ocr=False)
+
+    assert result["status"] == "unavailable"
+    assert result["scanned"] is True
+    assert result["pages_ocr"] == 0
+
+
 def test_platform_identity_wins_and_conflicting_ocr_is_not_accepted(monkeypatch):
     monkeypatch.setattr(
         resume_extraction,

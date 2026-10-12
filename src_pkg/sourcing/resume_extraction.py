@@ -19,6 +19,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from typing import Any, Mapping
 
@@ -27,6 +28,8 @@ from .person_name import identity_signature, normalize_person_name
 
 
 SCHEMA_VERSION = 2
+_RAPID_OCR_ENGINE: Any = None
+_RAPID_OCR_LOCK = threading.Lock()
 _MAX_FIELD_ITEMS = 20
 _NAME_STOP = {
     "address", "availability", "certifications", "contact", "curriculum",
@@ -186,7 +189,7 @@ def _tesseract() -> tuple[str, str]:
 
 def _ocr_pages(data: bytes, indexes: list[int]) -> dict[int, str]:
     command, tessdata = _tesseract()
-    if not command or not indexes:
+    if not indexes:
         return {}
     try:
         import pypdfium2 as pdfium
@@ -194,9 +197,6 @@ def _ocr_pages(data: bytes, indexes: list[int]) -> dict[int, str]:
     except Exception:
         return {}
 
-    environment = os.environ.copy()
-    if tessdata:
-        environment["TESSDATA_PREFIX"] = tessdata
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     result: dict[int, str] = {}
     zoom = max(1.0, float(config.RESUME_OCR_DPI) / 72.0)
@@ -217,26 +217,52 @@ def _ocr_pages(data: bytes, indexes: list[int]) -> dict[int, str]:
                 png = buffer.getvalue()
                 bitmap.close()
                 page.close()
-                completed = subprocess.run(
-                    [command, "stdin", "stdout", "-l", config.RESUME_OCR_LANGUAGE, "--psm", "6"],
-                    input=png,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.DEVNULL,
-                    timeout=max(
-                        0.5,
-                        min(float(config.RESUME_OCR_PAGE_TIMEOUT), remaining),
-                    ),
-                    check=False,
-                    creationflags=flags,
-                    env=environment,
-                )
-                if completed.returncode == 0:
-                    result[index] = completed.stdout.decode("utf-8", errors="replace")
+                if command:
+                    environment = os.environ.copy()
+                    if tessdata:
+                        environment["TESSDATA_PREFIX"] = tessdata
+                    completed = subprocess.run(
+                        [command, "stdin", "stdout", "-l", config.RESUME_OCR_LANGUAGE, "--psm", "6"],
+                        input=png,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.DEVNULL,
+                        timeout=max(
+                            0.5,
+                            min(float(config.RESUME_OCR_PAGE_TIMEOUT), remaining),
+                        ),
+                        check=False,
+                        creationflags=flags,
+                        env=environment,
+                    )
+                    if completed.returncode == 0:
+                        result[index] = completed.stdout.decode("utf-8", errors="replace")
+                if not _clean(result.get(index)):
+                    text = _rapid_ocr_image(image)
+                    if _clean(text):
+                        result[index] = text
             except (OSError, subprocess.SubprocessError, ValueError):
                 continue
     finally:
         document.close()
     return result
+
+
+def _rapid_ocr_image(image: Any) -> str:
+    """Use the packaged ONNX engine when the host has no Tesseract binary."""
+    global _RAPID_OCR_ENGINE
+    try:
+        with _RAPID_OCR_LOCK:
+            if _RAPID_OCR_ENGINE is None:
+                from rapidocr import RapidOCR
+
+                _RAPID_OCR_ENGINE = RapidOCR()
+            output = _RAPID_OCR_ENGINE(image)
+    except Exception:
+        return ""
+    return "\n".join(
+        str(value).strip() for value in (getattr(output, "txts", None) or ())
+        if str(value).strip()
+    )
 
 
 def _split_name(value: str) -> dict[str, str]:
@@ -612,7 +638,12 @@ def _accepted(fields: Mapping[str, Any], confidence: Mapping[str, float], candid
     return accepted, sorted(set(conflicts))
 
 
-def extract(data: bytes, candidate: Mapping[str, Any] | None = None) -> dict[str, Any]:
+def extract(
+    data: bytes,
+    candidate: Mapping[str, Any] | None = None,
+    *,
+    allow_ocr: bool = True,
+) -> dict[str, Any]:
     """Extract a bounded structured projection from a PDF resume.
 
     Failures never block resume storage.  The return object is safe to persist
@@ -645,7 +676,7 @@ def extract(data: bytes, candidate: Mapping[str, Any] | None = None) -> dict[str
     ]
     base["scanned"] = bool(pages and len(sparse) == len(pages))
     try:
-        ocr = _ocr_pages(data, sparse) if sparse else {}
+        ocr = _ocr_pages(data, sparse) if allow_ocr and sparse else {}
     except Exception:
         ocr = {}
     combined: list[str] = []

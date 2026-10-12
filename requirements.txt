@@ -11,3 +11,5 @@ boto3>=1.34                    # Cloudflare R2 resume object storage
 pypdf>=4.0                    # preserve original resume pages and prepend contact sheet
 reportlab>=4.0                # render the Radixsol contact sheet
 pypdfium2>=4.30               # lightweight scanned-page renderer for local OCR
+rapidocr==3.10.0              # packaged ONNX OCR fallback for Linux hosts without Tesseract
+onnxruntime>=1.17,<2          # inference engine used by RapidOCR
