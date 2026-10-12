@@ -1526,6 +1526,113 @@ def _repair_linked_classification(
     return True
 
 
+def _ensure_created_classification(
+    client: NexusClient,
+    candidate_id: str,
+    identity: Mapping[str, Any],
+    profile: Mapping[str, Any],
+) -> bool | None:
+    """Verify a newly created candidate only when specialty evidence exists.
+
+    Nexus can acknowledge candidate creation while replacing the submitted
+    specialty with Unknown.  Creation already crossed the durable write fence,
+    so this bounded read/conditional patch is safe and stays on the background
+    delivery worker rather than the extension request path.
+    """
+    evidence = _text_values([
+        *_text_values(identity.get("source_specialties")),
+        *_text_values(identity.get("resume_specialties")),
+    ])
+    if not evidence:
+        return None
+    try:
+        expected_profession = int(profile.get("professionId") or 0)
+        expected_primary = int(
+            profile.get("primarySpecialtyId") or profile.get("specialtyId") or 0
+        )
+        expected_specialties = [
+            int(value) for value in profile.get("specialtyIds") or []
+        ]
+    except (TypeError, ValueError):
+        return None
+    if not (expected_profession and expected_primary):
+        return None
+    if not expected_specialties:
+        expected_specialties = [expected_primary]
+    unknown_specialties = {
+        int(_master_id(row, "specialties"))
+        for row in _active(client.get_master("specialties"))
+        if _master_id(row, "specialties") is not None
+        and _label(row.get("name")) == "unknown"
+    }
+    if expected_primary in unknown_specialties:
+        return None
+
+    path = f"/api/api-integration/v1/candidates/{quote(candidate_id, safe='')}"
+    request_timeout = httpx.Timeout(10.0, connect=3.0)
+
+    def read_remote() -> Mapping[str, Any]:
+        try:
+            remote = client.request(
+                "GET", path, operation="created candidate classification lookup",
+                timeout=request_timeout,
+            ).json()
+        except (NexusDeliveryError, ValueError) as exc:
+            raise NexusIndeterminateError(
+                "Nexus candidate was created but its specialty could not be verified.",
+                operation="candidate classification verification",
+                code="nexus_created_classification_unverified",
+            ) from exc
+        if not isinstance(remote, Mapping):
+            raise NexusIndeterminateError(
+                "Nexus candidate was created but returned an unreadable classification.",
+                operation="candidate classification verification",
+                code="nexus_created_classification_unverified",
+            )
+        return remote
+
+    def retained(remote: Mapping[str, Any]) -> bool:
+        try:
+            professions = {
+                int(value) for value in [
+                    *(remote.get("professionIds") or []), remote.get("professionId"),
+                ] if value not in (None, "")
+            }
+            primary = int(
+                remote.get("primarySpecialtyId") or remote.get("specialtyId") or 0
+            )
+        except (TypeError, ValueError):
+            return False
+        return expected_profession in professions and primary == expected_primary
+
+    if retained(read_remote()):
+        return False
+
+    patch = {
+        "professionIds": [expected_profession],
+        "specialtyIds": expected_specialties,
+        "primarySpecialtyId": expected_primary,
+    }
+    try:
+        client.request(
+            "PATCH", path, operation="created candidate classification update",
+            write=True, json=patch, timeout=request_timeout,
+        )
+    except NexusDeliveryError as exc:
+        raise NexusIndeterminateError(
+            "Nexus candidate was created but its specialty correction was not confirmed.",
+            operation="candidate classification update",
+            code="nexus_created_classification_update_unconfirmed",
+        ) from exc
+    if not retained(read_remote()):
+        raise NexusIndeterminateError(
+            "Nexus did not retain the created candidate specialty correction.",
+            operation="candidate classification update",
+            code="nexus_created_classification_not_retained",
+        )
+    return True
+
+
 def _candidate_ids(rows: Sequence[Mapping[str, Any]], *, basis: str) -> set[str]:
     ids: set[str] = set()
     for row in rows:
@@ -1772,7 +1879,10 @@ def process_delivery(
             operation="candidate creation",
             code="nexus_create_unbound",
         )
-    return {
+    classification_updated = _ensure_created_classification(
+        client, str(remote_candidate_id), identity, profile,
+    )
+    result = {
         "status": "delivered",
         "action": "candidate_created",
         "nexus_candidate_id": remote_candidate_id,
@@ -1780,6 +1890,9 @@ def process_delivery(
         "resume_id": resume_id,
         "checksum_sha256": checksum,
     }
+    if classification_updated is not None:
+        result["classification_updated"] = classification_updated
+    return result
 
 
 __all__ = [
