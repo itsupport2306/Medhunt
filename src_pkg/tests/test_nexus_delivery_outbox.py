@@ -338,20 +338,6 @@ def test_worker_delivers_projected_contact_and_persists_link(monkeypatch):
         candidate_id, "jane.pdf", _resume_pdf(), queue_nexus=True,
         checksum_sha256="b" * 64,
     )
-    store.save_resume_extraction(resume["id"], candidate_id, {
-        "status": "unavailable", "scanned": True, "pages_ocr": 0,
-        "fields": {}, "accepted": {},
-    })
-    extraction_calls = []
-
-    def extract_in_worker(data, candidate, *, allow_ocr=True):
-        extraction_calls.append((data.startswith(b"%PDF"), candidate["id"], allow_ocr))
-        return {
-            "status": "extracted", "scanned": True, "pages_ocr": 1,
-            "fields": {"specialties": ["ICU"]}, "accepted": {},
-        }
-
-    monkeypatch.setattr(nexus_delivery.resume_extraction, "extract", extract_in_worker)
     candidate = store.get_candidate(candidate_id)
     projected = {
         **candidate,
@@ -368,7 +354,6 @@ def test_worker_delivers_projected_contact_and_persists_link(monkeypatch):
     def deliver(payload, resume_pdf, *, settings=None, before_write=None):
         captured.update(payload)
         captured["delivered_checksum"] = hashlib.sha256(resume_pdf).hexdigest()
-        assert payload["resume_extraction"]["fields"]["specialties"] == ["ICU"]
         assert resume_pdf.startswith(b"%PDF")
         assert before_write is not None
         before_write("candidate_creation")
@@ -387,7 +372,6 @@ def test_worker_delivers_projected_contact_and_persists_link(monkeypatch):
     assert captured["candidate"]["latest_phone"] == "(404) 555-0199"
     assert captured["candidate"]["primary_email"] == "jane@example.test"
     assert captured["candidate"]["job_title"] == "Registered Nurse"
-    assert extraction_calls == [(True, candidate_id, True)]
     assert captured["resume"]["checksum_sha256"] == captured["delivered_checksum"]
     delivery = store.get_nexus_delivery_for_resume(resume["id"])
     assert delivery["status"] == "succeeded"

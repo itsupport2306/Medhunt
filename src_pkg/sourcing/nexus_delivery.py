@@ -14,7 +14,6 @@ from . import (
     nexus_sync,
     phone_policy,
     resume_enrichment,
-    resume_extraction,
     source_context,
     storage,
     store,
@@ -184,27 +183,6 @@ def _payload(delivery: dict, candidate: dict, resume: dict) -> dict:
     }
 
 
-def _ensure_background_extraction(candidate: dict, resume: dict, data: bytes) -> None:
-    """OCR a scanned resume in the worker, outside the extension request."""
-    row = store.get_resume_extraction(resume.get("id"), candidate.get("id"))
-    if not isinstance(row, dict):
-        return
-    current = row.get("extraction") if isinstance(row, dict) else {}
-    if not isinstance(current, dict):
-        current = {}
-    needs_ocr = bool(
-        current.get("status") == "unavailable"
-        and current.get("scanned") is True
-        and int(current.get("pages_ocr") or 0) == 0
-    )
-    if not needs_ocr:
-        return
-    extraction = resume_extraction.extract(data, candidate, allow_ocr=True)
-    store.save_resume_extraction(
-        int(resume["id"]), int(candidate["id"]), extraction,
-    )
-
-
 def _retry_at(delivery: dict, error: nexus_sync.NexusRetryableError) -> float:
     if error.retry_after is not None:
         return time.time() + max(0.5, min(3600.0, float(error.retry_after)))
@@ -273,12 +251,10 @@ def process_once() -> dict | None:
                 operation="ats_routing",
                 code="candidate_assigned_to_ceipal",
             )
-        stored_resume_pdf = _resume_bytes(resume)
-        _ensure_background_extraction(candidate, resume, stored_resume_pdf)
         payload = _payload(delivery, candidate, resume)
         try:
             resume_pdf, _ = resume_enrichment.refresh_contact_sheet(
-                stored_resume_pdf, payload["candidate"],
+                _resume_bytes(resume), payload["candidate"],
             )
         except resume_enrichment.ContactSheetRefreshError as exc:
             raise nexus_sync.NexusPermanentError(
