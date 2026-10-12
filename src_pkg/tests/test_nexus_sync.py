@@ -282,7 +282,7 @@ def test_stored_resume_specialty_is_read_only_during_nexus_delivery():
     assert identity["source_specialties"] == []
     assert identity["resume_specialties"] == ["ICU"]
     payload["resume_extraction"]["conflicts"] = ["name"]
-    assert nexus_sync._trusted_identity(payload)["resume_specialties"] == []
+    assert nexus_sync._trusted_identity(payload)["resume_specialties"] == ["ICU"]
 
 
 def test_resume_headline_disambiguates_multiple_nursing_units():
@@ -379,7 +379,8 @@ def test_new_candidate_specialty_is_corrected_when_nexus_changes_it(stored_prima
     assert writes == ["candidate_creation"]
 
 
-def test_linked_candidate_unknown_specialty_is_updated_before_resume_upload():
+@pytest.mark.parametrize("stored_primary", [20, 999])
+def test_linked_candidate_specialty_is_updated_from_new_resume(stored_primary):
     payload = _payload(job_title="Registered Nurse")
     payload["nexus_candidate_id"] = "88"
     payload["resume_extraction"] = {
@@ -396,6 +397,7 @@ def test_linked_candidate_unknown_specialty_is_updated_before_resume_upload():
                 {"specialtyId": 321, "professionId": 10, "name": "ICU", "active": True},
                 {"specialtyId": 322, "professionId": 10, "name": "Med Surg", "active": True},
                 {"specialtyId": 20, "professionId": 10, "name": "Unknown", "active": True},
+                {"specialtyId": 999, "professionId": 10, "name": "Telemetry", "active": True},
             ])
         if request.url.path.endswith("/master/professions"):
             return httpx.Response(200, json=[
@@ -405,8 +407,8 @@ def test_linked_candidate_unknown_specialty_is_updated_before_resume_upload():
         if request.url.path.endswith("/candidates/88") and request.method == "GET":
             return httpx.Response(200, json={
                 "professionIds": [10],
-                "specialtyIds": [321, 322] if patched else [20],
-                "primarySpecialtyId": 321 if patched else 20,
+                "specialtyIds": [321, 322] if patched else [stored_primary],
+                "primarySpecialtyId": 321 if patched else stored_primary,
             })
         if request.url.path.endswith("/candidates/88") and request.method == "PATCH":
             assert json.loads(request.content) == {

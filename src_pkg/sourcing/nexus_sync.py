@@ -854,7 +854,6 @@ def _trusted_identity(payload: Mapping[str, Any]) -> dict[str, Any]:
         # during Nexus delivery so resume capture and downloads stay untouched.
         fields = extraction.get("fields")
         confidence = extraction.get("confidence")
-        conflicts = extraction.get("conflicts") or []
         try:
             specialty_confidence = float(
                 confidence.get("specialties") if isinstance(confidence, Mapping) else 0
@@ -864,7 +863,6 @@ def _trusted_identity(payload: Mapping[str, Any]) -> dict[str, Any]:
         if (
             isinstance(fields, Mapping)
             and specialty_confidence >= 0.75
-            and "name" not in conflicts
         ):
             extracted = _text_values(fields.get("specialties"))
             if int(extraction.get("schema_version") or 0) < 2:
@@ -1446,10 +1444,10 @@ def _repair_linked_classification(
     defaults: Mapping[str, Any],
     before_write: Any = None,
 ) -> bool:
-    """Fill an existing candidate's Unknown specialty from clear new evidence.
+    """Update a linked candidate from trustworthy classification evidence.
 
-    Do not replace a specific Nexus specialty or an unrelated known profession.
-    This is only called when MedHunt already has a durable Nexus candidate link.
+    Resume-derived specialties may replace an existing specialty. We preserve a
+    known Nexus specialty when the proposed value only came from role text.
     """
     role = str(identity.get("role") or "")
     sources = _text_values(identity.get("source_specialties"))
@@ -1486,19 +1484,25 @@ def _repair_linked_classification(
             "Nexus linked candidate lookup returned an unreadable record.",
             operation="linked candidate lookup",
         )
-    current_specialties = {
-        int(value) for value in (
-            [*(remote.get("specialtyIds") or []), remote.get("primarySpecialtyId")]
-        ) if value not in (None, "")
-    }
-    if current_specialties and not current_specialties <= unknown_specialties:
-        return False
     current_professions = {
         int(value) for value in (remote.get("professionIds") or [])
         if value not in (None, "")
     }
     known_professions = current_professions - unknown_professions
     if known_professions and proposed_profession not in known_professions:
+        return False
+    current_specialties = {
+        int(value) for value in (
+            [*(remote.get("specialtyIds") or []), remote.get("primarySpecialtyId")]
+        ) if value not in (None, "")
+    }
+    current_primary = int(remote.get("primarySpecialtyId") or 0)
+    if (
+        proposed_profession in current_professions
+        and current_primary == proposed_specialty
+    ):
+        return False
+    if current_specialties - unknown_specialties and not resume:
         return False
     profession_ids = sorted(known_professions | {proposed_profession})
     patch = {
