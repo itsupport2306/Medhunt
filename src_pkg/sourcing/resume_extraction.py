@@ -22,7 +22,7 @@ import sys
 import time
 from typing import Any, Mapping
 
-from . import config
+from . import config, nexus_taxonomy
 from .person_name import identity_signature, normalize_person_name
 
 
@@ -552,6 +552,30 @@ def _fields(text: str) -> tuple[dict[str, Any], dict[str, float]]:
             values[key] = value
             confidence[key] = 0.72
     return values, confidence
+
+
+def profile_specialties(text: str) -> list[str]:
+    """Extract ordered clinical specialties from source-visible profile text.
+
+    This uses the same reviewed vocabulary as resume extraction, but performs
+    no PDF parsing or OCR. The caller is responsible for ensuring that the
+    text belongs to the candidate whose record is being updated.
+    """
+    bounded = str(text or "")[:20000]
+    fields, _ = _fields(bounded)
+    role_values: list[str] = []
+    for raw_line in bounded.splitlines():
+        match = re.match(r"^(?:headline|role)\s*:\s*(.+)$", raw_line.strip(), re.I)
+        if not match:
+            continue
+        role = _clean(match.group(1))
+        professions = list(nexus_taxonomy.profession_labels_for_role(role))
+        if re.search(r"\b(?:registered\s+nurse|rn)\b", role, re.I):
+            professions.append("RN")
+        if re.search(r"\bnurse\s+practitioner\b|\b(?:np|aprn)\b", role, re.I):
+            professions.append("Nurse Practitioner")
+        role_values.extend(nexus_taxonomy.specialty_labels_for_role(role, professions))
+    return _bounded_unique([*role_values, *(fields.get("specialties") or [])], 20)
 
 
 def _same_identity(left: str, right: str) -> bool:

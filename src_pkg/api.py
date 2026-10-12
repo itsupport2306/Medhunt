@@ -62,7 +62,7 @@ async def lifespan(_app: FastAPI):
         nexus_delivery.stop()
 
 
-APP_VERSION = "3.37.4"
+APP_VERSION = "3.37.5"
 
 app = FastAPI(
     title="Medhunt Sourcing Assistant",
@@ -252,6 +252,7 @@ class ResumeDownloadIn(BaseModel):
 class ResumeCaptureIn(BaseModel):
     content_base64: str
     filename: str = "resume.pdf"
+    profile: ProfileImportIn | None = None
 
 
 class ProfessionalProfileResumeIn(BaseModel):
@@ -1302,6 +1303,52 @@ def _store_resume_pdf(cid: int, filename: str, data: bytes, user_id: str = "loca
     return result
 
 
+def _merge_resume_profile(cid: int, candidate: dict, profile: ProfileImportIn) -> dict:
+    """Persist the exact Indeed profile opened for this resume capture."""
+    candidate_source = str(candidate.get("source") or "").strip().casefold()
+    profile_source = str(profile.source or "").strip().casefold()
+    if candidate_source != "indeed" or profile_source != "indeed":
+        raise HTTPException(400, "Captured profile source does not match this candidate.")
+
+    stored_identity = person_name.identity_signature(str(candidate.get("name") or ""))
+    captured_identity = person_name.identity_signature(profile.name)
+    if not (
+        stored_identity.get("first")
+        and stored_identity.get("first") == captured_identity.get("first")
+        and stored_identity.get("surname") == captured_identity.get("surname")
+    ):
+        raise HTTPException(409, "Captured profile identity does not match this candidate.")
+
+    stored_source_id = str(candidate.get("source_id") or "").strip().casefold()
+    captured_source_id = str(profile.source_id or "").strip().casefold()
+    if stored_source_id and captured_source_id and stored_source_id != captured_source_id:
+        raise HTTPException(409, "Captured profile identifier does not match this candidate.")
+
+    row = _profile_row(profile)
+    profile_notes = str(row.get("notes") or "")
+    specialties = resume_extraction.profile_specialties(profile_notes)
+    incoming_lines = [*(f"Specialty: {value}" for value in specialties), *profile_notes.splitlines()]
+    existing_lines = str(candidate.get("notes") or "").splitlines()
+    merged_lines, seen = [], set()
+    for line in [*incoming_lines, *existing_lines]:
+        cleaned = " ".join(str(line or "").split()).strip()
+        key = cleaned.casefold()
+        if not cleaned or key in seen:
+            continue
+        seen.add(key)
+        merged_lines.append(cleaned)
+
+    updates = {"notes": "\n".join(merged_lines)[:20000]}
+    if row.get("location") and not str(candidate.get("location") or "").strip():
+        updates["location"] = row["location"]
+    if row.get("source_url"):
+        updates["source_url"] = row["source_url"]
+    if row.get("source_id") and not stored_source_id:
+        updates["source_id"] = row["source_id"]
+    store.update_candidate(cid, **updates)
+    return store.get_candidate(cid) or candidate
+
+
 @app.get("/session")
 def authenticated_session():
     """Confirm that this extension copy shares the backend's local token."""
@@ -1365,6 +1412,8 @@ def attach_captured_resume(cid: int, body: ResumeCaptureIn, request: Request):
     filename = Path(body.filename or "resume.pdf").name[:255] or "resume.pdf"
     if not filename.lower().endswith(".pdf"):
         filename = f"{filename}.pdf"
+    if body.profile is not None:
+        candidate = _merge_resume_profile(cid, candidate, body.profile)
     resume = _store_resume_pdf(cid, filename, data, str(actor.get("sub") or "local"))
     refreshed = contact_access.project_candidate(store.get_candidate(cid))
     return {

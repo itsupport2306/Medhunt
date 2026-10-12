@@ -4152,6 +4152,7 @@ async function downloadMatchedIndeedResume(profile) {
         body: JSON.stringify({
           content_base64: captured.base64,
           filename,
+          profile: captured.profile || null,
         }),
         timeout: 300000,
       });

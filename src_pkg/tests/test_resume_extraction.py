@@ -71,6 +71,17 @@ def test_resume_specialties_keep_document_order_for_primary_choice():
     assert result["fields"]["specialties"][:2] == ["Med Surg", "ICU"]
 
 
+def test_profile_specialties_use_text_evidence_without_pdf_or_ocr(monkeypatch):
+    monkeypatch.setattr(
+        resume_extraction, "_ocr_pages",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("profile parsing must not OCR")),
+    )
+    assert resume_extraction.profile_specialties(
+        "Headline: Registered Nurse\nRole: RN - Cath Lab\n"
+        "Work Experience\nTelemetry Unit\nICU Registered Nurse"
+    )[:3] == ["Cath Lab", "Telemetry", "ICU"]
+
+
 def test_short_nursing_unit_acronyms_require_uppercase():
     ordinary = resume_extraction.extract(_pdf([
         "Registered Nurse",

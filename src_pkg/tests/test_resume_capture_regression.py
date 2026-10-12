@@ -14,7 +14,7 @@ from pypdf import PdfWriter
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import api as api_module
-from sourcing import config, nexus_delivery, store
+from sourcing import config, nexus_delivery, nexus_sync, store
 
 
 @pytest.mark.parametrize("source", ["indeed", "vivian", "facebook", "npino"])
@@ -45,11 +45,21 @@ def test_resume_attach_and_download_with_nexus_enabled(source, monkeypatch, tmp_
     async def exercise():
         transport = httpx.ASGITransport(app=api_module.app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            for route, body in (
-                ("from-browser", {
+            browser_body = {
                     "content_base64": base64.b64encode(pdf).decode("ascii"),
                     "filename": "browser.pdf",
-                }),
+                }
+            if source == "indeed":
+                browser_body["profile"] = {
+                    "name": "Jane Example",
+                    "location": "Columbus, OH",
+                    "headline": "ICU Registered Nurse",
+                    "roles": ["ICU Registered Nurse"],
+                    "notes": "Work Experience\nICU Registered Nurse\nTelemetry Unit",
+                    "source": "indeed",
+                }
+            for route, body in (
+                ("from-browser", browser_body),
                 ("from-download", {"path": str(path), "filename": path.name}),
             ):
                 attached = await client.post(
@@ -62,5 +72,11 @@ def test_resume_attach_and_download_with_nexus_enabled(source, monkeypatch, tmp_
                 )
                 assert downloaded.status_code == 200
                 assert downloaded.content.startswith(b"%PDF")
+            if source == "indeed":
+                refreshed = store.get_candidate(candidate_id)
+                assert "Specialty: ICU" in refreshed["notes"]
+                assert nexus_sync._candidate_specialties(refreshed, {})[:2] == [
+                    "ICU", "Telemetry",
+                ]
 
     asyncio.run(exercise())

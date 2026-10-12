@@ -1132,18 +1132,19 @@
         contentType: captured.contentType || "application/pdf",
         captureVia: captured.via,
         browserDownloadSeen: Boolean(captured.browserDownloadSeen),
+        profile: captureProfile(context).profile || null,
       };
     } finally {
       await endResumeCapture();
     }
   }
 
-  function captureProfile() {
+  function captureProfile(knownContext = null) {
     if (!/(^|\.)indeed\.com$/i.test(location.hostname)) {
       return { ok: false, error: "The active tab is not an Indeed page." };
     }
 
-    const context = chooseProfileContext();
+    const context = knownContext || chooseProfileContext();
     if (!context) {
       return {
         ok: false,
