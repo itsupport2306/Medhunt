@@ -54,6 +54,16 @@ def rows() -> tuple[NexusTaxonomyRow, ...]:
     return valid
 
 
+def selected_row(offering: str, profession: str, specialty: str) -> NexusTaxonomyRow | None:
+    """Accept only a complete profession/specialty/offering combination in the sheet."""
+    wanted = (normalize(offering), normalize(profession), normalize(specialty))
+    if not all(wanted):
+        return None
+    return next((item for item in rows() if (
+        normalize(item.offering), normalize(item.profession), normalize(item.specialty)
+    ) == wanted), None)
+
+
 @lru_cache(maxsize=1)
 def professions() -> tuple[str, ...]:
     return tuple(dict.fromkeys(item.profession for item in rows()))
@@ -146,5 +156,5 @@ def classify(
 
 __all__ = [
     "NexusTaxonomyRow", "classify", "profession_labels_for_role",
-    "professions", "rows", "specialty_labels", "specialty_labels_for_role",
+    "professions", "rows", "selected_row", "specialty_labels", "specialty_labels_for_role",
 ]

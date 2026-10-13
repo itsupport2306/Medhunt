@@ -895,6 +895,19 @@ def _trusted_identity(payload: Mapping[str, Any]) -> dict[str, Any]:
                 if role_confidence >= 0.8 and role_evidence else ()
             )
             resume_specialties = _text_values([*role_matches, *extracted])
+    manual = candidate.get("nexus_classification")
+    selected = None
+    if isinstance(manual, Mapping):
+        selected = nexus_taxonomy.selected_row(
+            str(manual.get("offering") or ""),
+            str(manual.get("profession") or ""),
+            str(manual.get("specialty") or ""),
+        )
+        if selected is None:
+            raise NexusPermanentError(
+                "The selected Nexus classification is no longer supported.",
+                operation="payload_validation", code="nexus_classification_invalid",
+            )
     return {
         "firstName": first_name,
         "middleName": middle_name,
@@ -914,6 +927,10 @@ def _trusted_identity(payload: Mapping[str, Any]) -> dict[str, Any]:
         "source_specialties": source_specialties,
         "resume_specialties": resume_specialties,
         "specialties": _text_values([*source_specialties, *resume_specialties]),
+        "nexus_classification": (
+            {"offering": selected.offering, "profession": selected.profession,
+             "specialty": selected.specialty} if selected else None
+        ),
     }
 
 
@@ -1215,6 +1232,12 @@ def _build_profile(
     state_map = profile.pop("stateIds", {}) or {}
     profession_name = str(profile.pop("professionName", "") or "").strip()
     specialty_name = str(profile.pop("specialtyName", "") or "").strip()
+    manual = identity.get("nexus_classification")
+    if isinstance(manual, Mapping):
+        profession_name = str(manual.get("profession") or "")
+        specialty_name = str(manual.get("specialty") or "")
+        for key in ("professionId", "professionIds", "specialtyId", "specialtyIds", "primarySpecialtyId"):
+            profile.pop(key, None)
     referral_name = str(profile.pop("referralSourceName", "") or "").strip()
     status_name = str(profile.pop("statusName", "") or "").strip()
     country_name = str(profile.pop("countryName", "") or "").strip()
@@ -1341,7 +1364,7 @@ def _build_profile(
         *source_specialties,
         *_role_specialty_labels(role, initial_profession_values),
         *resume_specialties,
-    ])
+    ]) if not isinstance(manual, Mapping) else [specialty_name]
     taxonomy_row = nexus_taxonomy.classify(
         initial_profession_values, actual_specialties,
     )
@@ -1434,6 +1457,22 @@ def _build_profile(
         profile["specialtyId"] = specialty_id
         profile["primarySpecialtyId"] = specialty_id
         profile["specialtyIds"] = specialty_ids or [specialty_id]
+    if isinstance(manual, Mapping):
+        exact_profession = _preferred_master_id(
+            client, "professions", (profession_name,), description="selected profession",
+        )
+        exact_specialties = _matching_specialties(client, exact_profession, [specialty_name])
+        if not exact_specialties:
+            raise NexusPermanentError(
+                "The selected Nexus specialty is unavailable for that profession.",
+                operation="payload_validation", code="nexus_selected_specialty_unavailable",
+            )
+        exact_specialty = int(_master_id(exact_specialties[0], "specialties"))
+        profile["professionId"] = exact_profession
+        profile["professionIds"] = [exact_profession]
+        profile["specialtyId"] = exact_specialty
+        profile["primarySpecialtyId"] = exact_specialty
+        profile["specialtyIds"] = [exact_specialty]
 
     job_types = profile.get("jobTypeIds")
     allowed = {"LOCAL", "PERDIEM", "PERM", "TRAVEL"}
@@ -1464,13 +1503,16 @@ def _repair_linked_classification(
     role = str(identity.get("role") or "")
     sources = _text_values(identity.get("source_specialties"))
     resume = _text_values(identity.get("resume_specialties"))
-    if not (sources or resume or _role_specialty_labels(role, _profession_labels(role))):
+    manual = isinstance(identity.get("nexus_classification"), Mapping)
+    if not (manual or sources or resume or _role_specialty_labels(role, _profession_labels(role))):
         return False
     try:
         proposed = _build_profile(client, identity, defaults)
     except NexusPermanentError:
         # Existing résumé delivery must continue when candidate location or
         # unrelated creation-only defaults are no longer available locally.
+        if manual:
+            raise
         return False
     proposed_profession = int(proposed["professionId"])
     proposed_specialty = int(proposed["specialtyId"])
@@ -1501,7 +1543,7 @@ def _repair_linked_classification(
         if value not in (None, "")
     }
     known_professions = current_professions - unknown_professions
-    if known_professions and proposed_profession not in known_professions:
+    if known_professions and proposed_profession not in known_professions and not manual:
         return False
     current_specialties = {
         int(value) for value in (
@@ -1514,9 +1556,9 @@ def _repair_linked_classification(
         and current_primary == proposed_specialty
     ):
         return False
-    if current_specialties - unknown_specialties and not resume:
+    if current_specialties - unknown_specialties and not resume and not manual:
         return False
-    profession_ids = sorted(known_professions | {proposed_profession})
+    profession_ids = [proposed_profession] if manual else sorted(known_professions | {proposed_profession})
     patch = {
         "professionIds": profession_ids,
         "specialtyIds": proposed_specialties,
@@ -1858,6 +1900,16 @@ def process_delivery(
             client, linked_candidate_id, identity, settings.default_profile,
             before_write=before_write,
         )
+        if payload.get("classification_only") is True:
+            return {
+                "status": "delivered",
+                "action": "classification_refreshed",
+                "classification_updated": classification_updated,
+                "nexus_candidate_id": linked_candidate_id,
+                "matched_by": ["stored_link"],
+                "resume_id": resume_id,
+                "checksum_sha256": checksum,
+            }
         doc_type_id = _resume_doc_type_id(client)
         if before_write and not classification_updated:
             before_write("resume_upload")

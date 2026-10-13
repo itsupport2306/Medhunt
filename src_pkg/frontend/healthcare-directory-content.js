@@ -72,7 +72,7 @@
     }
   }
 
-  const PROVIDER_CREDENTIAL = /^(?:M\.?D\.?|D\.?O\.?|M\.?P\.?H\.?|Ph\.?D\.?|DNP|APRN(?:-C)?|NP|FNP(?:-(?:C|BC))?|PMHNP(?:-(?:C|BC))?|AGNP(?:-(?:C|BC))?|CRNP|CNP|CNM|(?:R?PA-C|PAC|P\.?A\.?|PHYSICIAN ASSISTANT)|RN|LPN|MSN|BSN|MS|SCD|DDS|DMD|FACP|FACOG)\.?$/i;
+  const PROVIDER_CREDENTIAL = /^(?:M\.?D\.?|D\.?O\.?|M\.?P\.?H\.?|Ph\.?D\.?|DNP|AOCNP|ARNP|APRN(?:-(?:C|BC|CNP))?|APN|ANP|N\.?P\.?|NP(?:-(?:C|BC))?|FNP(?:-(?:C|BC))?|ACNP(?:-BC)?|PMHNP(?:-(?:C|BC))?|AGNP(?:-(?:C|BC))?|CRNP|CNP|CNM|(?:R?PA-C|PAC|P\.?A\.?|PHYSICIAN ASSISTANT)|R\.?\s*N\.?|LPN|LVN|NURSE PRACTITIONER|REGISTERED NURSE|MSN|BSN|BSNRN|M\.?S\.?|SCD|DDS|DMD|FACP|FACOG)\.?$/i;
 
   function providerCredentials(value) {
     const parts = clean(value, 240)
@@ -1250,7 +1250,18 @@
         || parsed.pathname.match(/^\/npi\/(\d{10})(?:-|\/|$)/i)?.[1];
       if (!npi || seen.has(npi)) continue;
       const card = smallestContainer(link, /\bNPI Number\s*:/i);
-      const name = cleanProviderName(link.textContent);
+      const heading = clean(link.textContent, 240);
+      if (NON_PERSON.test(heading)) continue;
+      const commaName = heading.includes(",") ? cleanProviderName(heading.split(",")[0]) : "";
+      let slug = parsed.pathname.split("/").filter(Boolean).pop() || "";
+      try { slug = decodeURIComponent(slug); } catch { /* Keep the URL's literal slug. */ }
+      const slugName = cleanProviderName(
+        slug.replace(/^\d{10}-/, "").replace(/-/g, " "),
+      );
+      // NPI No. places credentials after the provider name. New credentials
+      // should not make an otherwise valid person card disappear.
+      const name = [commaName, slugName, cleanProviderName(heading)]
+        .find((value) => looksLikePersonName(value)) || "";
       if (!looksLikePersonName(name)) continue;
       const text = visibleText(card);
       const address = clean(text.match(/\bAddress\s*:\s*(.*?)(?=\s+(?:Phone|Fax)\s*:|$)/i)?.[1] || "", 500);

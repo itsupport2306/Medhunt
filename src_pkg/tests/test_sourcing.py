@@ -3774,11 +3774,33 @@ def test_usnews_professional_profile_resume_is_generated_stored_and_deduplicated
                 "address": "1470 Madison Ave, New York, NY 10029",
                 "location": "New York, NY",
             }
+            quick_sourcer_client.apply_to_candidate(sharecare_id, {
+                "status": "found", "name": "Raja Flores", "source": "test fixture",
+                "emails": [],
+                "phones": [{"value": "+12125550123", "type": "Wireless"}],
+                "addresses": ["New York, NY"],
+            })
+            refreshed = store.upsert_candidate_profiles([{
+                "name": "Raja Flores", "location": "New York, NY",
+                "source": "sharecare", "source_id": "1306821244",
+                "source_url": "https://providers.sharecare.com/doctor/dr-raja-flores",
+                "notes": "Specialty: Cardiothoracic Surgery",
+            }])
+            assert refreshed[0]["id"] == sharecare_id
             sharecare_resume = await client.post(
                 f"/candidates/{sharecare_id}/professional-profile-resume",
                 json=sharecare_body,
             )
             assert sharecare_resume.status_code == 200, sharecare_resume.text
+            assert sharecare_resume.json()["resume"]["contact_sheet_embedded"] is True
+            sharecare_pdf = await client.get(
+                f"/candidates/{sharecare_id}/resumes/{sharecare_resume.json()['resume']['id']}"
+            )
+            assert sharecare_pdf.status_code == 200
+            sharecare_text = "\n".join(
+                page.extract_text() or "" for page in PdfReader(BytesIO(sharecare_pdf.content)).pages
+            )
+            assert "+12125550123" in sharecare_text
 
             npino_id = store.add_candidate(
                 "Ayumi E Belanger", "Green Cove Springs, FL", source="npino",
@@ -3822,6 +3844,152 @@ def test_usnews_professional_profile_resume_is_generated_stored_and_deduplicated
             assert rejected.status_code == 400
 
     asyncio.run(exercise())
+
+
+def test_professional_capture_keeps_verified_lookup_identity_for_every_directory():
+    from playwright.sync_api import sync_playwright
+
+    script = (Path(__file__).parents[1] / "frontend" / "app.js").read_text(encoding="utf-8")
+    helper = script.split("function mergeProfessionalProfileCapture(profile, captured) {", 1)[1]
+    helper = "function mergeProfessionalProfileCapture(profile, captured) {" + helper.split(
+        "async function enrichProfessionalProfileAndResume(profile)", 1
+    )[0]
+    chrome = Path("C:/Program Files/Google/Chrome/Application/chrome.exe")
+    if not chrome.exists():
+        pytest.skip("Chrome is required for the extension identity regression check")
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(
+            headless=True, executable_path=str(chrome)
+        )
+        try:
+            page = browser.new_page()
+            page.add_script_tag(content=helper)
+            for source in ("usnews", "medifind", "commonspirit", "sharecare", "webmd", "npino"):
+                for source_id in ("", "search-card-id"):
+                    result = page.evaluate("""({source, source_id}) => {
+                  const profile = {
+                    name: 'Search Card Name', location: 'Iowa Falls, IA',
+                    source, source_id, _candidateId: 123, _selectionKey: 'selected',
+                  };
+                  mergeProfessionalProfileCapture(profile, {
+                    name: 'Dr. Detail Page Name', location: 'Des Moines, IA',
+                    source_id: 'detail-only-id', headline: 'Hematology & Oncology',
+                    profile_document: {kind: 'public_professional_profile'},
+                  });
+                  return profile;
+                }""", {"source": source, "source_id": source_id})
+                    assert result["name"] == "Search Card Name"
+                    assert result["location"] == "Iowa Falls, IA"
+                    assert result["source_id"] == source_id
+                    assert result["_candidateId"] == 123
+                    assert result["profile_document"]["kind"] == "public_professional_profile"
+                    assert result["headline"] == "Hematology & Oncology"
+        finally:
+            browser.close()
+
+
+def test_nexus_classification_selection_validates_and_requeues_linked_candidate(monkeypatch):
+    store.reset()
+    monkeypatch.setattr(config, "NEXUS_SYNC_ENABLED", True)
+    candidate_id = store.add_candidate("Raja Flores", "Columbus, OH", source="sharecare")
+    resume = store.attach_resume(candidate_id, "raja.pdf", b"%PDF-test", queue_nexus=True)
+    delivery = store.get_nexus_delivery_for_resume(resume["id"])
+    store.save_nexus_candidate_link(delivery["identity_key"], candidate_id, "9001")
+    store.finish_nexus_delivery(delivery["id"], "succeeded", nexus_candidate_id="9001")
+    monkeypatch.setattr(api_module.nexus_delivery, "supported_taxonomy_rows", lambda user: [
+        {"offering": "Physician", "profession": "Physician",
+         "specialty": "Hematology/Oncology"},
+    ])
+    monkeypatch.setattr(api_module.nexus_delivery, "queue_latest_resume_if_ready", lambda cid, user, **kwargs: {
+        "resume_id": resume["id"],
+    })
+
+    async def exercise():
+        transport = httpx.ASGITransport(app=api_module.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            options = await client.get("/nexus/taxonomy")
+            assert options.status_code == 200
+            assert options.json()["rows"][0]["offering"] == "Physician"
+            invalid = await client.post("/candidates/nexus-classification/batch", json={
+                "candidate_ids": [candidate_id], "offering": "Nursing",
+                "profession": "Physician", "specialty": "Hematology/Oncology",
+            })
+            assert invalid.status_code == 422
+            valid = await client.post("/candidates/nexus-classification/batch", json={
+                "candidate_ids": [candidate_id], "offering": "Physician",
+                "profession": "Physician", "specialty": "Hematology/Oncology",
+            })
+            assert valid.status_code == 200, valid.text
+            assert valid.json()["requeued"] == 1
+
+    asyncio.run(exercise())
+    route = store.get_candidate_ats_route(candidate_id, "local")
+    assert route["eligibility"]["nexus_classification"] == {
+        "offering": "Physician", "profession": "Physician",
+        "specialty": "Hematology/Oncology",
+    }
+    assert store.get_nexus_delivery_for_resume(resume["id"])["status"] == "pending"
+    assert store.get_nexus_delivery_for_resume(resume["id"])["operation"] == "classification_refresh"
+    payload = api_module.nexus_delivery._payload(
+        store.get_nexus_delivery_for_resume(resume["id"]),
+        store.get_candidate(candidate_id), store.get_resume(candidate_id, resume["id"]),
+    )
+    assert payload["candidate"]["nexus_classification"] == route["eligibility"]["nexus_classification"]
+
+
+def test_extension_can_select_enriched_profile_and_filter_nexus_choices():
+    from playwright.sync_api import sync_playwright
+    from sidepanel_lifecycle_smoke import MOCK_SCRIPT
+
+    chrome = Path("C:/Program Files/Google/Chrome/Application/chrome.exe")
+    if not chrome.exists():
+        pytest.skip("Chrome is required for the extension selection check")
+    frontend = Path(__file__).parents[1] / "frontend"
+    index = (frontend / "index.html").read_text(encoding="utf-8")
+    index = re.sub(r"\s*<script\s+src=[^>]+></script>", "", index, flags=re.I)
+    app_script = (frontend / "app.js").read_text(encoding="utf-8")
+    app_script = app_script.replace(
+        'const IS_EXTENSION = ["chrome-extension:", "moz-extension:"].includes(location.protocol);',
+        "const IS_EXTENSION = true;", 1,
+    )
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True, executable_path=str(chrome))
+        try:
+            page = browser.new_page()
+            page.set_content(index)
+            page.evaluate(MOCK_SCRIPT)
+            page.evaluate("""() => {
+              const original = window.fetch;
+              window.fetch = (input, options) => {
+                if (new URL(input, location.href).pathname === '/nexus/taxonomy') {
+                  return Promise.resolve(new Response(JSON.stringify({rows: [
+                    {offering:'Physician', profession:'Physician', specialty:'Hematology/Oncology'},
+                    {offering:'Nursing', profession:'RN', specialty:'ICU'},
+                  ]}), {status:200, headers:{'content-type':'application/json'}}));
+                }
+                return original(input, options);
+              };
+            }""")
+            page.add_script_tag(path=str(frontend / "profile-quality.js"))
+            page.add_script_tag(content=app_script)
+            page.wait_for_function("() => document.body.innerText.includes('Alice Morgan')")
+            page.wait_for_selector("#nexusOffering")
+            page.evaluate("""() => {
+              rememberEnrichedProfile(indeedCandidates[0]);
+              indeedSelected.clear();
+              renderIndeedProfiles();
+            }""")
+            checkbox = page.locator(".indeed-select")
+            assert checkbox.is_enabled()
+            checkbox.check()
+            assert checkbox.is_checked()
+            page.locator("#nexusOffering").select_option("Physician")
+            page.locator("#nexusProfession").select_option("Physician")
+            assert page.locator("#nexusSpecialty option").all_text_contents() == [
+                "Select", "Hematology/Oncology",
+            ]
+        finally:
+            browser.close()
 
 
 def test_profile_resume_fingerprint_changes_with_public_credentials():

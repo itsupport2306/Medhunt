@@ -35,7 +35,7 @@ from sourcing import (
     person_name, phone_policy, quick_sourcer_client,
     nexus_delivery, resume_extraction, watcher_notifications, healthboard_auth,
     profile_resume, zoom_sms,
-    contact_lookup_queue, ats_routing, ceipal_delivery,
+    contact_lookup_queue, ats_routing, ceipal_delivery, nexus_taxonomy, nexus_sync,
 )
 
 
@@ -62,7 +62,7 @@ async def lifespan(_app: FastAPI):
         nexus_delivery.stop()
 
 
-APP_VERSION = "3.37.7"
+APP_VERSION = "3.37.11"
 
 app = FastAPI(
     title="Medhunt Sourcing Assistant",
@@ -242,6 +242,13 @@ class ProfileBatchImportIn(BaseModel):
     profiles: list[ProfileImportIn]
     job_id: int | None = None
     search_url: str = ""
+
+
+class NexusClassificationIn(BaseModel):
+    candidate_ids: list[int] = Field(min_length=1, max_length=80)
+    offering: str = Field(min_length=1, max_length=120)
+    profession: str = Field(min_length=1, max_length=120)
+    specialty: str = Field(min_length=1, max_length=240)
 
 
 class ResumeDownloadIn(BaseModel):
@@ -1137,6 +1144,53 @@ def import_candidate_batch(body: ProfileBatchImportIn, request: Request):
         "search_url": body.search_url[:2000],
         "database": store.backend_name(),
     }
+
+
+@app.get("/nexus/taxonomy")
+def nexus_supported_classifications(request: Request):
+    actor = _request_user(request)
+    if ats_routing.destination_for(actor) != "nexus":
+        raise HTTPException(409, "Your organization is assigned to Ceipal.")
+    try:
+        rows = nexus_delivery.supported_taxonomy_rows(str(actor.get("sub") or "local"))
+    except nexus_sync.NexusDeliveryError as exc:
+        raise HTTPException(503, "Nexus classifications are temporarily unavailable.") from exc
+    return {"rows": rows}
+
+
+@app.post("/candidates/nexus-classification/batch")
+def set_nexus_classification(body: NexusClassificationIn, request: Request):
+    actor = _request_user(request)
+    if ats_routing.destination_for(actor) != "nexus":
+        raise HTTPException(409, "Your organization is assigned to Ceipal.")
+    row = nexus_taxonomy.selected_row(body.offering, body.profession, body.specialty)
+    if row is None:
+        raise HTTPException(422, "Choose an offering, profession, and specialty combination from the Nexus list.")
+    candidate_ids = list(dict.fromkeys(body.candidate_ids))
+    if any(candidate_id <= 0 for candidate_id in candidate_ids):
+        raise HTTPException(422, "Candidate IDs must be positive.")
+    if len(store.get_candidates(candidate_ids)) != len(candidate_ids):
+        raise HTTPException(404, "One or more candidates were not found.")
+    user_id = str(actor.get("sub") or "local")
+    selected = {"offering": row.offering, "profession": row.profession,
+                "specialty": row.specialty}
+    requeued = 0
+    nexus_available = None
+    for candidate_id in candidate_ids:
+        route = store.get_candidate_ats_route(candidate_id, user_id)
+        eligibility = dict((route or {}).get("eligibility") or {})
+        eligibility["nexus_classification"] = selected
+        store.set_candidate_ats_route(candidate_id, user_id, "nexus", eligibility)
+        if not store.list_resumes(candidate_id):
+            continue
+        if nexus_available is None:
+            nexus_available = nexus_delivery.enabled_for(user_id)
+        queued = nexus_delivery.queue_latest_resume_if_ready(
+            candidate_id, user_id, enabled=nexus_available,
+        )
+        if queued and store.requeue_nexus_classification(candidate_id, int(queued["resume_id"]), user_id):
+            requeued += 1
+    return {"saved": len(candidate_ids), "requeued": requeued, "classification": selected}
 
 
 @app.get("/candidates")

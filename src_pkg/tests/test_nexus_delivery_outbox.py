@@ -21,6 +21,36 @@ def _resume_pdf(name="Jane Doe"):
     return output.getvalue()
 
 
+def test_supported_taxonomy_uses_only_active_tenant_master_rows(monkeypatch):
+    class MasterClient:
+        def __init__(self, settings):
+            pass
+
+        def get_master(self, name):
+            return {
+                "professions": [
+                    {"professionId": 77, "name": "Physician", "active": True},
+                    {"professionId": 10, "name": "RN", "active": False},
+                ],
+                "specialties": [
+                    {"specialtyId": 88, "professionId": 77,
+                     "name": "Hematology/Oncology", "active": True},
+                    {"specialtyId": 20, "professionId": 10, "name": "ICU", "active": True},
+                ],
+            }[name]
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(nexus_delivery, "_delivery_settings", lambda user: nexus_sync.NexusSettings(enabled=True))
+    monkeypatch.setattr(nexus_sync, "NexusClient", MasterClient)
+    rows = nexus_delivery.supported_taxonomy_rows("test-user")
+    assert rows == [{
+        "offering": "Physician", "profession": "Physician",
+        "specialty": "Hematology/Oncology",
+    }]
+
+
 def test_role_prefers_clinical_resume_role_over_mislabeled_employer():
     candidate = {
         "name": "Candace Robertson",

@@ -15,6 +15,83 @@ from sourcing import nexus_sync
 PDF = b"%PDF-1.7\nunit-test\n%%EOF"
 
 
+def test_selected_physician_classification_overrides_nursing_defaults():
+    class MasterClient:
+        def get_master(self, name):
+            return {
+                "professions": [
+                    {"professionId": 10, "name": "RN", "active": True},
+                    {"professionId": 77, "name": "Physician", "active": True},
+                ],
+                "specialties": [
+                    {"specialtyId": 20, "professionId": 10, "name": "Unknown", "active": True},
+                    {"specialtyId": 88, "professionId": 77,
+                     "name": "Hematology/Oncology", "active": True},
+                ],
+            }[name]
+
+    identity = {
+        "firstName": "Raja", "middleName": "", "lastName": "Flores",
+        "email": "raja@example.test", "phone": "", "city": "Columbus",
+        "state": "OH", "country": "United States", "role": "Registered Nurse",
+        "source_specialties": ["ICU"], "resume_specialties": ["General"],
+        "nexus_classification": {
+            "offering": "Physician", "profession": "Physician",
+            "specialty": "Hematology/Oncology",
+        },
+    }
+    profile = nexus_sync._build_profile(MasterClient(), identity, _settings().default_profile)
+    assert profile["professionIds"] == [77]
+    assert profile["specialtyIds"] == [88]
+    assert profile["primarySpecialtyId"] == 88
+
+
+def test_selected_classification_repairs_already_linked_nexus_candidate():
+    payload = _payload(nexus_classification={
+        "offering": "Physician", "profession": "Physician",
+        "specialty": "Hematology/Oncology",
+    })
+    payload["nexus_candidate_id"] = "88"
+    payload["classification_only"] = True
+    patched = False
+
+    def handler(request):
+        nonlocal patched
+        path = request.url.path
+        if path.endswith("/master/professions"):
+            return httpx.Response(200, json=[
+                {"professionId": 10, "name": "RN", "active": True},
+                {"professionId": 77, "name": "Physician", "active": True},
+            ])
+        if path.endswith("/master/specialties"):
+            return httpx.Response(200, json=[
+                {"specialtyId": 20, "professionId": 10, "name": "ICU", "active": True},
+                {"specialtyId": 88, "professionId": 77,
+                 "name": "Hematology/Oncology", "active": True},
+            ])
+        if path.endswith("/candidates/88") and request.method == "GET":
+            return httpx.Response(200, json={
+                "professionIds": [77] if patched else [10],
+                "specialtyIds": [88] if patched else [20],
+                "primarySpecialtyId": 88 if patched else 20,
+            })
+        if path.endswith("/candidates/88") and request.method == "PATCH":
+            assert json.loads(request.content) == {
+                "professionIds": [77], "specialtyIds": [88], "primarySpecialtyId": 88,
+            }
+            patched = True
+            return httpx.Response(200, json={"id": 88})
+        raise AssertionError(request.url)
+
+    settings = _settings()
+    result = nexus_sync.process_delivery(
+        payload, PDF, settings=settings, client=_client(settings, handler),
+    )
+    assert patched
+    assert result["classification_updated"] is True
+    assert result["action"] == "classification_refreshed"
+
+
 def _settings(**changes):
     values = {
         "enabled": True,

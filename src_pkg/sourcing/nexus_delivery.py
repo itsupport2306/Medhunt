@@ -11,6 +11,7 @@ from . import (
     config,
     contact_access,
     healthboard_auth,
+    nexus_taxonomy,
     nexus_sync,
     phone_policy,
     resume_enrichment,
@@ -59,7 +60,9 @@ def enabled_for(user_id: str) -> bool:
         return False
 
 
-def queue_latest_resume_if_ready(candidate_id: int, user_id: str = "local") -> dict | None:
+def queue_latest_resume_if_ready(
+    candidate_id: int, user_id: str = "local", *, enabled: bool | None = None,
+) -> dict | None:
     """Queue a pre-existing latest resume after contacts become deliverable.
 
     Indeed normally captures the resume after enrichment, but recruiter uploads
@@ -67,7 +70,7 @@ def queue_latest_resume_if_ready(candidate_id: int, user_id: str = "local") -> d
     without sending every historical version or weakening the trusted-contact
     gate used by normal capture-time delivery.
     """
-    if not enabled_for(user_id):
+    if enabled is False or (enabled is None and not enabled_for(user_id)):
         return None
     # New extension lookups normally capture the resume after enrichment. Most
     # candidates therefore have no stored resume at this point; check that in
@@ -166,8 +169,15 @@ def _payload(delivery: dict, candidate: dict, resume: dict) -> dict:
     role = _role(candidate, extraction)
     if role:
         projected["job_title"] = role
+    route = store.get_candidate_ats_route(
+        int(candidate.get("id") or 0), str(delivery.get("requested_by") or "local")
+    )
+    classification = ((route or {}).get("eligibility") or {}).get("nexus_classification")
+    if isinstance(classification, dict):
+        projected["nexus_classification"] = classification
     return {
         "candidate": projected,
+        "classification_only": delivery.get("operation") == "classification_refresh",
         # This is the local parser's bounded structured projection, never the
         # full OCR transcript. Nexus accepts only its pre-approved gap-fill
         # fields after the platform candidate projection has been applied.
@@ -217,6 +227,40 @@ def _delivery_settings(user_id: str) -> nexus_sync.NexusSettings:
         master_cache_seconds=config.NEXUS_MASTER_CACHE_SECONDS,
         max_resume_bytes=config.NEXUS_MAX_RESUME_BYTES,
     )
+
+
+def supported_taxonomy_rows(user_id: str) -> list[dict]:
+    """Intersect the Nexus support sheet with this tenant's active master IDs."""
+    settings = _delivery_settings(user_id)
+    if not settings.enabled:
+        return []
+    client = nexus_sync.NexusClient(settings)
+    try:
+        professions = {
+            nexus_taxonomy.normalize(row.get("name")): int(row.get("professionId") or row.get("id"))
+            for row in client.get_master("professions")
+            if row.get("active", True) is not False
+            and (row.get("professionId") or row.get("id")) and row.get("name")
+        }
+        specialties = {
+            (int(row.get("professionId") or 0), nexus_taxonomy.normalize(row.get("name"))):
+                int(row.get("specialtyId") or row.get("id"))
+            for row in client.get_master("specialties")
+            if row.get("active", True) is not False and row.get("name")
+            and (row.get("specialtyId") or row.get("id"))
+        }
+    finally:
+        client.close()
+    output, seen = [], set()
+    for row in nexus_taxonomy.rows():
+        profession_id = professions.get(nexus_taxonomy.normalize(row.profession))
+        specialty_id = specialties.get((profession_id or 0, nexus_taxonomy.normalize(row.specialty)))
+        key = (row.offering, row.profession, row.specialty)
+        if profession_id and specialty_id and key not in seen:
+            output.append({"offering": row.offering, "profession": row.profession,
+                           "specialty": row.specialty})
+            seen.add(key)
+    return output
 
 
 def process_once() -> dict | None:

@@ -827,6 +827,29 @@ body.extension-shell .wrap { height: 100vh; max-width: none; overflow: hidden; p
   background: #fff;
   box-shadow: 0 -5px 16px rgba(20, 27, 49, .05);
 }
+.nexus-classification {
+  display: grid;
+  gap: 7px;
+  margin: 10px 12px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: #fff;
+  font-size: 11px;
+}
+.nexus-classification strong { font-size: 12px; }
+.nexus-classification label { display: grid; gap: 3px; font-weight: 600; }
+.nexus-classification select {
+  width: 100%;
+  min-height: 34px;
+  padding: 5px 7px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+}
+.nexus-classification small { color: var(--muted); line-height: 1.4; }
 .lookup-button {
   width: 100%;
   min-height: 48px;
