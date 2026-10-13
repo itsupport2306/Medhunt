@@ -26,6 +26,11 @@ def _terminal(job: dict, status: str, result: dict) -> dict:
     store.finish_contact_lookup_job(int(job["id"]), status, result)
     candidate_id = int(job["candidate_id"])
     user_id = str(job.get("requested_by") or "")
+    if status != "succeeded" and user_id and str(job.get("job_source") or "") != "halo_backfill":
+        route = store.get_candidate_ats_route(candidate_id, user_id)
+        eligibility = dict((route or {}).get("eligibility") or {})
+        if eligibility.pop("nexus_classification_pending", None):
+            store.set_candidate_ats_route(candidate_id, user_id, "nexus", eligibility)
     run_id = str(job.get("run_id") or "")
     public_status = str(result.get("status") or status)
     store.record_enrichment_event(

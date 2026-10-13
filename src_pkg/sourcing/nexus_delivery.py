@@ -60,6 +60,11 @@ def enabled_for(user_id: str) -> bool:
         return False
 
 
+def classification_pending(candidate_id: int, user_id: str) -> bool:
+    route = store.get_candidate_ats_route(candidate_id, user_id)
+    return bool(((route or {}).get("eligibility") or {}).get("nexus_classification_pending"))
+
+
 def queue_latest_resume_if_ready(
     candidate_id: int, user_id: str = "local", *, enabled: bool | None = None,
 ) -> dict | None:
@@ -81,6 +86,8 @@ def queue_latest_resume_if_ready(
     candidate = store.get_candidate(int(candidate_id))
     route = ats_routing.stored(candidate or {}, user_id)
     if route.get("destination") != "nexus":
+        return None
+    if classification_pending(int(candidate_id), user_id):
         return None
     projected = contact_access.project_candidate(candidate)
     if not (
@@ -295,6 +302,12 @@ def process_once() -> dict | None:
                 operation="ats_routing",
                 code="candidate_assigned_to_ceipal",
             )
+        if classification_pending(int(delivery["candidate_id"]), str(delivery.get("requested_by") or "local")):
+            store.finish_nexus_delivery(
+                delivery_id, "retry", error="waiting_for_classification",
+                retry_at=time.time() + 60, expected_lease_until=lease_until,
+            )
+            return {"status": "waiting_for_classification", "delivery_id": delivery_id}
         payload = _payload(delivery, candidate, resume)
         try:
             resume_pdf, _ = resume_enrichment.refresh_contact_sheet(

@@ -195,6 +195,7 @@ let nexusDeliverySummary = null;
 let nexusTaxonomyRows = [];
 let nexusTaxonomyLoaded = false;
 let nexusTaxonomyLoading = false;
+let nexusTaxonomyPromise = null;
 let nexusSelection = { offering: "", profession: "", specialty: "" };
 let nexusClassificationOpen = false;
 let nexusClassificationSelected = new Set();
@@ -2027,19 +2028,24 @@ function defaultIndeedCandidates() {
 }
 
 async function loadNexusTaxonomy() {
-  if (nexusTaxonomyLoaded || nexusTaxonomyLoading || !backendHealth) return;
+  if (nexusTaxonomyLoaded || !backendHealth) return;
+  if (nexusTaxonomyPromise) return nexusTaxonomyPromise;
   nexusTaxonomyLoading = true;
-  try {
-    const response = await api("/nexus/taxonomy", { timeout: 20000 });
-    nexusTaxonomyRows = Array.isArray(response?.rows) ? response.rows : [];
-    nexusTaxonomyLoaded = true;
-    if (activeView === "indeed" && indeedScanState.phase === "results") renderIndeedProfiles();
-  } catch {
-    // Older backends and Ceipal organizations do not expose Nexus choices.
-    nexusTaxonomyLoaded = true;
-  } finally {
-    nexusTaxonomyLoading = false;
-  }
+  nexusTaxonomyPromise = (async () => {
+    try {
+      const response = await api("/nexus/taxonomy", { timeout: 20000 });
+      nexusTaxonomyRows = Array.isArray(response?.rows) ? response.rows : [];
+      nexusTaxonomyLoaded = true;
+      if (activeView === "indeed" && indeedScanState.phase === "results") renderIndeedProfiles();
+    } catch {
+      // Ceipal organizations and older backends do not expose Nexus choices.
+      nexusTaxonomyLoaded = true;
+    } finally {
+      nexusTaxonomyLoading = false;
+      nexusTaxonomyPromise = null;
+    }
+  })();
+  return nexusTaxonomyPromise;
 }
 
 function nexusClassificationChoice() {
@@ -2070,7 +2076,8 @@ function nexusClassificationControls() {
 
 function nexusReadyProfiles() {
   return indeedLookupProfiles.filter((profile) =>
-    Number(profile._candidateId) > 0 && isIndeedMatch(indeedLookupFor(profile)));
+    Number(profile._candidateId) > 0 && isIndeedMatch(indeedLookupFor(profile))
+    && indeedLookupFor(profile).ats_destination !== "ceipal");
 }
 
 function nexusClassificationDialog() {
@@ -2091,7 +2098,14 @@ function nexusClassificationDialog() {
   </div>`;
 }
 
-function openNexusClassification() {
+async function openNexusClassification() {
+  if (!nexusTaxonomyRows.length) {
+    nexusTaxonomyLoaded = false;
+    await loadNexusTaxonomy();
+  }
+  if (!nexusTaxonomyRows.length) {
+    throw new Error("Nexus classification choices are unavailable. Try again shortly.");
+  }
   nexusClassificationSelected = new Set(nexusReadyProfiles().map((profile) => Number(profile._candidateId)));
   nexusClassificationOpen = true;
   renderIndeedProfiles();
@@ -2508,7 +2522,7 @@ function renderIndeedProfiles(scan = {}) {
           </button>` : ""}
         </div>
         ${nexusDeliverySummaryMarkup()}
-        ${matched && nexusTaxonomyRows.length ? `<div class="nexus-result-action"><button type="button" class="inline-scan-action" data-action="open-nexus-classification">Set Nexus classification for ready profiles</button></div>` : ""}` : `
+        ${nexusReadyProfiles().length ? `<div class="nexus-result-action"><button type="button" class="inline-scan-action" data-action="open-nexus-classification">Set Nexus classification for ready profiles</button></div>` : ""}` : `
         <div class="capture-toolbar">
           <div class="queue-heading">
             <span class="section-kicker">Profiles on this page</span>
@@ -2600,6 +2614,7 @@ function nexusCandidateStatusMarkup(candidateId) {
     pending: ["pending", "Nexus upload pending"],
     already_in_nexus: ["existing", "Already in Nexus"],
     waiting_for_resume: ["waiting", "Waiting for resume before Nexus upload"],
+    waiting_for_classification: ["waiting", "Waiting for your Nexus classification"],
     not_uploaded: ["failed", "Not parsed to Nexus"],
   };
   const [state, label] = states[item.group] || ["failed", "Not parsed to Nexus"];
@@ -2619,6 +2634,7 @@ function nexusDeliverySummaryMarkup() {
   const pending = Number(nexusDeliverySummary.pending) || 0;
   const alreadyInNexus = Number(nexusDeliverySummary.already_in_nexus) || 0;
   const waitingForResume = Number(nexusDeliverySummary.waiting_for_resume) || 0;
+  const waitingForClassification = Number(nexusDeliverySummary.waiting_for_classification) || 0;
   const notUploaded = Number(nexusDeliverySummary.not_uploaded) || 0;
   return `<div class="nexus-delivery-summary${pending ? " is-pending" : ""}" role="status" aria-live="polite">
     <strong>Nexus upload</strong>
@@ -2626,6 +2642,7 @@ function nexusDeliverySummaryMarkup() {
     <span><b>${pending}</b> pending</span>
     <span><b>${alreadyInNexus}</b> already in Nexus</span>
     <span><b>${waitingForResume}</b> waiting for resume</span>
+    ${waitingForClassification ? `<span><b>${waitingForClassification}</b> awaiting your classification</span>` : ""}
     <span><b>${notUploaded}</b> not uploaded</span>
   </div>`;
 }
@@ -3077,6 +3094,7 @@ async function scanIndeedCandidates(options = {}) {
       found: indeedCandidates.length,
       total: Number(result.expected_count) || indeedCandidates.length,
     };
+    void loadNexusTaxonomy();
     indeedSaveStatus = null;
     if (!indeedCandidates.length) {
       renderSourcingStatus(
@@ -3663,6 +3681,7 @@ async function lookupSelectedIndeedCandidates() {
           candidate_ids: candidateIds.slice(start, start + CONTACT_BATCH_SIZE),
           run_id: lookupRunId,
           confirmed: true,
+          hold_nexus_classification: true,
         }),
         timeout: 30000,
       });
@@ -3741,6 +3760,7 @@ async function lookupSelectedIndeedCandidates() {
             candidate_ids: chunk.map((profile) => profile._candidateId),
             run_id: lookupRunId,
             confirmed: true,
+            hold_nexus_classification: true,
           }),
           timeout: CONTACT_BATCH_TIMEOUT,
         });
