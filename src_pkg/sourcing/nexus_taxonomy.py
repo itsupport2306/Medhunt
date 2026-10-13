@@ -129,6 +129,10 @@ def classify(
     ]
     if matched:
         candidates = matched
+    elif wanted_professions - {"unknown"}:
+        # A source role that identifies a profession takes precedence over a
+        # specialty name shared with a different profession or offering.
+        return None
     elif len({normalize(item.profession) for item in candidates}) != 1:
         return None
     # Some Allied rows intentionally repeat a specialty under a concrete sub

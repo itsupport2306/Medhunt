@@ -235,7 +235,7 @@ def test_nursing_role_resolves_exact_rn_and_unknown_specialty_defaults():
     assert result["nexus_candidate_id"] == 702
 
 
-def test_actual_candidate_specialty_overrides_generic_default_and_aligns_profession():
+def test_cross_profession_specialty_does_not_override_known_role():
     def handler(request):
         if request.url.path.endswith("/candidates/search"):
             return httpx.Response(200, json={"records": []})
@@ -256,17 +256,17 @@ def test_actual_candidate_specialty_overrides_generic_default_and_aligns_profess
             ])
         if request.url.path.endswith("/candidate/webhook/create"):
             content = request.content.decode("latin-1")
-            assert '"specialtyId":321' in content
-            assert '"primarySpecialtyId":321' in content
-            assert '"specialtyIds":[321]' in content
-            assert '"professionId":77' in content
-            assert '"professionIds":[77]' in content
-            assert '"specialtyId":20' not in content
+            assert '"specialtyId":20' in content
+            assert '"primarySpecialtyId":20' in content
+            assert '"specialtyIds":[20]' in content
+            assert '"professionId":10' in content
+            assert '"professionIds":[10]' in content
+            assert '"specialtyId":321' not in content
             return httpx.Response(201, json={"id": 705})
         if request.url.path.endswith("/candidates/705") and request.method == "GET":
             return httpx.Response(200, json={
-                "professionIds": [77], "specialtyIds": [321],
-                "primarySpecialtyId": 321,
+                "professionIds": [10], "specialtyIds": [20],
+                "primarySpecialtyId": 20,
             })
         raise AssertionError(request.url)
 
@@ -276,7 +276,6 @@ def test_actual_candidate_specialty_overrides_generic_default_and_aligns_profess
         settings=settings, client=_client(settings, handler),
     )
     assert result["nexus_candidate_id"] == 705
-    assert result["classification_updated"] is False
 
 
 @pytest.mark.parametrize(("job_title", "specialty"), [
@@ -550,6 +549,46 @@ def test_unmatched_specialty_preserves_known_nursing_profession():
     profile = nexus_sync._build_profile(client, identity, settings.default_profile)
     assert profile["professionId"] == 10
     assert profile["specialtyId"] == 20
+
+
+@pytest.mark.parametrize(
+    ("role", "specialty", "expected_profession", "expected_specialty"),
+    [
+        ("Nurse Practitioner - Acute Care", "Nurse Practitioner - Acute Care", 12, 22),
+        ("Physician", "ICU", 13, 23),
+    ],
+)
+def test_unmatched_specialty_does_not_replace_known_profession(
+    role, specialty, expected_profession, expected_specialty,
+):
+    def handler(request):
+        if request.url.path.endswith("/master/professions"):
+            return httpx.Response(200, json=[
+                {"professionId": 12, "name": "Nurse Practitioner", "active": True},
+                {"professionId": 13, "name": "Physician", "active": True},
+                {"professionId": 10, "name": "RN", "active": True},
+                {"professionId": 99, "name": "Unknown", "active": True},
+            ])
+        if request.url.path.endswith("/master/specialties"):
+            return httpx.Response(200, json=[
+                {"specialtyId": 22, "professionId": 12, "name": "Other", "active": True},
+                {"specialtyId": 23, "professionId": 13, "name": "Other", "active": True},
+                {"specialtyId": 20, "professionId": 10, "name": "ICU", "active": True},
+                {"specialtyId": 199, "professionId": 99, "name": "Unknown", "active": True},
+            ])
+        raise AssertionError(request.url)
+
+    settings = _settings(default_profile={
+        "stateIds": {"OH": 30}, "countryId": 40, "statusId": 50,
+        "referralSourceId": 60, "jobTypeIds": ["PERM"],
+    })
+    client = _client(settings, handler)
+    identity = nexus_sync._trusted_identity(
+        _payload(job_title=role, specialty=specialty)
+    )
+    profile = nexus_sync._build_profile(client, identity, settings.default_profile)
+    assert profile["professionIds"] == [expected_profession]
+    assert profile["primarySpecialtyId"] == expected_specialty
 
 
 def test_unmatched_candidate_specialty_uses_unknown_classification():

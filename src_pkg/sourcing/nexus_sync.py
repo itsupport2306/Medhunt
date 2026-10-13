@@ -1162,17 +1162,19 @@ def _unknown_classification(client: NexusClient) -> tuple[int, int]:
 
 
 def _unknown_specialty_for_profession(client: NexusClient, profession_id: int) -> int | None:
-    """Keep an identified profession when Nexus has its own Unknown specialty."""
-    try:
-        return _preferred_master_id(
-            client, "specialties", ("Unknown",), description="specialty",
-            extra_predicate=lambda row: (
-                bool(row.get("professionId"))
-                and int(row["professionId"]) == profession_id
-            ),
-        )
-    except NexusPermanentError:
-        return None
+    """Keep a known profession with its own generic specialty when available."""
+    for label in ("Unknown", "Other"):
+        try:
+            return _preferred_master_id(
+                client, "specialties", (label,), description="specialty",
+                extra_predicate=lambda row: (
+                    bool(row.get("professionId"))
+                    and int(row["professionId"]) == profession_id
+                ),
+            )
+        except NexusPermanentError:
+            continue
+    return None
 
 
 def _matching_specialties(
@@ -1367,7 +1369,7 @@ def _build_profile(
         specialty_rows = _matching_specialties(
             client, profession_id, actual_specialties,
         ) if profession_id else []
-        if not specialty_rows:
+        if not specialty_rows and _label(profession_values[0] if profession_values else "") == "unknown":
             # A clearly named specialty can identify a profession when a
             # generic source role could not. Do this only for the first match;
             # every additional specialty is then constrained to that profession.
