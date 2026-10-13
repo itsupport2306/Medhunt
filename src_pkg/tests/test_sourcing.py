@@ -4067,7 +4067,36 @@ def test_extension_can_select_enriched_profile_and_filter_nexus_choices():
             assert checkbox.is_checked()
             assert page.locator("#nexusOffering").count() == 0
             page.evaluate("""() => {
-              const profile = indeedCandidates[0];
+              window.originalTestProfile = indeedCandidates[0];
+              indeedCandidates = Array.from({length: 12}, (_, index) => ({
+                ...window.originalTestProfile,
+                name: `Candidate ${index + 1}`,
+                source_id: `test-profile-${index + 1}`,
+                source_url: `https://example.com/profile/${index + 1}`,
+                _selectionKey: `test-profile-${index + 1}`,
+              }));
+              rememberEnrichedProfile(indeedCandidates[10]);
+              rememberEnrichedProfile(indeedCandidates[11]);
+              indeedSelected = new Set(indeedCandidates.slice(0, 10).map((profile) => profile._selectionKey));
+              indeedManualSelected = new Set();
+              renderIndeedProfiles();
+            }""")
+            checkboxes = page.locator(".indeed-select")
+            assert checkboxes.count() == 12
+            assert checkboxes.nth(10).is_enabled()
+            checkboxes.nth(10).check()
+            assert checkboxes.nth(10).is_checked()
+            assert not checkboxes.nth(9).is_checked()
+            checkboxes.nth(11).check()
+            assert checkboxes.nth(10).is_checked()
+            assert checkboxes.nth(11).is_checked()
+            assert not checkboxes.nth(8).is_checked()
+            assert page.locator("#indeedSelectedCount").inner_text() == "10"
+            page.evaluate("""() => {
+              const profile = window.originalTestProfile;
+              indeedCandidates = [profile];
+              indeedManualSelected = new Set();
+              indeedSelected = new Set([profile._selectionKey]);
               profile._candidateId = 42;
               indeedLookupProfiles = [profile];
               indeedLookupScope = new Set([profile._selectionKey]);

@@ -181,6 +181,7 @@ let activeSourcingContextKey = "";
 let activePageIndicatorLabel = "Candidate page";
 let indeedCandidates = [];
 let indeedSelected = new Set();
+let indeedManualSelected = new Set();
 let enrichedProfileKeys = new Set();
 let enrichedProfileOwner = "";
 let indeedSaveStatus = null;
@@ -2160,8 +2161,8 @@ function updateIndeedSelectionUi() {
         : "Select all profiles");
   }
   document.querySelectorAll(".indeed-select").forEach((checkbox) => {
-    checkbox.disabled = indeedScanState.phase === "lookup" ||
-      (count >= MAX_LOOKUP_SELECTION && !checkbox.checked);
+    checkbox.checked = indeedSelected.has(checkbox.dataset.key);
+    checkbox.disabled = indeedScanState.phase === "lookup";
   });
   const selectAll = $("#indeedSelectAll");
   if (selectAll) {
@@ -3089,6 +3090,9 @@ async function scanIndeedCandidates(options = {}) {
           .filter((key) => previousSelection.has(key)),
         ))
       : new Set(defaultIndeedCandidates().slice(0, MAX_LOOKUP_SELECTION).map((profile) => profile._selectionKey));
+    indeedManualSelected = keepSelection
+      ? new Set([...indeedManualSelected].filter((key) => indeedSelected.has(key)))
+      : new Set();
     indeedScanState = {
       phase: "captured",
       found: indeedCandidates.length,
@@ -3807,6 +3811,7 @@ function toggleAllIndeedCandidates() {
   indeedSelected = indeedSelected.size === selectable.length
     ? new Set()
     : new Set(selectable.map((profile) => profile._selectionKey));
+  indeedManualSelected.clear();
   document.querySelectorAll(".indeed-select").forEach((checkbox) => {
     checkbox.checked = indeedSelected.has(checkbox.dataset.key);
   });
@@ -4826,10 +4831,24 @@ document.addEventListener("change", async (event) => {
   }
   if (event.target.classList.contains("indeed-select")) {
     if (event.target.checked && indeedSelected.size >= MAX_LOOKUP_SELECTION) {
-      event.target.checked = false;
-      notify(`You can select up to ${MAX_LOOKUP_SELECTION} candidates.`, "error");
-    } else if (event.target.checked) indeedSelected.add(event.target.dataset.key);
-    else indeedSelected.delete(event.target.dataset.key);
+      const autoSelected = [...indeedSelected].filter((key) => !indeedManualSelected.has(key));
+      const replaced = autoSelected.at(-1);
+      if (replaced) {
+        indeedSelected.delete(replaced);
+        indeedSelected.add(event.target.dataset.key);
+        indeedManualSelected.add(event.target.dataset.key);
+        notify(`Replaced an automatic selection to stay within the ${MAX_LOOKUP_SELECTION}-profile limit.`);
+      } else {
+        event.target.checked = false;
+        notify(`Unselect one profile first. You can select up to ${MAX_LOOKUP_SELECTION}.`, "error");
+      }
+    } else if (event.target.checked) {
+      indeedSelected.add(event.target.dataset.key);
+      indeedManualSelected.add(event.target.dataset.key);
+    } else {
+      indeedSelected.delete(event.target.dataset.key);
+      indeedManualSelected.delete(event.target.dataset.key);
+    }
     updateIndeedSelectionUi();
     return;
   }
@@ -4837,6 +4856,7 @@ document.addEventListener("change", async (event) => {
     indeedSelected = event.target.checked
       ? new Set(selectableIndeedCandidates().slice(0, MAX_LOOKUP_SELECTION).map((profile) => profile._selectionKey))
       : new Set();
+    indeedManualSelected.clear();
     document.querySelectorAll(".indeed-select").forEach((checkbox) => {
       checkbox.checked = indeedSelected.has(checkbox.dataset.key);
     });
