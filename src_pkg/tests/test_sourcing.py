@@ -3961,7 +3961,13 @@ def test_extension_can_select_enriched_profile_and_filter_nexus_choices():
             page.evaluate("""() => {
               const original = window.fetch;
               window.fetch = (input, options) => {
-                if (new URL(input, location.href).pathname === '/nexus/taxonomy') {
+                const path = new URL(input, location.href).pathname;
+                if (path === '/candidates/nexus-classification/batch') {
+                  window.nexusClassificationRequest = JSON.parse(options.body);
+                  return Promise.resolve(new Response(JSON.stringify({saved: 1, requeued: 0}),
+                    {status: 200, headers: {'content-type': 'application/json'}}));
+                }
+                if (path === '/nexus/taxonomy') {
                   return Promise.resolve(new Response(JSON.stringify({rows: [
                     {offering:'Physician', profession:'Physician', specialty:'Hematology/Oncology'},
                     {offering:'Nursing', profession:'RN', specialty:'ICU'},
@@ -3973,7 +3979,7 @@ def test_extension_can_select_enriched_profile_and_filter_nexus_choices():
             page.add_script_tag(path=str(frontend / "profile-quality.js"))
             page.add_script_tag(content=app_script)
             page.wait_for_function("() => document.body.innerText.includes('Alice Morgan')")
-            page.wait_for_selector("#nexusOffering")
+            assert page.locator("#nexusOffering").count() == 0
             page.evaluate("""() => {
               rememberEnrichedProfile(indeedCandidates[0]);
               indeedSelected.clear();
@@ -3983,11 +3989,40 @@ def test_extension_can_select_enriched_profile_and_filter_nexus_choices():
             assert checkbox.is_enabled()
             checkbox.check()
             assert checkbox.is_checked()
+            assert page.locator("#nexusOffering").count() == 0
+            page.evaluate("""() => {
+              const profile = indeedCandidates[0];
+              profile._candidateId = 42;
+              indeedLookupProfiles = [profile];
+              indeedLookupScope = new Set([profile._selectionKey]);
+              indeedLookupState.set(profile._selectionKey, {
+                status: 'found', emails: ['alice@example.com'], phones: [],
+              });
+              indeedLookupSummary = {total: 1, processed: 1, matched: 1, no_match: 0, errors: 0};
+              indeedScanState.phase = 'results';
+              renderIndeedProfiles();
+            }""")
+            page.wait_for_selector('[data-action="open-nexus-classification"]')
+            assert page.locator("#nexusOffering").count() == 0
+            page.locator('[data-action="open-nexus-classification"]').click()
+            assert page.locator(".nexus-ready-select").is_checked()
             page.locator("#nexusOffering").select_option("Physician")
             page.locator("#nexusProfession").select_option("Physician")
             assert page.locator("#nexusSpecialty option").all_text_contents() == [
                 "Select", "Hematology/Oncology",
             ]
+            page.locator("#nexusSpecialty").select_option("Hematology/Oncology")
+            page.locator('[data-action="apply-nexus-classification"]').click()
+            page.wait_for_function("() => Boolean(window.nexusClassificationRequest)")
+            assert page.evaluate("() => window.nexusClassificationRequest") == {
+                "candidate_ids": [42],
+                "offering": "Physician",
+                "profession": "Physician",
+                "specialty": "Hematology/Oncology",
+            }
+            page.locator('[data-action="open-nexus-classification"]').click()
+            page.locator('[data-action="close-nexus-classification"]').click()
+            assert page.locator("#nexusOffering").count() == 0
         finally:
             browser.close()
 
