@@ -1554,6 +1554,7 @@ def _repair_linked_classification(
     if (
         proposed_profession in current_professions
         and current_primary == proposed_specialty
+        and (current_specialties == set(proposed_specialties) if manual else True)
     ):
         return False
     if current_specialties - unknown_specialties and not resume and not manual:
@@ -1571,10 +1572,15 @@ def _repair_linked_classification(
         write=True, json=patch,
     )
     verified = client.request("GET", path, operation="candidate classification verification").json()
+    verified_specialties = set(verified.get("specialtyIds") or []) if isinstance(verified, Mapping) else set()
+    specialties_match = (
+        verified_specialties == set(proposed_specialties)
+        if manual else set(proposed_specialties) <= verified_specialties
+    )
     if (
         not isinstance(verified, Mapping)
         or proposed_profession not in (verified.get("professionIds") or [])
-        or not set(proposed_specialties) <= set(verified.get("specialtyIds") or [])
+        or not specialties_match
         or int(verified.get("primarySpecialtyId") or 0) != proposed_specialty
     ):
         raise NexusIndeterminateError(
@@ -1597,11 +1603,12 @@ def _ensure_created_classification(
     so this bounded read/conditional patch is safe and stays on the background
     delivery worker rather than the extension request path.
     """
+    manual = isinstance(identity.get("nexus_classification"), Mapping)
     evidence = _text_values([
         *_text_values(identity.get("source_specialties")),
         *_text_values(identity.get("resume_specialties")),
     ])
-    if not evidence:
+    if not (manual or evidence):
         return None
     try:
         expected_profession = int(profile.get("professionId") or 0)
@@ -1659,9 +1666,14 @@ def _ensure_created_classification(
             primary = int(
                 remote.get("primarySpecialtyId") or remote.get("specialtyId") or 0
             )
+            specialties = {int(value) for value in remote.get("specialtyIds") or []}
         except (TypeError, ValueError):
             return False
-        return expected_profession in professions and primary == expected_primary
+        return (
+            expected_profession in professions
+            and primary == expected_primary
+            and (specialties == set(expected_specialties) if manual else True)
+        )
 
     if retained(read_remote()):
         return False

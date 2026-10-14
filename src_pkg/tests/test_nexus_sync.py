@@ -46,6 +46,57 @@ def test_selected_physician_classification_overrides_nursing_defaults():
     assert profile["primarySpecialtyId"] == 88
 
 
+def test_selected_specialty_is_verified_and_repaired_after_nexus_creation():
+    selected = {
+        "offering": "Physician", "profession": "Physician",
+        "specialty": "Hematology/Oncology",
+    }
+    patched = False
+
+    def handler(request):
+        nonlocal patched
+        path = request.url.path
+        if path.endswith("/master/professions"):
+            return httpx.Response(200, json=[
+                {"professionId": 10, "name": "RN", "active": True},
+                {"professionId": 77, "name": "Physician", "active": True},
+            ])
+        if path.endswith("/master/specialties"):
+            return httpx.Response(200, json=[
+                {"specialtyId": 20, "professionId": 10, "name": "Unknown", "active": True},
+                {"specialtyId": 88, "professionId": 77,
+                 "name": "Hematology/Oncology", "active": True},
+            ])
+        if path.endswith("/candidate/webhook/create"):
+            content = request.content.decode("latin-1")
+            assert '"professionIds":[77]' in content
+            assert '"specialtyIds":[88]' in content
+            assert '"primarySpecialtyId":88' in content
+            return httpx.Response(201, json={"id": 709})
+        if path.endswith("/candidates/709") and request.method == "GET":
+            return httpx.Response(200, json={
+                "professionIds": [77],
+                "specialtyIds": [88] if patched else [20],
+                "primarySpecialtyId": 88 if patched else 20,
+            })
+        if path.endswith("/candidates/709") and request.method == "PATCH":
+            assert json.loads(request.content) == {
+                "professionIds": [77], "specialtyIds": [88],
+                "primarySpecialtyId": 88,
+            }
+            patched = True
+            return httpx.Response(200, json={"id": 709})
+        raise AssertionError(request.url)
+
+    settings = _settings()
+    result = nexus_sync.process_delivery(
+        _payload(nexus_classification=selected), PDF,
+        settings=settings, client=_client(settings, handler),
+    )
+    assert patched
+    assert result["classification_updated"] is True
+
+
 def test_selected_classification_repairs_already_linked_nexus_candidate():
     payload = _payload(nexus_classification={
         "offering": "Physician", "profession": "Physician",
@@ -90,6 +141,49 @@ def test_selected_classification_repairs_already_linked_nexus_candidate():
     assert patched
     assert result["classification_updated"] is True
     assert result["action"] == "classification_refreshed"
+
+
+def test_selected_classification_removes_other_linked_specialties():
+    payload = _payload(nexus_classification={
+        "offering": "Physician", "profession": "Physician",
+        "specialty": "Hematology/Oncology",
+    })
+    payload["nexus_candidate_id"] = "88"
+    payload["classification_only"] = True
+    patched = False
+
+    def handler(request):
+        nonlocal patched
+        path = request.url.path
+        if path.endswith("/master/professions"):
+            return httpx.Response(200, json=[
+                {"professionId": 77, "name": "Physician", "active": True},
+            ])
+        if path.endswith("/master/specialties"):
+            return httpx.Response(200, json=[
+                {"specialtyId": 88, "professionId": 77,
+                 "name": "Hematology/Oncology", "active": True},
+                {"specialtyId": 89, "professionId": 77,
+                 "name": "Internal Medicine", "active": True},
+            ])
+        if path.endswith("/candidates/88") and request.method == "GET":
+            return httpx.Response(200, json={
+                "professionIds": [77],
+                "specialtyIds": [88] if patched else [88, 89],
+                "primarySpecialtyId": 88,
+            })
+        if path.endswith("/candidates/88") and request.method == "PATCH":
+            assert json.loads(request.content)["specialtyIds"] == [88]
+            patched = True
+            return httpx.Response(200, json={"id": 88})
+        raise AssertionError(request.url)
+
+    settings = _settings()
+    result = nexus_sync.process_delivery(
+        payload, PDF, settings=settings, client=_client(settings, handler),
+    )
+    assert patched
+    assert result["classification_updated"] is True
 
 
 def _settings(**changes):
