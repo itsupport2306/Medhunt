@@ -143,7 +143,7 @@ def test_ceipal_upload_runs_after_resume_is_stored(monkeypatch):
     monkeypatch.setattr(store, "attach_resume", attach_then_record)
     monkeypatch.setattr(healthboard_auth, "medhunt_ceipal_candidate", lambda **kwargs: (
         events.append(("ceipal", kwargs["candidate"]["candidate_id"]))
-        or {"state": "uploaded_to_ceipal", "applicant_id": "app-1"}
+        or {"state": "uploaded_to_ceipal", "applicant_id": "app-1", "resume_submitted": True}
     ))
 
     result = api_module._store_resume_pdf(
@@ -156,6 +156,45 @@ def test_ceipal_upload_runs_after_resume_is_stored(monkeypatch):
     assert ceipal_delivery.process_once()["status"] == "uploaded"
     assert events == ["resume_stored", ("ceipal", str(candidate_id))]
     assert store.get_ceipal_delivery(candidate_id, "recruiter-1")["status"] == "uploaded"
+
+
+def test_ceipal_worker_sends_stored_pdf_and_requires_resume_confirmation(monkeypatch):
+    store.reset()
+    candidate_id = store.add_candidate("Jane Smith", "Boston, MA", source="indeed")
+    store.set_candidate_ats_route(candidate_id, "recruiter-1", "ceipal")
+    pdf = b"%PDF-1.4 test stored resume"
+    resume = store.attach_resume(candidate_id, "jane.pdf", pdf)
+    monkeypatch.setattr(contact_access, "project_candidate", lambda _candidate: {
+        "contacts_trusted": True, "emails": ["jane@example.test"], "phones": [],
+        "phone_contacts": [],
+    })
+    submitted = []
+    monkeypatch.setattr(healthboard_auth, "medhunt_ceipal_candidate", lambda **kwargs: (
+        submitted.append(kwargs["candidate"])
+        or {"state": "uploaded_to_ceipal", "applicant_id": "app-1", "resume_submitted": True}
+    ))
+    assert ceipal_delivery.queue_resume(candidate_id, resume["id"], "recruiter-1") == "queued"
+    assert ceipal_delivery.process_once()["status"] == "uploaded"
+    assert base64.b64decode(submitted[0]["resume_content_base64"]) == pdf
+    assert submitted[0]["resume_filename"] == "jane.pdf"
+    assert submitted[0]["resume_sha256"] == hashlib.sha256(pdf).hexdigest()
+
+
+def test_ceipal_worker_does_not_mark_resume_uploaded_without_halo_confirmation(monkeypatch):
+    store.reset()
+    candidate_id = store.add_candidate("Jane Smith", "Boston, MA", source="indeed")
+    store.set_candidate_ats_route(candidate_id, "recruiter-1", "ceipal")
+    resume = store.attach_resume(candidate_id, "jane.pdf", b"%PDF-1.4 test resume")
+    monkeypatch.setattr(contact_access, "project_candidate", lambda _candidate: {
+        "contacts_trusted": True, "emails": ["jane@example.test"], "phones": [],
+        "phone_contacts": [],
+    })
+    monkeypatch.setattr(healthboard_auth, "medhunt_ceipal_candidate", lambda **kwargs: {
+        "state": "uploaded_to_ceipal", "applicant_id": "app-1",
+    })
+    assert ceipal_delivery.queue_resume(candidate_id, resume["id"], "recruiter-1") == "queued"
+    assert ceipal_delivery.process_once()["status"] == "indeterminate"
+    assert store.get_ceipal_delivery(candidate_id, "recruiter-1")["status"] == "indeterminate"
 
 
 def test_ceipal_unknown_outcome_is_not_retried_or_requeued(monkeypatch):

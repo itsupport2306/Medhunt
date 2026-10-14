@@ -1,10 +1,13 @@
 """Deliver Ceipal-assigned, verified contacts through the Halo service channel."""
 from __future__ import annotations
 
+import base64
+import hashlib
 import logging
 import threading
+from pathlib import Path
 
-from . import config, contact_access, healthboard_auth, store
+from . import config, contact_access, healthboard_auth, storage, store
 
 
 _STOP = threading.Event()
@@ -39,7 +42,26 @@ def queue_resume(candidate_id: int, resume_id: int, user_id: str) -> str:
     return "queued"
 
 
-def upload_candidate(candidate_id: int, user_id: str) -> str:
+def _resume_payload(candidate_id: int, resume_id: int) -> dict:
+    resume = store.get_resume(candidate_id, resume_id)
+    if not resume:
+        raise RuntimeError("Stored Ceipal resume was not found.")
+    data = bytes(resume.get("data") or b"")
+    if not data and resume.get("storage_provider") == "r2":
+        data = storage.download_resume(str(resume.get("object_key") or ""))
+    if not data.startswith(b"%PDF") or len(data) > config.RESUME_MAX_BYTES:
+        raise RuntimeError("Stored Ceipal resume is unavailable or invalid.")
+    filename = Path(str(resume.get("filename") or "resume.pdf")).name
+    if not filename.lower().endswith(".pdf"):
+        filename = f"{filename}.pdf"
+    return {
+        "resume_filename": filename[:180],
+        "resume_content_base64": base64.b64encode(data).decode("ascii"),
+        "resume_sha256": hashlib.sha256(data).hexdigest(),
+    }
+
+
+def upload_candidate(candidate_id: int, user_id: str, resume_id: int | None = None) -> str:
     candidate = store.get_candidate(candidate_id)
     if not candidate:
         return "failed"
@@ -72,14 +94,19 @@ def upload_candidate(candidate_id: int, user_id: str) -> str:
         "wireless_phones": list(dict.fromkeys(wireless_phones)),
     }
     try:
+        if resume_id is not None:
+            payload.update(_resume_payload(candidate_id, resume_id))
         result = healthboard_auth.medhunt_ceipal_candidate(
             user_id=owner, candidate=payload,
         )
         state = str(result.get("state") or "uploaded_to_ceipal")
+        if state == "uploaded_to_ceipal" and resume_id is not None and result.get("resume_submitted") is not True:
+            raise RuntimeError("Halo did not confirm that the resume was submitted to Ceipal.")
         eligibility["ceipal_upload"] = {
             "state": state,
             "applicant_id": str(result.get("applicant_id") or ""),
             "checked": bool(result.get("checked", True)),
+            "resume_submitted": result.get("resume_submitted") is True,
         }
         store.set_candidate_ats_route(candidate_id, owner, "ceipal", eligibility)
         return "uploaded" if state == "uploaded_to_ceipal" else state
@@ -106,7 +133,9 @@ def process_once() -> dict | None:
     if not store.mark_ceipal_delivery_writing(delivery_id, lease_until):
         return {"status": "indeterminate", "delivery_id": delivery_id}
     try:
-        result = upload_candidate(int(delivery["candidate_id"]), str(delivery["user_id"]))
+        result = upload_candidate(
+            int(delivery["candidate_id"]), str(delivery["user_id"]), int(delivery["resume_id"]),
+        )
         status = result if result in {"uploaded", "already_in_ceipal"} else "indeterminate"
         store.finish_ceipal_delivery(delivery_id, lease_until, status)
         return {"status": status, "delivery_id": delivery_id}
