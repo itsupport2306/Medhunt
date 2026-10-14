@@ -4154,19 +4154,47 @@ def test_extension_can_select_enriched_profile_and_filter_nexus_choices():
               indeedManualSelected = new Set();
               indeedSelected = new Set([profile._selectionKey]);
               profile._candidateId = 42;
-              indeedLookupProfiles = [profile];
+              const second = {...profile, name: 'Second Candidate', _candidateId: 43,
+                _selectionKey: 'second-candidate'};
+              indeedLookupProfiles = [profile, second];
               indeedLookupScope = new Set([profile._selectionKey]);
               indeedLookupState.set(profile._selectionKey, {
                 status: 'found', emails: ['alice@example.com'], phones: [],
+              });
+              indeedLookupState.set(second._selectionKey, {
+                status: 'found', emails: ['second@example.com'], phones: [],
               });
               indeedLookupSummary = {total: 1, processed: 1, matched: 1, no_match: 0, errors: 0};
               indeedScanState.phase = 'results';
               renderIndeedProfiles();
             }""")
+            assert page.locator('[data-action="open-nexus-classification"]').count() == 0
+            page.evaluate("""() => {
+              const first = indeedLookupProfiles[0];
+              const result = indeedLookupFor(first);
+              indeedLookupState.set(first._selectionKey, {...result,
+                resume: {id: 501}, resume_status: 'stored'});
+              renderIndeedProfiles();
+            }""")
+            assert page.locator('[data-action="open-nexus-classification"]').count() == 0
+            page.evaluate("""() => {
+              const second = indeedLookupProfiles[1];
+              const result = indeedLookupFor(second);
+              indeedLookupState.set(second._selectionKey, {...result,
+                resume: {id: 502}, resume_status: 'stored'});
+              indeedResumeBatchState.active = true;
+              renderIndeedProfiles();
+            }""")
+            assert page.locator('[data-action="open-nexus-classification"]').count() == 0
+            page.evaluate("""() => {
+              indeedResumeBatchState.active = false;
+              renderIndeedProfiles();
+            }""")
             page.wait_for_selector('[data-action="open-nexus-classification"]')
             assert page.locator("#nexusOffering").count() == 0
             page.locator('[data-action="open-nexus-classification"]').click()
-            assert page.locator(".nexus-ready-select").is_checked()
+            assert page.locator(".nexus-ready-select").count() == 2
+            page.locator('.nexus-ready-select[data-candidate-id="43"]').uncheck()
             page.locator("#nexusOffering").select_option("Physician")
             page.locator("#nexusProfession").select_option("Physician")
             assert page.locator("#nexusSpecialty option").all_text_contents() == [

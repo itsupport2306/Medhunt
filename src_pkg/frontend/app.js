@@ -1691,6 +1691,7 @@ function startProfessionalProfileResumeBatch(profiles) {
       const completed = { ...indeedResumeBatchState };
       indeedResumeBatchState = { ...indeedResumeBatchState, active: false };
       updateSourceHeaderProgressUi();
+      if (activeView === "indeed" && indeedScanState.phase === "results") renderIndeedProfiles();
       if (completed.saved) {
         notify(
           `${completed.saved} professional profile resume${completed.saved === 1 ? "" : "s"} saved` +
@@ -2092,6 +2093,12 @@ function nexusReadyProfiles() {
     && indeedLookupFor(profile).ats_destination !== "ceipal");
 }
 
+function nexusClassificationAvailable() {
+  const ready = nexusReadyProfiles();
+  return !indeedResumeBatchState.active && ready.length > 0 && ready.every((profile) =>
+    Number(indeedLookupFor(profile).resume?.id) > 0);
+}
+
 function nexusClassificationDialog() {
   if (!nexusClassificationOpen) return "";
   const ready = nexusReadyProfiles();
@@ -2111,6 +2118,9 @@ function nexusClassificationDialog() {
 }
 
 async function openNexusClassification() {
+  if (!nexusClassificationAvailable()) {
+    throw new Error("Wait until every contact-ready profile has a saved resume.");
+  }
   if (!nexusTaxonomyRows.length) {
     nexusTaxonomyLoaded = false;
     await loadNexusTaxonomy();
@@ -2148,6 +2158,9 @@ function closeNexusClassification() {
 }
 
 async function applyNexusClassification() {
+  if (!nexusClassificationAvailable()) {
+    throw new Error("Wait until every contact-ready profile has a saved resume.");
+  }
   const readyIds = new Set(nexusReadyProfiles().map((profile) => Number(profile._candidateId)));
   const candidateIds = [...nexusClassificationSelected].filter((id) => readyIds.has(id));
   if (!candidateIds.length) throw new Error("Select at least one contact-ready profile.");
@@ -2559,7 +2572,7 @@ function renderIndeedProfiles(scan = {}) {
           </button>` : ""}
         </div>
         ${nexusDeliverySummaryMarkup()}
-        ${nexusReadyProfiles().length ? `<div class="nexus-result-action"><button type="button" class="inline-scan-action" data-action="open-nexus-classification">Set Nexus classification for ready profiles</button></div>` : ""}` : `
+        ${nexusClassificationAvailable() ? `<div class="nexus-result-action"><button type="button" class="inline-scan-action" data-action="open-nexus-classification">Set Nexus classification for ready profiles</button></div>` : ""}` : `
         <div class="capture-toolbar">
           <div class="queue-heading">
             <span class="section-kicker">Profiles on this page</span>
@@ -4139,6 +4152,7 @@ function startLinkedinResumeBatch(profiles) {
       const completed = { ...indeedResumeBatchState };
       indeedResumeBatchState = { ...indeedResumeBatchState, active: false };
       updateSourceHeaderProgressUi();
+      if (activeView === "indeed" && indeedScanState.phase === "results") renderIndeedProfiles();
 
       let sourceTab = null;
       try { sourceTab = await chrome.tabs.get(Number(completed.sourceTabId)); } catch { sourceTab = null; }
@@ -4247,6 +4261,7 @@ function startIndeedResumeBatch(profiles) {
         until: Date.now() + 2500,
       };
       updateSourceHeaderProgressUi();
+      if (activeView === "indeed" && indeedScanState.phase === "results") renderIndeedProfiles();
 
       if (completed.saved) {
         notify(
