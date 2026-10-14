@@ -276,6 +276,7 @@ class NexusClient:
         "referralsources",
         "candidatestatuses",
         "documenttypes",
+        "recruiters",
     }
 
     def __init__(
@@ -908,6 +909,20 @@ def _trusted_identity(payload: Mapping[str, Any]) -> dict[str, Any]:
                 "The selected Nexus classification is no longer supported.",
                 operation="payload_validation", code="nexus_classification_invalid",
             )
+        recruiter_id = manual.get("recruiter_id")
+        if recruiter_id not in (None, ""):
+            try:
+                recruiter_id = int(recruiter_id)
+            except (TypeError, ValueError) as exc:
+                raise NexusPermanentError(
+                    "The selected Nexus recruiter is invalid.",
+                    operation="payload_validation", code="nexus_recruiter_invalid",
+                ) from exc
+            if recruiter_id <= 0:
+                raise NexusPermanentError(
+                    "The selected Nexus recruiter is invalid.",
+                    operation="payload_validation", code="nexus_recruiter_invalid",
+                )
     return {
         "firstName": first_name,
         "middleName": middle_name,
@@ -929,7 +944,9 @@ def _trusted_identity(payload: Mapping[str, Any]) -> dict[str, Any]:
         "specialties": _text_values([*source_specialties, *resume_specialties]),
         "nexus_classification": (
             {"offering": selected.offering, "profession": selected.profession,
-             "specialty": selected.specialty} if selected else None
+             "specialty": selected.specialty,
+             **({"recruiter_id": recruiter_id} if recruiter_id not in (None, "") else {})}
+            if selected else None
         ),
     }
 
@@ -947,11 +964,32 @@ def _master_id(row: Mapping[str, Any], list_name: str = "") -> Any:
         "referralsources": ("referralSourceId", "id", "value"),
         "candidatestatuses": ("candidateStatusId", "statusId", "id", "value"),
         "documenttypes": ("documentTypeId", "id", "value"),
+        "recruiters": ("recruiterId", "id", "value"),
     }.get(list_name, ("id", "value", "specialtyId", "professionId"))
     for key in preferred:
         if row.get(key) is not None:
             return row[key]
     return None
+
+
+def active_recruiters(client: NexusClient) -> list[dict[str, Any]]:
+    """Return selectable Nexus recruiters without exposing other master fields."""
+    result = []
+    seen = set()
+    for row in _active(client.get_master("recruiters")):
+        recruiter_id = _master_id(row, "recruiters")
+        name = " ".join(str(row.get("name") or "").split())
+        if recruiter_id is None or not name:
+            continue
+        try:
+            numeric_id = int(recruiter_id)
+        except (TypeError, ValueError):
+            continue
+        if numeric_id <= 0 or numeric_id in seen:
+            continue
+        seen.add(numeric_id)
+        result.append({"id": numeric_id, "name": name})
+    return sorted(result, key=lambda item: item["name"].casefold())
 
 
 def _label(value: Any) -> str:
@@ -1238,6 +1276,15 @@ def _build_profile(
         specialty_name = str(manual.get("specialty") or "")
         for key in ("professionId", "professionIds", "specialtyId", "specialtyIds", "primarySpecialtyId"):
             profile.pop(key, None)
+        profile.pop("recruiterId", None)
+        if manual.get("recruiter_id") is not None:
+            recruiter_id = int(manual["recruiter_id"])
+            if recruiter_id not in {item["id"] for item in active_recruiters(client)}:
+                raise NexusPermanentError(
+                    "The selected Nexus recruiter is no longer active.",
+                    operation="payload_validation", code="nexus_recruiter_inactive",
+                )
+            profile["recruiterId"] = recruiter_id
     referral_name = str(profile.pop("referralSourceName", "") or "").strip()
     status_name = str(profile.pop("statusName", "") or "").strip()
     country_name = str(profile.pop("countryName", "") or "").strip()
@@ -1551,10 +1598,16 @@ def _repair_linked_classification(
         ) if value not in (None, "")
     }
     current_primary = int(remote.get("primarySpecialtyId") or 0)
+    selected_recruiter = (
+        int(manual.get("recruiter_id"))
+        if isinstance(manual, Mapping) and manual.get("recruiter_id") is not None
+        else None
+    )
     if (
         proposed_profession in current_professions
         and current_primary == proposed_specialty
         and (current_specialties == set(proposed_specialties) if manual else True)
+        and (selected_recruiter is None or int(remote.get("recruiterId") or 0) == selected_recruiter)
     ):
         return False
     if current_specialties - unknown_specialties and not resume and not manual:
@@ -1565,6 +1618,8 @@ def _repair_linked_classification(
         "specialtyIds": proposed_specialties,
         "primarySpecialtyId": proposed_specialty,
     }
+    if selected_recruiter is not None:
+        patch["recruiterId"] = selected_recruiter
     if before_write:
         before_write("candidate_classification_update")
     client.request(
@@ -1582,6 +1637,7 @@ def _repair_linked_classification(
         or proposed_profession not in (verified.get("professionIds") or [])
         or not specialties_match
         or int(verified.get("primarySpecialtyId") or 0) != proposed_specialty
+        or (selected_recruiter is not None and int(verified.get("recruiterId") or 0) != selected_recruiter)
     ):
         raise NexusIndeterminateError(
             "Nexus did not retain the linked candidate specialty update.",
@@ -1624,6 +1680,7 @@ def _ensure_created_classification(
         return None
     if not expected_specialties:
         expected_specialties = [expected_primary]
+    expected_recruiter = int(profile.get("recruiterId") or 0) if manual else 0
     unknown_specialties = {
         int(_master_id(row, "specialties"))
         for row in _active(client.get_master("specialties"))
@@ -1667,12 +1724,14 @@ def _ensure_created_classification(
                 remote.get("primarySpecialtyId") or remote.get("specialtyId") or 0
             )
             specialties = {int(value) for value in remote.get("specialtyIds") or []}
+            recruiter_id = int(remote.get("recruiterId") or 0)
         except (TypeError, ValueError):
             return False
         return (
             expected_profession in professions
             and primary == expected_primary
             and (specialties == set(expected_specialties) if manual else True)
+            and (not expected_recruiter or recruiter_id == expected_recruiter)
         )
 
     if retained(read_remote()):
@@ -1683,6 +1742,8 @@ def _ensure_created_classification(
         "specialtyIds": expected_specialties,
         "primarySpecialtyId": expected_primary,
     }
+    if expected_recruiter:
+        patch["recruiterId"] = expected_recruiter
     try:
         client.request(
             "PATCH", path, operation="created candidate classification update",
@@ -1998,8 +2059,13 @@ def process_delivery(
         return result
     if before_write:
         before_write("candidate_creation")
+    webhook_profile = dict(profile)
+    # The candidate API documents recruiterId; the resume webhook does not.
+    # Apply and verify the selected recruiter through the candidate endpoint
+    # after the webhook returns a durable candidate ID.
+    webhook_profile.pop("recruiterId", None)
     response = client.create_candidate_with_resume(
-        profile,
+        webhook_profile,
         filename=filename,
         content=resume_pdf,
     )

@@ -44,12 +44,13 @@ def test_selected_physician_classification_overrides_nursing_defaults():
     assert profile["professionIds"] == [77]
     assert profile["specialtyIds"] == [88]
     assert profile["primarySpecialtyId"] == 88
+    assert "recruiterId" not in profile
 
 
 def test_selected_specialty_is_verified_and_repaired_after_nexus_creation():
     selected = {
         "offering": "Physician", "profession": "Physician",
-        "specialty": "Hematology/Oncology",
+        "specialty": "Hematology/Oncology", "recruiter_id": 57,
     }
     patched = False
 
@@ -67,22 +68,30 @@ def test_selected_specialty_is_verified_and_repaired_after_nexus_creation():
                 {"specialtyId": 88, "professionId": 77,
                  "name": "Hematology/Oncology", "active": True},
             ])
+        if path.endswith("/master/recruiters"):
+            return httpx.Response(200, json=[
+                {"id": 57, "name": "Tina Mihic", "active": True},
+                {"id": 58, "name": "Inactive Recruiter", "active": False},
+            ])
         if path.endswith("/candidate/webhook/create"):
             content = request.content.decode("latin-1")
             assert '"professionIds":[77]' in content
             assert '"specialtyIds":[88]' in content
             assert '"primarySpecialtyId":88' in content
+            assert '"recruiterId"' not in content
             return httpx.Response(201, json={"id": 709})
         if path.endswith("/candidates/709") and request.method == "GET":
             return httpx.Response(200, json={
                 "professionIds": [77],
                 "specialtyIds": [88] if patched else [20],
                 "primarySpecialtyId": 88 if patched else 20,
+                "recruiterId": 57 if patched else None,
             })
         if path.endswith("/candidates/709") and request.method == "PATCH":
             assert json.loads(request.content) == {
                 "professionIds": [77], "specialtyIds": [88],
                 "primarySpecialtyId": 88,
+                "recruiterId": 57,
             }
             patched = True
             return httpx.Response(200, json={"id": 709})
@@ -95,6 +104,50 @@ def test_selected_specialty_is_verified_and_repaired_after_nexus_creation():
     )
     assert patched
     assert result["classification_updated"] is True
+
+
+def test_selected_recruiter_is_sent_with_single_contact_candidate():
+    selected = {
+        "offering": "Physician", "profession": "Physician",
+        "specialty": "Hematology/Oncology", "recruiter_id": 57,
+    }
+
+    def handler(request):
+        path = request.url.path
+        if path.endswith("/master/professions"):
+            return httpx.Response(200, json=[
+                {"professionId": 77, "name": "Physician", "active": True},
+            ])
+        if path.endswith("/master/specialties"):
+            return httpx.Response(200, json=[
+                {"specialtyId": 88, "professionId": 77,
+                 "name": "Hematology/Oncology", "active": True},
+            ])
+        if path.endswith("/master/recruiters"):
+            return httpx.Response(200, json=[
+                {"id": 57, "name": "Tina Mihic", "active": True},
+            ])
+        if path.endswith("/candidates") and request.method == "POST":
+            profile = json.loads(request.content)
+            assert profile["recruiterId"] == 57
+            assert profile["primarySpecialtyId"] == 88
+            return httpx.Response(201, json={"id": 710})
+        if path.endswith("/candidates/710/upload/documents"):
+            return httpx.Response(200, json={"uploadFailedDocumentNames": []})
+        if path.endswith("/candidates/710") and request.method == "GET":
+            return httpx.Response(200, json={
+                "professionIds": [77], "specialtyIds": [88],
+                "primarySpecialtyId": 88, "recruiterId": 57,
+            })
+        raise AssertionError(request.url)
+
+    settings = _settings()
+    result = nexus_sync.process_delivery(
+        _payload(emails=[], nexus_classification=selected), PDF,
+        settings=settings, client=_client(settings, handler),
+    )
+    assert result["nexus_candidate_id"] == 710
+    assert result["classification_updated"] is False
 
 
 def test_selected_classification_repairs_already_linked_nexus_candidate():

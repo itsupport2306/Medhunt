@@ -194,10 +194,15 @@ let indeedLookupState = new Map();
 let indeedLookupSummary = null;
 let nexusDeliverySummary = null;
 let nexusTaxonomyRows = [];
+let nexusRecruiterRows = [];
+let nexusRecruitersUnavailable = false;
+let nexusRecruitersLoading = false;
+let nexusRecruiterRequestId = 0;
 let nexusTaxonomyLoaded = false;
 let nexusTaxonomyLoading = false;
 let nexusTaxonomyPromise = null;
 let nexusSelection = { offering: "", profession: "", specialty: "" };
+let nexusRecruiterId = "";
 let nexusClassificationOpen = false;
 let nexusClassificationSelected = new Set();
 let nexusDeliveryCandidateIds = [];
@@ -2068,10 +2073,16 @@ function nexusClassificationControls() {
   const offerings = unique(nexusTaxonomyRows.map((row) => row.offering));
   const professions = nexusTaxonomyRows.filter((row) => row.offering === nexusSelection.offering);
   const specialties = professions.filter((row) => row.profession === nexusSelection.profession);
+  const recruiterOptions = nexusRecruiterRows.map((row) =>
+    `<option value="${Number(row.id)}"${String(row.id) === nexusRecruiterId ? " selected" : ""}>${escapeHtml(row.name)}</option>`
+  ).join("");
   return `<div class="nexus-classification">
     <label>Offering<select id="nexusOffering">${options(offerings, nexusSelection.offering)}</select></label>
     <label>Profession<select id="nexusProfession"${nexusSelection.offering ? "" : " disabled"}>${options(professions.map((row) => row.profession), nexusSelection.profession)}</select></label>
     <label>Specialty<select id="nexusSpecialty"${nexusSelection.profession ? "" : " disabled"}>${options(specialties.map((row) => row.specialty), nexusSelection.specialty)}</select></label>
+    <label>Recruiter (optional)<select id="nexusRecruiter"${nexusRecruitersLoading ? " disabled" : ""}><option value="">No recruiter selected</option>${recruiterOptions}</select></label>
+    ${nexusRecruitersLoading ? '<small class="muted">Loading Nexus recruiters…</small>' : ""}
+    ${nexusRecruitersUnavailable ? '<small class="muted">Nexus recruiters are unavailable. You can continue without one.</small>' : ""}
   </div>`;
 }
 
@@ -2107,12 +2118,31 @@ async function openNexusClassification() {
   if (!nexusTaxonomyRows.length) {
     throw new Error("Nexus classification choices are unavailable. Try again shortly.");
   }
+  nexusRecruiterId = "";
+  nexusRecruiterRows = [];
+  nexusRecruitersUnavailable = false;
+  nexusRecruitersLoading = true;
+  const requestId = ++nexusRecruiterRequestId;
   nexusClassificationSelected = new Set(nexusReadyProfiles().map((profile) => Number(profile._candidateId)));
   nexusClassificationOpen = true;
   renderIndeedProfiles();
+  api("/nexus/recruiters", { timeout: 20000 }).then((response) => {
+    if (requestId !== nexusRecruiterRequestId) return;
+    nexusRecruiterRows = Array.isArray(response?.rows) ? response.rows : [];
+    nexusRecruitersUnavailable = false;
+  }).catch(() => {
+    if (requestId !== nexusRecruiterRequestId) return;
+    nexusRecruiterRows = [];
+    nexusRecruitersUnavailable = true;
+  }).finally(() => {
+    if (requestId !== nexusRecruiterRequestId) return;
+    nexusRecruitersLoading = false;
+    if (nexusClassificationOpen) renderIndeedProfiles();
+  });
 }
 
 function closeNexusClassification() {
+  nexusRecruiterRequestId += 1;
   nexusClassificationOpen = false;
   renderIndeedProfiles();
 }
@@ -2123,6 +2153,12 @@ async function applyNexusClassification() {
   if (!candidateIds.length) throw new Error("Select at least one contact-ready profile.");
   const classification = nexusClassificationChoice();
   if (!classification) throw new Error("Choose a Nexus offering, profession, and specialty.");
+  if (nexusRecruiterId) {
+    if (!nexusRecruiterRows.some((row) => String(row.id) === nexusRecruiterId)) {
+      throw new Error("Choose a recruiter from the Nexus list.");
+    }
+    classification.recruiter_id = Number(nexusRecruiterId);
+  }
   await api("/candidates/nexus-classification/batch", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -4861,6 +4897,10 @@ document.addEventListener("change", async (event) => {
       checkbox.checked = indeedSelected.has(checkbox.dataset.key);
     });
     updateIndeedSelectionUi();
+    return;
+  }
+  if (event.target.id === "nexusRecruiter") {
+    nexusRecruiterId = event.target.value;
     return;
   }
   if (!["jobSelect", "addJobSelect", "indeedJobSelect"].includes(event.target.id)) return;

@@ -3939,6 +3939,9 @@ def test_nexus_classification_selection_validates_and_requeues_linked_candidate(
         {"offering": "Physician", "profession": "Physician",
          "specialty": "Hematology/Oncology"},
     ])
+    monkeypatch.setattr(api_module.nexus_delivery, "supported_recruiters", lambda user: [
+        {"id": 57, "name": "Tina Mihic"},
+    ])
     monkeypatch.setattr(api_module.nexus_delivery, "queue_latest_resume_if_ready", lambda cid, user, **kwargs: {
         "resume_id": resume["id"],
     })
@@ -3949,14 +3952,24 @@ def test_nexus_classification_selection_validates_and_requeues_linked_candidate(
             options = await client.get("/nexus/taxonomy")
             assert options.status_code == 200
             assert options.json()["rows"][0]["offering"] == "Physician"
+            recruiters = await client.get("/nexus/recruiters")
+            assert recruiters.status_code == 200
+            assert recruiters.json()["rows"] == [{"id": 57, "name": "Tina Mihic"}]
             invalid = await client.post("/candidates/nexus-classification/batch", json={
                 "candidate_ids": [candidate_id], "offering": "Nursing",
                 "profession": "Physician", "specialty": "Hematology/Oncology",
             })
             assert invalid.status_code == 422
+            invalid_recruiter = await client.post("/candidates/nexus-classification/batch", json={
+                "candidate_ids": [candidate_id], "offering": "Physician",
+                "profession": "Physician", "specialty": "Hematology/Oncology",
+                "recruiter_id": 999,
+            })
+            assert invalid_recruiter.status_code == 422
             valid = await client.post("/candidates/nexus-classification/batch", json={
                 "candidate_ids": [candidate_id], "offering": "Physician",
                 "profession": "Physician", "specialty": "Hematology/Oncology",
+                "recruiter_id": 57,
             })
             assert valid.status_code == 200, valid.text
             assert valid.json()["requeued"] == 1
@@ -3965,7 +3978,7 @@ def test_nexus_classification_selection_validates_and_requeues_linked_candidate(
     route = store.get_candidate_ats_route(candidate_id, "local")
     assert route["eligibility"]["nexus_classification"] == {
         "offering": "Physician", "profession": "Physician",
-        "specialty": "Hematology/Oncology",
+        "specialty": "Hematology/Oncology", "recruiter_id": 57,
     }
     assert store.get_nexus_delivery_for_resume(resume["id"])["status"] == "pending"
     assert store.get_nexus_delivery_for_resume(resume["id"])["operation"] == "classification_refresh"
@@ -3976,7 +3989,7 @@ def test_nexus_classification_selection_validates_and_requeues_linked_candidate(
     assert payload["candidate"]["nexus_classification"] == route["eligibility"]["nexus_classification"]
 
 
-def test_nexus_first_upload_waits_for_recruiter_classification(monkeypatch):
+def test_nexus_first_upload_waits_for_recruiter_classification_without_hold_flag(monkeypatch):
     from pypdf import PdfWriter
 
     store.reset()
@@ -3991,7 +4004,6 @@ def test_nexus_first_upload_waits_for_recruiter_classification(monkeypatch):
     monkeypatch.setattr(contact_access, "project_candidate", lambda row, **kwargs: {
         **candidate, "contacts_trusted": True, "emails": ["avery@example.com"], "phones": [],
     })
-    api_module._set_nexus_classification_hold([candidate_id], "local")
     pdf = BytesIO()
     writer = PdfWriter()
     writer.add_blank_page(width=612, height=792)
@@ -4088,6 +4100,11 @@ def test_extension_can_select_enriched_profile_and_filter_nexus_choices():
                     {offering:'Nursing', profession:'RN', specialty:'ICU'},
                   ]}), {status:200, headers:{'content-type':'application/json'}}));
                 }
+                if (path === '/nexus/recruiters') {
+                  return Promise.resolve(new Response(JSON.stringify({rows: [
+                    {id:57, name:'Tina Mihic'},
+                  ]}), {status:200, headers:{'content-type':'application/json'}}));
+                }
                 return original(input, options);
               };
             }""")
@@ -4156,6 +4173,7 @@ def test_extension_can_select_enriched_profile_and_filter_nexus_choices():
                 "Select", "Hematology/Oncology",
             ]
             page.locator("#nexusSpecialty").select_option("Hematology/Oncology")
+            page.locator("#nexusRecruiter").select_option("57")
             page.locator('[data-action="apply-nexus-classification"]').click()
             page.wait_for_function("() => Boolean(window.nexusClassificationRequest)")
             assert page.evaluate("() => window.nexusClassificationRequest") == {
@@ -4163,8 +4181,10 @@ def test_extension_can_select_enriched_profile_and_filter_nexus_choices():
                 "offering": "Physician",
                 "profession": "Physician",
                 "specialty": "Hematology/Oncology",
+                "recruiter_id": 57,
             }
             page.locator('[data-action="open-nexus-classification"]').click()
+            assert page.locator("#nexusRecruiter").input_value() == ""
             page.locator('[data-action="close-nexus-classification"]').click()
             assert page.locator("#nexusOffering").count() == 0
         finally:

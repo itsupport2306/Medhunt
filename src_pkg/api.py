@@ -62,7 +62,7 @@ async def lifespan(_app: FastAPI):
         nexus_delivery.stop()
 
 
-APP_VERSION = "3.37.14"
+APP_VERSION = "3.37.15"
 
 app = FastAPI(
     title="Medhunt Sourcing Assistant",
@@ -249,6 +249,7 @@ class NexusClassificationIn(BaseModel):
     offering: str = Field(min_length=1, max_length=120)
     profession: str = Field(min_length=1, max_length=120)
     specialty: str = Field(min_length=1, max_length=240)
+    recruiter_id: int | None = Field(default=None, gt=0)
 
 
 class ResumeDownloadIn(BaseModel):
@@ -1170,6 +1171,18 @@ def nexus_supported_classifications(request: Request):
     return {"rows": rows}
 
 
+@app.get("/nexus/recruiters")
+def nexus_supported_recruiters(request: Request):
+    actor = _request_user(request)
+    if ats_routing.destination_for(actor) != "nexus":
+        raise HTTPException(409, "Your organization is assigned to Ceipal.")
+    try:
+        rows = nexus_delivery.supported_recruiters(str(actor.get("sub") or "local"))
+    except nexus_sync.NexusDeliveryError as exc:
+        raise HTTPException(503, "Nexus recruiters are temporarily unavailable.") from exc
+    return {"rows": rows}
+
+
 def _set_nexus_classification_hold(candidate_ids: list[int], user_id: str) -> list[int]:
     newly_held = []
     for candidate_id in dict.fromkeys(candidate_ids):
@@ -1208,6 +1221,14 @@ def set_nexus_classification(body: NexusClassificationIn, request: Request):
     user_id = str(actor.get("sub") or "local")
     selected = {"offering": row.offering, "profession": row.profession,
                 "specialty": row.specialty}
+    if body.recruiter_id is not None:
+        try:
+            recruiters = nexus_delivery.supported_recruiters(user_id)
+        except nexus_sync.NexusDeliveryError as exc:
+            raise HTTPException(503, "Nexus recruiters are temporarily unavailable.") from exc
+        if body.recruiter_id not in {item["id"] for item in recruiters}:
+            raise HTTPException(422, "Choose an active recruiter from the Nexus list.")
+        selected["recruiter_id"] = body.recruiter_id
     requeued = 0
     nexus_available = None
     for candidate_id in candidate_ids:

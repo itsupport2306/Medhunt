@@ -62,7 +62,17 @@ def enabled_for(user_id: str) -> bool:
 
 def classification_pending(candidate_id: int, user_id: str) -> bool:
     route = store.get_candidate_ats_route(candidate_id, user_id)
-    return bool(((route or {}).get("eligibility") or {}).get("nexus_classification_pending"))
+    eligibility = (route or {}).get("eligibility") or {}
+    selected = eligibility.get("nexus_classification")
+    return bool(
+        eligibility.get("nexus_classification_pending")
+        or not isinstance(selected, dict)
+        or nexus_taxonomy.selected_row(
+            str(selected.get("offering") or ""),
+            str(selected.get("profession") or ""),
+            str(selected.get("specialty") or ""),
+        ) is None
+    )
 
 
 def queue_latest_resume_if_ready(
@@ -268,6 +278,18 @@ def supported_taxonomy_rows(user_id: str) -> list[dict]:
                            "specialty": row.specialty})
             seen.add(key)
     return output
+
+
+def supported_recruiters(user_id: str) -> list[dict]:
+    """Show active recruiters from the user's Nexus tenant."""
+    settings = _delivery_settings(user_id)
+    if not settings.enabled:
+        return []
+    client = nexus_sync.NexusClient(settings)
+    try:
+        return nexus_sync.active_recruiters(client)
+    finally:
+        client.close()
 
 
 def process_once() -> dict | None:
