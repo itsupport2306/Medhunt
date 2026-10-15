@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 import threading
 import time
@@ -22,7 +23,7 @@ from . import (
 
 
 _STOP = threading.Event()
-_THREAD: threading.Thread | None = None
+_THREADS: list[threading.Thread] = []
 _THREAD_LOCK = threading.Lock()
 
 _CLINICAL_ROLE_RE = re.compile(
@@ -301,6 +302,10 @@ def process_once() -> dict | None:
     )
     if not delivery:
         return None
+    logging.getLogger("medhunt.nexus").info(
+        "Nexus delivery claimed queue_age_seconds=%.2f",
+        max(0.0, time.time() - float(delivery.get("created") or time.time())),
+    )
     delivery_id = int(delivery["id"])
     attempts = max(1, int(delivery.get("attempts") or 1))
     lease_until = float(delivery.get("lease_until") or 0)
@@ -443,39 +448,53 @@ def process_once() -> dict | None:
 
 
 def _run() -> None:
-    while not _STOP.is_set():
-        try:
-            processed = process_once()
-        except Exception:  # a lease or database race is retried on the next tick
-            processed = None
-        if processed is None:
-            _STOP.wait(config.NEXUS_WORKER_INTERVAL_SECONDS)
+    try:
+        while not _STOP.is_set():
+            started = time.monotonic()
+            try:
+                processed = process_once()
+            except Exception:  # a lease or database race is retried on the next tick
+                processed = None
+            if processed is None:
+                _STOP.wait(config.NEXUS_WORKER_INTERVAL_SECONDS)
+            else:
+                logging.getLogger("medhunt.nexus").info(
+                    "Nexus delivery status=%s duration_seconds=%.2f",
+                    processed.get("status"), time.monotonic() - started,
+                )
+    finally:
+        nexus_sync.close_thread_client()
 
 
 def start() -> None:
-    global _THREAD
+    global _THREADS
     if not worker_enabled():
         return
     with _THREAD_LOCK:
-        if _THREAD and _THREAD.is_alive():
+        if any(thread.is_alive() for thread in _THREADS):
             return
         _STOP.clear()
-        _THREAD = threading.Thread(
-            target=_run, name="medhunt-nexus-delivery", daemon=True,
-        )
-        _THREAD.start()
+        _THREADS = [
+            threading.Thread(
+                target=_run, name=f"medhunt-nexus-delivery-{index + 1}", daemon=True,
+            )
+            for index in range(config.NEXUS_DELIVERY_WORKERS)
+        ]
+        for thread in _THREADS:
+            thread.start()
 
 
 def stop(timeout: float = 5.0) -> None:
-    global _THREAD
+    global _THREADS
     with _THREAD_LOCK:
-        thread = _THREAD
+        threads = list(_THREADS)
         _STOP.set()
-    if thread and thread.is_alive():
-        thread.join(max(0.0, float(timeout)))
+    for thread in threads:
+        if thread.is_alive():
+            thread.join(max(0.0, float(timeout)))
     with _THREAD_LOCK:
-        if _THREAD is thread and (not thread or not thread.is_alive()):
-            _THREAD = None
+        if not any(thread.is_alive() for thread in threads):
+            _THREADS = []
 
 
 __all__ = ["process_once", "queue_latest_resume_if_ready", "start", "stop"]

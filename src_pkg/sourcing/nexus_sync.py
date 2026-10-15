@@ -1900,18 +1900,27 @@ def _resume_doc_type_id(client: NexusClient) -> int:
     )
 
 
-_CLIENT_LOCK = threading.Lock()
-_SHARED_CLIENT: NexusClient | None = None
+_THREAD_CLIENT = threading.local()
 
 
 def _shared_client(settings: NexusSettings) -> NexusClient:
-    global _SHARED_CLIENT
-    with _CLIENT_LOCK:
-        if _SHARED_CLIENT is None or _SHARED_CLIENT.settings != settings:
-            if _SHARED_CLIENT is not None:
-                _SHARED_CLIENT.close()
-            _SHARED_CLIENT = NexusClient(settings)
-        return _SHARED_CLIENT
+    # Each delivery worker keeps its own HTTP connection, token, and master
+    # cache. A tenant change in one worker must not close another worker's
+    # in-flight client.
+    client = getattr(_THREAD_CLIENT, "client", None)
+    if client is None or client.settings != settings:
+        if client is not None:
+            client.close()
+        client = NexusClient(settings)
+        _THREAD_CLIENT.client = client
+    return client
+
+
+def close_thread_client() -> None:
+    client = getattr(_THREAD_CLIENT, "client", None)
+    if client is not None:
+        client.close()
+        del _THREAD_CLIENT.client
 
 
 def process_delivery(

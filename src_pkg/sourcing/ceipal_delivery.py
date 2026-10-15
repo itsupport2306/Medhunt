@@ -5,13 +5,14 @@ import base64
 import hashlib
 import logging
 import threading
+import time
 from pathlib import Path
 
 from . import config, contact_access, healthboard_auth, storage, store
 
 
 _STOP = threading.Event()
-_THREAD: threading.Thread | None = None
+_THREADS: list[threading.Thread] = []
 _THREAD_LOCK = threading.Lock()
 
 
@@ -128,6 +129,10 @@ def process_once() -> dict | None:
     delivery = store.claim_ceipal_delivery()
     if not delivery:
         return None
+    logging.getLogger("medhunt.ceipal").info(
+        "Ceipal delivery claimed queue_age_seconds=%.2f",
+        max(0.0, time.time() - float(delivery.get("created") or time.time())),
+    )
     delivery_id = int(delivery["id"])
     lease_until = float(delivery["lease_until"])
     if not store.mark_ceipal_delivery_writing(delivery_id, lease_until):
@@ -149,6 +154,7 @@ def process_once() -> dict | None:
 
 def _run() -> None:
     while not _STOP.is_set():
+        started = time.monotonic()
         try:
             processed = process_once()
         except Exception:
@@ -156,27 +162,39 @@ def _run() -> None:
             processed = None
         if processed is None:
             _STOP.wait(3.0)
+        else:
+            logging.getLogger("medhunt.ceipal").info(
+                "Ceipal delivery status=%s duration_seconds=%.2f",
+                processed.get("status"), time.monotonic() - started,
+            )
 
 
 def start() -> None:
-    global _THREAD
+    global _THREADS
     if not (config.MEDHUNT_HEALTHBOARD_SERVICE_TOKEN and healthboard_auth.enabled()):
         return
     with _THREAD_LOCK:
-        if _THREAD and _THREAD.is_alive():
+        if any(thread.is_alive() for thread in _THREADS):
             return
         _STOP.clear()
-        _THREAD = threading.Thread(target=_run, name="medhunt-ceipal-delivery", daemon=True)
-        _THREAD.start()
+        _THREADS = [
+            threading.Thread(
+                target=_run, name=f"medhunt-ceipal-delivery-{index + 1}", daemon=True,
+            )
+            for index in range(config.CEIPAL_DELIVERY_WORKERS)
+        ]
+        for thread in _THREADS:
+            thread.start()
 
 
 def stop(timeout: float = 5.0) -> None:
-    global _THREAD
+    global _THREADS
     with _THREAD_LOCK:
-        thread = _THREAD
+        threads = list(_THREADS)
         _STOP.set()
-    if thread and thread.is_alive():
-        thread.join(max(0.0, float(timeout)))
+    for thread in threads:
+        if thread.is_alive():
+            thread.join(max(0.0, float(timeout)))
     with _THREAD_LOCK:
-        if _THREAD is thread and (not thread or not thread.is_alive()):
-            _THREAD = None
+        if not any(thread.is_alive() for thread in threads):
+            _THREADS = []

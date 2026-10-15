@@ -480,6 +480,8 @@ NEXUS_MAX_RESUME_BYTES = max(
 NEXUS_WORKER_INTERVAL_SECONDS = max(
     0.5, float(os.getenv("NEXUS_WORKER_INTERVAL_SECONDS", "2"))
 )
+NEXUS_DELIVERY_WORKERS = max(1, min(3, int(os.getenv("NEXUS_DELIVERY_WORKERS", "2"))))
+CEIPAL_DELIVERY_WORKERS = max(1, min(3, int(os.getenv("CEIPAL_DELIVERY_WORKERS", "2"))))
 NEXUS_MAX_ATTEMPTS = max(1, min(20, int(os.getenv("NEXUS_MAX_ATTEMPTS", "8"))))
 NEXUS_LEASE_SECONDS = max(
     120.0,
