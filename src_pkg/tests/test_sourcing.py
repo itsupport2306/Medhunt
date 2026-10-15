@@ -270,6 +270,88 @@ def test_public_api_requires_healthboard_session_without_origin_header(monkeypat
     asyncio.run(exercise())
 
 
+def test_extension_resume_batches_limit_parallel_work():
+    from playwright.sync_api import sync_playwright
+
+    chrome = Path("C:/Program Files/Google/Chrome/Application/chrome.exe")
+    if not chrome.exists():
+        pytest.skip("Chrome is required for the resume batch check")
+    app_script = (Path(__file__).parents[1] / "frontend" / "app.js").read_text(encoding="utf-8")
+    local_queue = "function createLocalResumeDownloadQueue" + app_script.split(
+        "function createLocalResumeDownloadQueue", 1,
+    )[1].split("async function saveStoredResumeDownload", 1)[0]
+    professional_batch = "function startProfessionalProfileResumeBatch" + app_script.split(
+        "function startProfessionalProfileResumeBatch", 1,
+    )[1].split("function linkedinResumeCompletion", 1)[0]
+    stubs = """
+      const PROFESSIONAL_PROFILE_SOURCES = new Set(['usnews']);
+      const indeedLookupState = new Map();
+      let indeedResumeBatchState = {active: false};
+      const activeSourcingTabId = 0, activeSourcingWindowId = 0;
+      const activeSourcingContextKey = '', activeSourcingPageUrl = '';
+      let activeView = 'dashboard';
+      const indeedScanState = {phase: 'results'};
+      const indeedLookupFor = (profile) => indeedLookupState.get(profile._selectionKey);
+      const isIndeedMatch = (result) => result?.status === 'found' && result.emails?.length > 0;
+      const updateSourceHeaderProgressUi = () => {};
+      const updateIndeedLookupProgressUi = () => {};
+      const friendlyActionError = (error) => String(error);
+      const notify = () => {};
+      const refreshTrackedNexusDeliveries = () => {};
+      const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+      async function enrichProfessionalProfileAndResume() { return {id: 1}; }
+    """
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True, executable_path=str(chrome))
+        try:
+            page = browser.new_page()
+            page.add_script_tag(content=stubs + local_queue + professional_batch)
+            result = page.evaluate("""async () => {
+              let active = 0, peak = 0;
+              const queue = createLocalResumeDownloadQueue(2);
+              for (let index = 0; index < 5; index += 1) {
+                queue.add(async () => {
+                  active += 1;
+                  peak = Math.max(peak, active);
+                  await wait(20);
+                  active -= 1;
+                });
+              }
+              await queue.drain();
+              const localPeak = peak;
+              active = 0;
+              peak = 0;
+              const profiles = Array.from({length: 4}, (_, index) => ({
+                source: 'usnews', _candidateId: index + 1,
+                _selectionKey: `resume-test-${index}`,
+              }));
+              for (const profile of profiles) {
+                indeedLookupState.set(profile._selectionKey, {
+                  status: 'found', emails: ['test@example.com'], phones: [],
+                });
+              }
+              const original = enrichProfessionalProfileAndResume;
+              enrichProfessionalProfileAndResume = async () => {
+                active += 1;
+                peak = Math.max(peak, active);
+                await wait(20);
+                active -= 1;
+                return {id: 1};
+              };
+              activeView = 'dashboard';
+              try { await startProfessionalProfileResumeBatch(profiles); }
+              finally { enrichProfessionalProfileAndResume = original; }
+              return {localPeak, profilePeak: peak, processed: indeedResumeBatchState.processed,
+                saved: indeedResumeBatchState.saved, active: indeedResumeBatchState.active};
+            }""")
+            assert result == {
+                "localPeak": 2, "profilePeak": 2,
+                "processed": 4, "saved": 4, "active": False,
+            }
+        finally:
+            browser.close()
+
+
 def _pdl_mobile_contact(value: str) -> dict:
     return {
         "phones": [value],

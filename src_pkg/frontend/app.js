@@ -1669,24 +1669,29 @@ function startProfessionalProfileResumeBatch(profiles) {
 
   return (async () => {
     try {
-      for (const profile of queue) {
-        let saved = false;
-        try {
-          saved = Boolean(await enrichProfessionalProfileAndResume(profile));
-        } catch (error) {
-          const latest = indeedLookupFor(profile);
-          indeedLookupState.set(profile._selectionKey, {
-            ...latest,
-            resume_status: "failed",
-            resume_error: friendlyActionError(error),
-          });
-          updateIndeedLookupProgressUi(profile);
+      let nextIndex = 0;
+      const worker = async () => {
+        while (nextIndex < queue.length) {
+          const profile = queue[nextIndex++];
+          let saved = false;
+          try {
+            saved = Boolean(await enrichProfessionalProfileAndResume(profile));
+          } catch (error) {
+            const latest = indeedLookupFor(profile);
+            indeedLookupState.set(profile._selectionKey, {
+              ...latest,
+              resume_status: "failed",
+              resume_error: friendlyActionError(error),
+            });
+            updateIndeedLookupProgressUi(profile);
+          }
+          indeedResumeBatchState.processed += 1;
+          if (saved) indeedResumeBatchState.saved += 1;
+          else indeedResumeBatchState.failed += 1;
+          updateSourceHeaderProgressUi();
         }
-        indeedResumeBatchState.processed += 1;
-        if (saved) indeedResumeBatchState.saved += 1;
-        else indeedResumeBatchState.failed += 1;
-        updateSourceHeaderProgressUi();
-      }
+      };
+      await Promise.all(Array.from({ length: Math.min(2, queue.length) }, worker));
     } finally {
       const completed = { ...indeedResumeBatchState };
       indeedResumeBatchState = { ...indeedResumeBatchState, active: false };
@@ -3979,6 +3984,31 @@ async function processPendingResumeEvents() {
   for (const event of pending?.events || []) await handleDownloadedResume(event);
 }
 
+function createLocalResumeDownloadQueue(limit = 2) {
+  const pending = [];
+  const completions = [];
+  let active = 0;
+  const pump = () => {
+    while (active < limit && pending.length) {
+      const { work, resolve } = pending.shift();
+      active += 1;
+      Promise.resolve().then(work).then(resolve, resolve).finally(() => {
+        active -= 1;
+        pump();
+      });
+    }
+  };
+  return {
+    add(work) {
+      const completion = new Promise((resolve) => pending.push({ work, resolve }));
+      completions.push(completion);
+      pump();
+      return completion;
+    },
+    drain: () => Promise.all(completions),
+  };
+}
+
 async function saveStoredResumeDownload(profile, candidateId, resume, { refresh = false } = {}) {
   const key = `${Number(candidateId)}|${Number(resume?.id)}`;
   if (!Number(candidateId) || !Number(resume?.id)) throw new Error("The stored resume could not be identified.");
@@ -4045,7 +4075,7 @@ async function recoverStoredResume(candidateId, uploadStartedAt, timeoutMs = 120
   return null;
 }
 
-async function downloadMatchedLinkedinPdf(profile, sourceTabId) {
+async function downloadMatchedLinkedinPdf(profile, sourceTabId, localDownloads) {
   const candidateId = Number(profile?._candidateId);
   const current = indeedLookupFor(profile);
   if (
@@ -4094,7 +4124,7 @@ async function downloadMatchedLinkedinPdf(profile, sourceTabId) {
     const started = await sendLinkedinPdfMessage(sourceTabId, "RADIXSOL_AUTO_LINKEDIN_PDF");
     if (!started?.ok) throw new Error(started?.error || "LinkedIn did not make Save to PDF available.");
     const resume = await completion.promise;
-    await saveStoredResumeDownload(profile, candidateId, resume).catch(() => {});
+    localDownloads.add(() => saveStoredResumeDownload(profile, candidateId, resume));
     return true;
   } catch (error) {
     completion?.cancel(error);
@@ -4132,6 +4162,7 @@ function startLinkedinResumeBatch(profiles) {
   updateSourceHeaderProgressUi();
 
   return (async () => {
+    const localDownloads = createLocalResumeDownloadQueue();
     try {
       for (const profile of queue) {
         let sourceTab = null;
@@ -4142,13 +4173,14 @@ function startLinkedinResumeBatch(profiles) {
           indeedResumeBatchState.failed += remaining;
           break;
         }
-        const saved = await downloadMatchedLinkedinPdf(profile, sourceTab.id);
+        const saved = await downloadMatchedLinkedinPdf(profile, sourceTab.id, localDownloads);
         indeedResumeBatchState.processed += 1;
         if (saved) indeedResumeBatchState.saved += 1;
         else indeedResumeBatchState.failed += 1;
         updateSourceHeaderProgressUi();
       }
     } finally {
+      await localDownloads.drain();
       const completed = { ...indeedResumeBatchState };
       indeedResumeBatchState = { ...indeedResumeBatchState, active: false };
       updateSourceHeaderProgressUi();
@@ -4211,6 +4243,7 @@ function startIndeedResumeBatch(profiles) {
   updateSourceHeaderProgressUi();
 
   return (async () => {
+    const localDownloads = createLocalResumeDownloadQueue();
     try {
       for (let index = 0; index < queue.length; index += 1) {
         const profile = queue[index];
@@ -4240,13 +4273,14 @@ function startIndeedResumeBatch(profiles) {
           updateSourceHeaderProgressUi();
           break;
         }
-        const saved = await downloadMatchedIndeedResume(profile);
+        const saved = await downloadMatchedIndeedResume(profile, localDownloads);
         indeedResumeBatchState.processed += 1;
         if (saved) indeedResumeBatchState.saved += 1;
         else indeedResumeBatchState.failed += 1;
         updateSourceHeaderProgressUi();
       }
     } finally {
+      await localDownloads.drain();
       const completed = { ...indeedResumeBatchState };
       indeedResumeBatchState = {
         ...indeedResumeBatchState,
@@ -4294,7 +4328,7 @@ function startIndeedResumeBatch(profiles) {
   })();
 }
 
-async function downloadMatchedIndeedResume(profile) {
+async function downloadMatchedIndeedResume(profile, localDownloads) {
   if (profile?.source !== "indeed") return false;
   const candidateId = Number(profile._candidateId);
   const current = indeedLookupFor(profile);
@@ -4372,7 +4406,7 @@ async function downloadMatchedIndeedResume(profile) {
     updateIndeedLookupProgressUi(profile);
     // The central copy is authoritative. A blocked local browser download must
     // not turn an already stored resume into a false failure state.
-    await saveStoredResumeDownload(profile, candidateId, attached.resume).catch(() => {});
+    localDownloads.add(() => saveStoredResumeDownload(profile, candidateId, attached.resume));
     return true;
   } catch (error) {
     const latest = indeedLookupFor(profile);
