@@ -2176,7 +2176,7 @@ async function applyNexusClassification() {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ candidate_ids: candidateIds, ...classification }),
-    timeout: 30000,
+    timeout: 120000,
   });
   nexusClassificationOpen = false;
   renderIndeedProfiles();

@@ -3955,6 +3955,9 @@ def test_nexus_classification_selection_validates_and_requeues_linked_candidate(
             recruiters = await client.get("/nexus/recruiters")
             assert recruiters.status_code == 200
             assert recruiters.json()["rows"] == [{"id": 57, "name": "Tina Mihic"}]
+            def unexpected_recruiter_fetch(user):
+                raise AssertionError("Applying a classification must not wait for Nexus recruiters")
+            monkeypatch.setattr(api_module.nexus_delivery, "supported_recruiters", unexpected_recruiter_fetch)
             invalid = await client.post("/candidates/nexus-classification/batch", json={
                 "candidate_ids": [candidate_id], "offering": "Nursing",
                 "profession": "Physician", "specialty": "Hematology/Oncology",
@@ -3963,7 +3966,7 @@ def test_nexus_classification_selection_validates_and_requeues_linked_candidate(
             invalid_recruiter = await client.post("/candidates/nexus-classification/batch", json={
                 "candidate_ids": [candidate_id], "offering": "Physician",
                 "profession": "Physician", "specialty": "Hematology/Oncology",
-                "recruiter_id": 999,
+                "recruiter_id": -1,
             })
             assert invalid_recruiter.status_code == 422
             valid = await client.post("/candidates/nexus-classification/batch", json={

@@ -62,7 +62,7 @@ async def lifespan(_app: FastAPI):
         nexus_delivery.stop()
 
 
-APP_VERSION = "3.37.16"
+APP_VERSION = "3.37.17"
 
 app = FastAPI(
     title="Medhunt Sourcing Assistant",
@@ -1222,12 +1222,9 @@ def set_nexus_classification(body: NexusClassificationIn, request: Request):
     selected = {"offering": row.offering, "profession": row.profession,
                 "specialty": row.specialty}
     if body.recruiter_id is not None:
-        try:
-            recruiters = nexus_delivery.supported_recruiters(user_id)
-        except nexus_sync.NexusDeliveryError as exc:
-            raise HTTPException(503, "Nexus recruiters are temporarily unavailable.") from exc
-        if body.recruiter_id not in {item["id"] for item in recruiters}:
-            raise HTTPException(422, "Choose an active recruiter from the Nexus list.")
+        # The selector only offers active Nexus recruiters. Rechecking that
+        # remote master here can outlive the extension's request timeout; the
+        # delivery worker validates the ID again before any Nexus write.
         selected["recruiter_id"] = body.recruiter_id
     requeued = 0
     nexus_available = None
@@ -1238,8 +1235,6 @@ def set_nexus_classification(body: NexusClassificationIn, request: Request):
         eligibility["nexus_classification"] = selected
         store.set_candidate_ats_route(candidate_id, user_id, "nexus", eligibility)
         store.release_held_nexus_delivery(candidate_id, user_id)
-        if not store.list_resumes(candidate_id):
-            continue
         if nexus_available is None:
             nexus_available = nexus_delivery.enabled_for(user_id)
         queued = nexus_delivery.queue_latest_resume_if_ready(
