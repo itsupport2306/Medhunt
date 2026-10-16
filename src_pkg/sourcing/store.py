@@ -2782,12 +2782,12 @@ def nexus_delivery_summary(candidate_ids, *, waiting_resume_ids=(), waiting_clas
             group, reason = "already_in_nexus", "active_in_nexus"
         elif status == "succeeded":
             group, reason = "uploaded", ""
-        elif candidate_id in waiting_classification_ids:
+        elif candidate_id in waiting_resume_ids and not resumes.get(candidate_id):
+            group, reason = "waiting_for_resume", "resume_not_saved"
+        elif candidate_id in waiting_classification_ids and candidate_id in waiting_resume_ids:
             group, reason = "waiting_for_classification", "recruiter_classification_pending"
         elif status in pending_states:
             group, reason = "pending", ""
-        elif not delivery and candidate_id in waiting_resume_ids:
-            group, reason = "waiting_for_resume", "resume_not_saved"
         else:
             group = "not_uploaded"
             if delivery:
@@ -2796,6 +2796,8 @@ def nexus_delivery_summary(candidate_ids, *, waiting_resume_ids=(), waiting_clas
                 reason = "candidate_not_found"
             elif not getattr(config, "NEXUS_SYNC_ENABLED", False):
                 reason = "nexus_disabled"
+            elif candidate_id not in waiting_resume_ids:
+                reason = "contact_not_ready"
             elif not resumes.get(candidate_id):
                 reason = "resume_not_saved"
             else:
@@ -2805,6 +2807,7 @@ def nexus_delivery_summary(candidate_ids, *, waiting_resume_ids=(), waiting_clas
             "group": group,
             "status": reason if group == "already_in_nexus" else (status or reason),
             "reason": reason,
+            "resume_saved": bool(resumes.get(candidate_id)),
         })
     return {
         "selected": len(ordered_ids),

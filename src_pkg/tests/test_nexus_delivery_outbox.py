@@ -161,6 +161,29 @@ def test_existing_nexus_candidate_is_reported_without_upload(monkeypatch):
     assert store.claim_nexus_delivery() is None
 
 
+def test_delivery_summary_only_requests_classification_after_resume_and_contact(monkeypatch):
+    store.reset()
+    monkeypatch.setattr(config, "NEXUS_SYNC_ENABLED", True)
+    saved = store.add_candidate("Saved Resume", "Atlanta, GA", source="indeed")
+    missing = store.add_candidate("Missing Resume", "Boston, MA", source="indeed")
+    no_contact = store.add_candidate("No Contact", "Chicago, IL", source="indeed")
+    store.attach_resume(saved, "saved.pdf", _resume_pdf(), queue_nexus=False)
+
+    summary = store.nexus_delivery_summary(
+        [saved, missing, no_contact],
+        waiting_resume_ids=[saved, missing],
+        waiting_classification_ids=[saved, missing, no_contact],
+    )
+    items = {item["candidate_id"]: item for item in summary["items"]}
+    assert summary["waiting_for_classification"] == 1
+    assert summary["waiting_for_resume"] == 1
+    assert summary["not_uploaded"] == 1
+    assert items[saved]["resume_saved"] is True
+    assert items[missing]["group"] == "waiting_for_resume"
+    assert items[missing]["resume_saved"] is False
+    assert items[no_contact]["reason"] == "contact_not_ready"
+
+
 def test_root_and_duplicate_share_one_nexus_identity(monkeypatch):
     store.reset()
     monkeypatch.setattr(config, "NEXUS_SYNC_ENABLED", True)
