@@ -50,7 +50,7 @@ def test_selected_physician_classification_overrides_nursing_defaults():
 def test_selected_specialty_is_verified_and_repaired_after_nexus_creation():
     selected = {
         "offering": "Physician", "profession": "Physician",
-        "specialty": "Hematology/Oncology", "recruiter_id": 57,
+        "specialty": "Hematology/Oncology",
     }
     patched = False
 
@@ -93,7 +93,6 @@ def test_selected_specialty_is_verified_and_repaired_after_nexus_creation():
             assert json.loads(request.content) == {
                 "professionIds": [77], "specialtyIds": [88],
                 "primarySpecialtyId": 88,
-                "recruiterId": 57,
             }
             patched = True
             return httpx.Response(200, json={"id": 709})
@@ -110,7 +109,11 @@ def test_selected_specialty_is_verified_and_repaired_after_nexus_creation():
     assert result["classification_updated"] is True
 
 
-def test_selected_recruiter_is_sent_with_single_contact_candidate():
+@pytest.mark.parametrize("emails, phones", [
+    ([], ["6145550123"]),
+    (["doctor@example.com"], ["6145550123"]),
+])
+def test_selected_recruiter_is_sent_when_candidate_is_created(emails, phones):
     selected = {
         "offering": "Physician", "profession": "Physician",
         "specialty": "Hematology/Oncology", "recruiter_id": 57,
@@ -137,6 +140,8 @@ def test_selected_recruiter_is_sent_with_single_contact_candidate():
             profile = json.loads(request.content)
             assert profile["recruiterId"] == 57
             assert profile["primarySpecialtyId"] == 88
+            assert bool(profile.get("email")) == bool(emails)
+            assert bool(profile.get("phone")) == bool(phones)
             return httpx.Response(201, json={"id": 710})
         if path.endswith("/candidates/710/upload/documents"):
             return httpx.Response(200, json={"uploadFailedDocumentNames": []})
@@ -148,7 +153,7 @@ def test_selected_recruiter_is_sent_with_single_contact_candidate():
         raise AssertionError(request.url)
 
     settings = _settings()
-    payload = _payload(emails=[], nexus_classification=selected)
+    payload = _payload(emails=emails, phones=phones, nexus_classification=selected)
     payload["reject_existing"] = True
     result = nexus_sync.process_delivery(
         payload, PDF,

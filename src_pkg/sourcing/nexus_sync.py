@@ -2049,9 +2049,13 @@ def process_delivery(
     # Legacy callers may still update saved links; extension deliveries set
     # reject_existing so they never enter those paths.
     profile = _build_profile(client, identity, settings.default_profile)
-    if bool(identity.get("email")) != bool(identity.get("phone")):
+    if (
+        bool(identity.get("email")) != bool(identity.get("phone"))
+        or profile.get("recruiterId") is not None
+    ):
         # Nexus's resume webhook returns HTTP 400 for a missing contact
-        # channel. The Candidate API accepts either channel; attach the resume
+        # channel and does not document recruiterId. The Candidate API accepts
+        # either contact channel and recruiterId at creation; attach the resume
         # through its document endpoint after the candidate has an ID.
         doc_type_id = _resume_doc_type_id(client)
         candidate_profile = dict(profile)
