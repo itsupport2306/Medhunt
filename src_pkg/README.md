@@ -608,6 +608,9 @@ provide either `NEXUS_CLIENT_ID` plus `NEXUS_CLIENT_SECRET` or
 included in the browser extension. A trusted-team installer can also resolve
 the allowlisted settings from `NEXUS_REFERENCE_ENV` and
 `NEXUS_REFERENCE_CONFIG` while it is built.
+Set `NEXUS_DEFAULT_PROFILE` explicitly in every Medhunt deployment. The
+reference application's referral source belongs to Bulk Parsing and is never
+copied into Medhunt.
 
 When `NEXUS_PRECHECK_ENABLED=1`, Medhunt searches Nexus by exact email, exact
 phone, and NPI before exposing enriched contacts or sending Zoom Phone SMS.

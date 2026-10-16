@@ -10,6 +10,7 @@ def test_reference_loader_reads_only_allowlisted_values_without_execution(tmp_pa
     reference_env.write_text(
         "NEXUS_AUTH_METHOD=password\n"
         "NEXUS_USERNAME=reference-user\n"
+        'NEXUS_DEFAULT_PROFILE={"referralSourceId":5638,"jobTypeIds":["TRAVEL"]}\n'
         "UNRELATED_SECRET=must-not-leave-reference\n",
         encoding="utf-8",
     )

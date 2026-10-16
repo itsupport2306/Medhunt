@@ -15,6 +15,8 @@ from pathlib import Path
 from dotenv import dotenv_values
 
 
+# Tenant routing is intentionally omitted: the reference app may use the
+# Bulk Parsing referral source, while Medhunt must configure its own.
 NEXUS_KEYS = (
     "NEXUS_BASE_URL",
     "NEXUS_AUTH_METHOD",
@@ -28,7 +30,6 @@ NEXUS_KEYS = (
     "NEXUS_TOKEN_BASIC",
     "NEXUS_ORG_CODE",
     "NEXUS_RESUME_DOC_TYPE_ID",
-    "NEXUS_DEFAULT_PROFILE",
 )
 
 
