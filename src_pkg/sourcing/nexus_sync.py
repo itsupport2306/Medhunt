@@ -118,6 +118,12 @@ class NexusPermanentError(NexusDeliveryError):
     default_code = "nexus_permanent"
 
 
+class NexusAlreadyPresent(NexusPermanentError):
+    """Existing Nexus candidate; the extension must not update it."""
+
+    default_code = "nexus_already_present"
+
+
 class NexusIndeterminateError(NexusDeliveryError):
     """Automatic retry could duplicate or modify the wrong remote candidate."""
 
@@ -1978,6 +1984,10 @@ def process_delivery(
                 operation="payload_validation",
                 code="nexus_candidate_id_invalid",
             )
+        if payload.get("reject_existing") is True:
+            raise NexusAlreadyPresent(
+                "Candidate already exists in Nexus.", operation="duplicate_search",
+            )
         classification_updated = _repair_linked_classification(
             client, linked_candidate_id, identity, settings.default_profile,
             before_write=before_write,
@@ -2012,9 +2022,32 @@ def process_delivery(
             "checksum_sha256": checksum,
         }
 
-    # No ATS duplicate lookup is performed. If this local candidate already
-    # has a stored Nexus link, the resume is attached above; otherwise submit
-    # the candidate directly; any duplicate handling is left to Nexus.
+    if payload.get("reject_existing") is True:
+        # The extension creates new candidates only. Check every trusted
+        # contact so a secondary email or phone cannot update or duplicate an
+        # existing Nexus profile. Search failure aborts before any write.
+        candidate = payload.get("candidate") if isinstance(payload.get("candidate"), Mapping) else payload
+        emails = {_email(value) for value in candidate.get("emails") or [] if _email(value)}
+        phones = {_phone(value) for value in candidate.get("phones") or [] if _phone(value)}
+        emails.add(str(identity.get("email") or ""))
+        phones.add(str(identity.get("phone") or ""))
+        for item in candidate.get("phone_contacts") or []:
+            if isinstance(item, Mapping):
+                phone = _phone(item.get("value"))
+                if phone:
+                    phones.add(phone)
+        for email in sorted(emails - {""}):
+            if client.search_candidates(email=email):
+                raise NexusAlreadyPresent(
+                    "Candidate already exists in Nexus.", operation="duplicate_search",
+                )
+        for phone in sorted(phones - {""}):
+            if client.search_candidates(phone=phone):
+                raise NexusAlreadyPresent(
+                    "Candidate already exists in Nexus.", operation="duplicate_search",
+                )
+    # Legacy callers may still update saved links; extension deliveries set
+    # reject_existing so they never enter those paths.
     profile = _build_profile(client, identity, settings.default_profile)
     if bool(identity.get("email")) != bool(identity.get("phone")):
         # Nexus's resume webhook returns HTTP 400 for a missing contact
@@ -2103,6 +2136,7 @@ def process_delivery(
 
 __all__ = [
     "NexusClient",
+    "NexusAlreadyPresent",
     "NexusDeliveryError",
     "NexusIndeterminateError",
     "NexusPermanentError",

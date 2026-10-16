@@ -144,6 +144,23 @@ def test_nexus_outbox_claim_retry_and_link_are_idempotent(monkeypatch):
     assert store.get_nexus_delivery_for_resume(resume["id"])["status"] == "succeeded"
 
 
+def test_existing_nexus_candidate_is_reported_without_upload(monkeypatch):
+    store.reset()
+    monkeypatch.setattr(config, "NEXUS_SYNC_ENABLED", True)
+    candidate_id = store.add_candidate("Jane Doe", "Atlanta, GA", source="indeed")
+    resume = store.attach_resume(
+        candidate_id, "jane.pdf", _resume_pdf(), queue_nexus=True,
+    )
+    delivery = store.claim_nexus_delivery()
+    assert delivery["resume_id"] == resume["id"]
+    assert store.finish_nexus_delivery(delivery["id"], "already_in_nexus")
+    summary = store.nexus_delivery_summary([candidate_id])
+    assert summary["already_in_nexus"] == 1
+    assert summary["uploaded"] == 0
+    assert summary["items"][0]["group"] == "already_in_nexus"
+    assert store.claim_nexus_delivery() is None
+
+
 def test_root_and_duplicate_share_one_nexus_identity(monkeypatch):
     store.reset()
     monkeypatch.setattr(config, "NEXUS_SYNC_ENABLED", True)
@@ -430,6 +447,7 @@ def test_worker_delivers_projected_contact_and_persists_link(monkeypatch):
     }, (delivery_state["operation"], delivery_state["last_error"])
     assert captured["candidate"]["latest_phone"] == "(404) 555-0199"
     assert captured["candidate"]["primary_email"] == "jane@example.test"
+    assert captured["reject_existing"] is True
     assert captured["candidate"]["job_title"] == "Registered Nurse"
     assert captured["resume"]["checksum_sha256"] == captured["delivered_checksum"]
     delivery = store.get_nexus_delivery_for_resume(resume["id"])
@@ -510,6 +528,54 @@ def test_worker_holds_duplicate_conflict_for_review(monkeypatch):
     assert result["status"] == "review"
     assert delivery["status"] == "review"
     assert "different candidates" in delivery["last_error"]
+
+
+def test_worker_skips_existing_nexus_candidate_without_writing(monkeypatch):
+    store.reset()
+    monkeypatch.setattr(config, "NEXUS_SYNC_ENABLED", True)
+    candidate_id = store.add_candidate("Jane Doe", "Atlanta, GA", source="indeed")
+    _select_classification(candidate_id)
+    resume = store.attach_resume(
+        candidate_id, "jane.pdf", _resume_pdf(), queue_nexus=True,
+    )
+    monkeypatch.setattr(
+        nexus_delivery.contact_access, "project_candidate",
+        lambda candidate: {**candidate, "contacts_trusted": True,
+                           "emails": ["jane@example.test"], "phones": []},
+    )
+
+    def existing(payload, _resume_pdf, **_kwargs):
+        assert payload["reject_existing"] is True
+        raise nexus_sync.NexusAlreadyPresent(
+            "Candidate already exists in Nexus.", operation="duplicate_search",
+        )
+
+    monkeypatch.setattr(nexus_delivery.nexus_sync, "process_delivery", existing)
+    result = nexus_delivery.process_once()
+    assert result["status"] == "already_in_nexus"
+    assert store.get_nexus_delivery_for_resume(resume["id"])["status"] == "already_in_nexus"
+    assert store.nexus_delivery_summary([candidate_id])["already_in_nexus"] == 1
+
+
+def test_worker_skips_saved_link_before_resume_processing(monkeypatch):
+    store.reset()
+    monkeypatch.setattr(config, "NEXUS_SYNC_ENABLED", True)
+    candidate_id = store.add_candidate("Jane Doe", "Atlanta, GA", source="indeed")
+    _select_classification(candidate_id)
+    resume = store.attach_resume(
+        candidate_id, "jane.pdf", _resume_pdf(), queue_nexus=True,
+    )
+    queued = store.get_nexus_delivery_for_resume(resume["id"])
+    store.save_nexus_candidate_link(queued["identity_key"], candidate_id, "9001")
+
+    def must_not_run(*_args, **_kwargs):
+        raise AssertionError("Existing Nexus candidate must not be updated")
+
+    monkeypatch.setattr(nexus_delivery.nexus_sync, "process_delivery", must_not_run)
+    monkeypatch.setattr(nexus_delivery.resume_enrichment, "refresh_contact_sheet", must_not_run)
+    result = nexus_delivery.process_once()
+    assert result["status"] == "already_in_nexus"
+    assert store.nexus_delivery_summary([candidate_id])["already_in_nexus"] == 1
 
 
 def test_worker_holds_remote_success_when_identity_link_conflicts(monkeypatch):

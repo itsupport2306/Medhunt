@@ -4009,7 +4009,7 @@ def test_professional_capture_keeps_verified_lookup_identity_for_every_directory
             browser.close()
 
 
-def test_nexus_classification_selection_validates_and_requeues_linked_candidate(monkeypatch):
+def test_nexus_classification_selection_rejects_linked_candidate(monkeypatch):
     store.reset()
     monkeypatch.setattr(config, "NEXUS_SYNC_ENABLED", True)
     candidate_id = store.add_candidate("Raja Flores", "Columbus, OH", source="sharecare")
@@ -4056,22 +4056,12 @@ def test_nexus_classification_selection_validates_and_requeues_linked_candidate(
                 "profession": "Physician", "specialty": "Hematology/Oncology",
                 "recruiter_id": 57,
             })
-            assert valid.status_code == 200, valid.text
-            assert valid.json()["requeued"] == 1
+            assert valid.status_code == 409, valid.text
 
     asyncio.run(exercise())
     route = store.get_candidate_ats_route(candidate_id, "local")
-    assert route["eligibility"]["nexus_classification"] == {
-        "offering": "Physician", "profession": "Physician",
-        "specialty": "Hematology/Oncology", "recruiter_id": 57,
-    }
-    assert store.get_nexus_delivery_for_resume(resume["id"])["status"] == "pending"
-    assert store.get_nexus_delivery_for_resume(resume["id"])["operation"] == "classification_refresh"
-    payload = api_module.nexus_delivery._payload(
-        store.get_nexus_delivery_for_resume(resume["id"]),
-        store.get_candidate(candidate_id), store.get_resume(candidate_id, resume["id"]),
-    )
-    assert payload["candidate"]["nexus_classification"] == route["eligibility"]["nexus_classification"]
+    assert route is None or "nexus_classification" not in route["eligibility"]
+    assert store.get_nexus_delivery_for_resume(resume["id"])["status"] == "succeeded"
 
 
 def test_nexus_first_upload_waits_for_recruiter_classification_without_hold_flag(monkeypatch):

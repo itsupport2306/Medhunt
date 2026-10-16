@@ -1218,6 +1218,19 @@ def set_nexus_classification(body: NexusClassificationIn, request: Request):
         raise HTTPException(422, "Candidate IDs must be positive.")
     if len(store.get_candidates(candidate_ids)) != len(candidate_ids):
         raise HTTPException(404, "One or more candidates were not found.")
+    summary = store.nexus_delivery_summary(candidate_ids)
+    existing_ids = {
+        int(item["candidate_id"]) for item in summary["items"]
+        if item["group"] in {"uploaded", "already_in_nexus"}
+    }
+    existing_ids.update(
+        candidate_id for candidate_id in candidate_ids
+        if store.candidate_nexus_id(candidate_id)
+    )
+    if existing_ids:
+        raise HTTPException(
+            409, "Remove candidates already in Nexus before setting classification.",
+        )
     user_id = str(actor.get("sub") or "local")
     selected = {"offering": row.offering, "profession": row.profession,
                 "specialty": row.specialty}
@@ -1237,11 +1250,10 @@ def set_nexus_classification(body: NexusClassificationIn, request: Request):
         store.release_held_nexus_delivery(candidate_id, user_id)
         if nexus_available is None:
             nexus_available = nexus_delivery.enabled_for(user_id)
-        queued = nexus_delivery.queue_latest_resume_if_ready(
+        nexus_delivery.queue_latest_resume_if_ready(
             candidate_id, user_id, enabled=nexus_available,
         )
-        if queued and store.requeue_nexus_classification(candidate_id, int(queued["resume_id"]), user_id):
-            requeued += 1
+        # Existing Nexus records are never reopened for a classification update.
     return {"saved": len(candidate_ids), "requeued": requeued, "classification": selected}
 
 

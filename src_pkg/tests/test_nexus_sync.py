@@ -57,6 +57,8 @@ def test_selected_specialty_is_verified_and_repaired_after_nexus_creation():
     def handler(request):
         nonlocal patched
         path = request.url.path
+        if path.endswith("/candidates/search"):
+            return httpx.Response(200, json={"records": []})
         if path.endswith("/master/professions"):
             return httpx.Response(200, json=[
                 {"professionId": 10, "name": "RN", "active": True},
@@ -98,8 +100,10 @@ def test_selected_specialty_is_verified_and_repaired_after_nexus_creation():
         raise AssertionError(request.url)
 
     settings = _settings()
+    payload = _payload(nexus_classification=selected)
+    payload["reject_existing"] = True
     result = nexus_sync.process_delivery(
-        _payload(nexus_classification=selected), PDF,
+        payload, PDF,
         settings=settings, client=_client(settings, handler),
     )
     assert patched
@@ -114,6 +118,8 @@ def test_selected_recruiter_is_sent_with_single_contact_candidate():
 
     def handler(request):
         path = request.url.path
+        if path.endswith("/candidates/search"):
+            return httpx.Response(200, json={"records": []})
         if path.endswith("/master/professions"):
             return httpx.Response(200, json=[
                 {"professionId": 77, "name": "Physician", "active": True},
@@ -142,8 +148,10 @@ def test_selected_recruiter_is_sent_with_single_contact_candidate():
         raise AssertionError(request.url)
 
     settings = _settings()
+    payload = _payload(emails=[], nexus_classification=selected)
+    payload["reject_existing"] = True
     result = nexus_sync.process_delivery(
-        _payload(emails=[], nexus_classification=selected), PDF,
+        payload, PDF,
         settings=settings, client=_client(settings, handler),
     )
     assert result["nexus_candidate_id"] == 710
@@ -287,6 +295,45 @@ def _client(settings, handler):
     return nexus_sync.NexusClient(settings, http_client=http)
 
 
+def test_extension_rejects_saved_nexus_link_without_remote_write():
+    calls = []
+
+    def handler(request):
+        calls.append(request.url.path)
+        raise AssertionError("An existing Nexus candidate must not be changed")
+
+    payload = _payload()
+    payload["nexus_candidate_id"] = "remote_77"
+    payload["reject_existing"] = True
+    settings = _settings()
+    with pytest.raises(nexus_sync.NexusAlreadyPresent):
+        nexus_sync.process_delivery(
+            payload, PDF, settings=settings, client=_client(settings, handler),
+        )
+    assert calls == []
+
+
+def test_extension_rejects_remote_match_on_secondary_contact_before_create():
+    searches = []
+
+    def handler(request):
+        assert request.url.path.endswith("/candidates/search")
+        query = json.loads(request.content)
+        searches.append(query.get("email") or query.get("phone"))
+        return httpx.Response(200, json={
+            "records": [{"candidateId": 88}] if query.get("email") == "other@example.com" else [],
+        })
+
+    payload = _payload(emails=["jane.example@example.com", "other@example.com"])
+    payload["reject_existing"] = True
+    settings = _settings()
+    with pytest.raises(nexus_sync.NexusAlreadyPresent):
+        nexus_sync.process_delivery(
+            payload, PDF, settings=settings, client=_client(settings, handler),
+        )
+    assert searches == ["jane.example@example.com", "other@example.com"]
+
+
 def test_unlinked_candidate_is_created_with_whitelisted_trusted_fields():
     requests = []
 
@@ -309,8 +356,10 @@ def test_unlinked_candidate_is_created_with_whitelisted_trusted_fields():
         raise AssertionError(request.url)
 
     settings = _settings()
+    payload = _payload()
+    payload["reject_existing"] = True
     result = nexus_sync.process_delivery(
-        _payload(), PDF, settings=settings, client=_client(settings, handler)
+        payload, PDF, settings=settings, client=_client(settings, handler)
     )
 
     searches = [
@@ -318,7 +367,9 @@ def test_unlinked_candidate_is_created_with_whitelisted_trusted_fields():
         for request in requests
         if request.url.path.endswith("/candidates/search")
     ]
-    assert searches == []
+    assert [item.get("email") or item.get("phone") for item in searches] == [
+        "jane.example@example.com", "(614) 555-0123",
+    ]
     assert result == {
         "status": "delivered",
         "action": "candidate_created",

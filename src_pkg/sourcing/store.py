@@ -2493,24 +2493,6 @@ def get_nexus_delivery_for_resume(resume_id):
         return dict(row) if row else None
 
 
-def requeue_nexus_classification(candidate_id: int, resume_id: int, user_id: str) -> bool:
-    """Reopen a completed linked delivery after an explicit recruiter correction."""
-    now = time.time()
-    with _conn() as connection:
-        with connection.transaction():
-            result = connection.execute(
-                """UPDATE nexus_deliveries SET status='pending', attempts=0,
-                   next_attempt_at=0, lease_until=0, requested_by=?, operation='classification_refresh',
-                   last_error='', updated=?
-                   WHERE candidate_id=? AND resume_id=? AND status='succeeded'
-                     AND EXISTS (SELECT 1 FROM nexus_candidate_links l
-                                 WHERE l.identity_key=nexus_deliveries.identity_key
-                                   AND l.nexus_candidate_id<>'')""",
-                (str(user_id or '')[:200], now, int(candidate_id), int(resume_id)),
-            )
-            return result.rowcount == 1
-
-
 def release_held_nexus_delivery(candidate_id: int, user_id: str) -> None:
     """Wake a delivery deferred while a recruiter chose Nexus classification."""
     with _conn() as connection:
@@ -2622,7 +2604,7 @@ def finish_nexus_delivery(
     delivery_id, status, *, nexus_candidate_id="", operation="", error="",
     retry_at=0, expected_lease_until=None,
 ):
-    allowed = {"succeeded", "retry", "review", "failed", "indeterminate"}
+    allowed = {"succeeded", "retry", "review", "failed", "indeterminate", "already_in_nexus"}
     normalized = str(status or "").strip().lower()
     if normalized not in allowed:
         raise ValueError("invalid Nexus delivery status")
@@ -2796,7 +2778,7 @@ def nexus_delivery_summary(candidate_ids, *, waiting_resume_ids=(), waiting_clas
     for candidate_id in ordered_ids:
         delivery = latest.get(candidate_id)
         status = str((delivery or {}).get("status") or "").casefold()
-        if candidate_id in blocked:
+        if candidate_id in blocked or status == "already_in_nexus":
             group, reason = "already_in_nexus", "active_in_nexus"
         elif status == "succeeded":
             group, reason = "uploaded", ""

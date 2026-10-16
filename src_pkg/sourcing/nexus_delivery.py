@@ -336,6 +336,13 @@ def process_once() -> dict | None:
             )
             return {"status": "waiting_for_classification", "delivery_id": delivery_id}
         payload = _payload(delivery, candidate, resume)
+        payload["reject_existing"] = True
+        if payload.get("nexus_candidate_id"):
+            store.finish_nexus_delivery(
+                delivery_id, "already_in_nexus", operation="stored_nexus_link",
+                error="nexus_already_present", expected_lease_until=lease_until,
+            )
+            return {"status": "already_in_nexus", "delivery_id": delivery_id}
         try:
             resume_pdf, _ = resume_enrichment.refresh_contact_sheet(
                 _resume_bytes(resume), payload["candidate"],
@@ -423,6 +430,12 @@ def process_once() -> dict | None:
             expected_lease_until=lease_until,
         )
         return {"status": status, "delivery_id": delivery_id}
+    except nexus_sync.NexusAlreadyPresent as exc:
+        store.finish_nexus_delivery(
+            delivery_id, "already_in_nexus", operation=exc.operation,
+            error=exc.code, expected_lease_until=lease_until,
+        )
+        return {"status": "already_in_nexus", "delivery_id": delivery_id}
     except nexus_sync.NexusPermanentError as exc:
         status = "review" if exc.operation in {
             "duplicate_search", "master_data", "payload_validation",
