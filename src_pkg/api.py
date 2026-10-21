@@ -671,6 +671,54 @@ def nexus_delivery_summary(body: NexusDeliverySummaryIn, request: Request):
     )
 
 
+@app.post("/ceipal/delivery-summary")
+def ceipal_delivery_summary(body: NexusDeliverySummaryIn, request: Request):
+    """Report this recruiter's Ceipal resume delivery, including its failure reason."""
+    actor = _request_user(request)
+    ids = list(dict.fromkeys(int(value) for value in body.candidate_ids if int(value) > 0))
+    if ats_routing.destination_for(actor) != "ceipal":
+        return {"enabled": False, "destination": "nexus", "selected": len(ids), "items": []}
+    user_id = str(actor.get("sub") or "local")
+    rows = store.get_ceipal_delivery_summary_rows(ids, user_id)
+    contactable_ids = {
+        int(candidate["id"])
+        for candidate in contact_access.project_candidates(store.get_candidates(ids))
+        if candidate.get("contacts_trusted") is True
+        and (candidate.get("emails") or candidate.get("phones"))
+    }
+    counts = {"uploaded": 0, "pending": 0, "already_in_ceipal": 0,
+              "waiting_for_resume": 0, "not_sent": 0, "failed": 0}
+    items = []
+    for candidate_id in ids:
+        route = rows.get(candidate_id) or {}
+        if route.get("destination") != "ceipal":
+            group, reason = "not_sent", "Ceipal delivery has not started for this candidate."
+        else:
+            upload = (route.get("eligibility") or {}).get("ceipal_upload") or {}
+            status = str(route.get("status") or "")
+            if status == "uploaded" or (
+                upload.get("state") == "uploaded_to_ceipal"
+                and upload.get("resume_submitted") is True
+            ):
+                group, reason = "uploaded", "Resume submitted to Ceipal."
+            elif status == "already_in_ceipal" or upload.get("state") == "already_in_ceipal":
+                group, reason = "already_in_ceipal", "Candidate already exists in Ceipal."
+            elif status in {"pending", "processing", "writing"}:
+                group, reason = "pending", "Ceipal resume delivery is in progress."
+            elif status in {"failed", "indeterminate"} or upload.get("state") == "indeterminate":
+                group = "failed"
+                reason = str(upload.get("error") or route.get("last_error") or
+                             "Ceipal delivery outcome could not be confirmed.")[:240]
+            elif candidate_id not in contactable_ids:
+                group, reason = "not_sent", "No verified email or phone number was found."
+            else:
+                group, reason = "waiting_for_resume", "Resume has not been saved for Ceipal delivery."
+        counts[group] += 1
+        items.append({"candidate_id": candidate_id, "group": group, "reason": reason})
+    return {"enabled": True, "destination": "ceipal", "selected": len(ids),
+            **counts, "items": items}
+
+
 @app.post("/contact-lookup/queue")
 def enqueue_contact_lookups(body: ContactLookupBatchIn, request: Request):
     actor = _request_user(request)
@@ -821,6 +869,7 @@ def auth_me(request: Request):
             "email": claims.get("email", ""),
             "name": claims.get("name", ""),
             "role": claims.get("role", ""),
+            "ats_destination": ats_routing.destination_for(claims),
         },
     }
 

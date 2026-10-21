@@ -1077,6 +1077,33 @@ def get_ceipal_delivery(candidate_id: int, user_id: str) -> dict | None:
     return dict(row) if row else None
 
 
+def get_ceipal_delivery_summary_rows(candidate_ids: list[int], user_id: str) -> dict[int, dict]:
+    """Read one recruiter's ATS route and resume delivery in one query."""
+    ids = list(dict.fromkeys(int(value) for value in candidate_ids))
+    if not ids:
+        return {}
+    placeholders = ",".join("?" for _ in ids)
+    with _conn() as connection:
+        rows = connection.execute(
+            f"""SELECT r.candidate_id, r.destination, r.eligibility,
+                       d.status, d.last_error
+                FROM medhunt_ats_routes r
+                LEFT JOIN ceipal_resume_deliveries d
+                  ON d.candidate_id=r.candidate_id AND d.user_id=r.user_id
+                WHERE r.user_id=? AND r.candidate_id IN ({placeholders})""",
+            [str(user_id or "local")[:200], *ids],
+        ).fetchall()
+    result = {}
+    for row in rows:
+        item = dict(row)
+        try:
+            item["eligibility"] = json.loads(item.get("eligibility") or "{}")
+        except (TypeError, ValueError):
+            item["eligibility"] = {}
+        result[int(item["candidate_id"])] = item
+    return result
+
+
 def get_nexus_candidate_check(candidate_id: int):
     with _conn() as connection:
         row = connection.execute(

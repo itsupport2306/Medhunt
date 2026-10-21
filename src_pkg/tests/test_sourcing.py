@@ -158,6 +158,39 @@ def test_ceipal_upload_runs_after_resume_is_stored(monkeypatch):
     assert store.get_ceipal_delivery(candidate_id, "recruiter-1")["status"] == "uploaded"
 
 
+def test_ceipal_delivery_summary_explains_each_outcome(monkeypatch):
+    from types import SimpleNamespace
+
+    actor = {"sub": "recruiter-1", "delivery_targets": {"ceipal": True}}
+    request = SimpleNamespace(state=SimpleNamespace(user=actor))
+    rows = {
+        1: {"destination": "ceipal", "status": "uploaded", "eligibility": {}},
+        2: {"destination": "ceipal", "status": "pending", "eligibility": {}},
+        3: {"destination": "ceipal", "status": "indeterminate", "last_error": "Ceipal rejected the resume", "eligibility": {}},
+        4: {"destination": "ceipal", "status": None, "eligibility": {}},
+        5: {"destination": "ceipal", "status": None, "eligibility": {}},
+    }
+    owners = []
+    def read_rows(ids, owner):
+        owners.append(owner)
+        return {key: rows[key] for key in ids if key in rows}
+    monkeypatch.setattr(store, "get_ceipal_delivery_summary_rows", read_rows)
+    monkeypatch.setattr(store, "get_candidates", lambda ids: [
+        {"id": key, "contacts_trusted": True,
+         "emails": ["jane@example.test"] if key != 5 else [], "phones": []}
+        for key in ids
+    ])
+    monkeypatch.setattr(contact_access, "project_candidates", lambda candidates: candidates)
+    result = api_module.ceipal_delivery_summary(
+        api_module.NexusDeliverySummaryIn(candidate_ids=[1, 2, 3, 4, 5]), request,
+    )
+    assert owners == ["recruiter-1"]
+    assert [item["group"] for item in result["items"]] == [
+        "uploaded", "pending", "failed", "waiting_for_resume", "not_sent",
+    ]
+    assert result["items"][2]["reason"] == "Ceipal rejected the resume"
+
+
 def test_ceipal_worker_sends_stored_pdf_and_requires_resume_confirmation(monkeypatch):
     store.reset()
     candidate_id = store.add_candidate("Jane Smith", "Boston, MA", source="indeed")
