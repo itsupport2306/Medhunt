@@ -191,6 +191,18 @@ def test_ceipal_delivery_summary_explains_each_outcome(monkeypatch):
     assert result["items"][2]["reason"] == "Ceipal rejected the resume"
 
 
+def test_ceipal_delivery_summary_rows_are_scoped_to_recruiter():
+    store.reset()
+    candidate_id = store.add_candidate("Jane Smith", "Boston, MA", source="indeed")
+    store.set_candidate_ats_route(candidate_id, "recruiter-1", "ceipal", {
+        "ceipal_upload": {"state": "queued"},
+    })
+    rows = store.get_ceipal_delivery_summary_rows([candidate_id], "recruiter-1")
+    assert rows[candidate_id]["destination"] == "ceipal"
+    assert rows[candidate_id]["eligibility"]["ceipal_upload"]["state"] == "queued"
+    assert store.get_ceipal_delivery_summary_rows([candidate_id], "recruiter-2") == {}
+
+
 def test_ceipal_worker_sends_stored_pdf_and_requires_resume_confirmation(monkeypatch):
     store.reset()
     candidate_id = store.add_candidate("Jane Smith", "Boston, MA", source="indeed")
