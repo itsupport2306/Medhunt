@@ -3952,6 +3952,57 @@ def test_usnews_professional_profile_resume_is_generated_stored_and_deduplicated
             assert sharecare_resume.status_code == 200, sharecare_resume.text
             assert sharecare_resume.json()["resume"]["filename"].endswith(".pdf")
 
+            healthgrades_id = store.add_candidate(
+                "Susan Hundley", "Boydton, VA", source="healthgrades",
+                source_url="https://www.healthgrades.com/physician/dr-susan-hundley-xtlg9",
+                source_id="dr-susan-hundley-xtlg9",
+            )
+            grant_contact(healthgrades_id)
+            healthgrades_body = {
+                **medifind_body,
+                "source_label": "Healthgrades",
+                "source_url": "https://www.healthgrades.com/physician/dr-susan-hundley-xtlg9",
+                "headline": "Family Medicine",
+                "summary": "Public Healthgrades professional overview.",
+                "specialties": ["Family Medicine"],
+                "hospitals": ["VCU Health Community Memorial Hospital"],
+                "education": ["Virginia Commonwealth University School of Medicine"],
+                "certifications": ["Family Medicine"],
+                "licenses": ["Virginia State Medical License"],
+                "npi": "1811979529",
+                "address": "Boydton, VA",
+                "location": "Boydton, VA",
+            }
+            healthgrades_resume = await client.post(
+                f"/candidates/{healthgrades_id}/professional-profile-resume",
+                json=healthgrades_body,
+            )
+            assert healthgrades_resume.status_code == 200, healthgrades_resume.text
+            assert healthgrades_resume.json()["resume"]["filename"].endswith(".pdf")
+            assert "NPI: 1811979529" in store.get_candidate(healthgrades_id)["notes"]
+
+            alternate_healthgrades_id = store.add_candidate(
+                "Delta Ray", "Denver, CO", source="healthgrades",
+                source_url="https://www.healthgrades.com/new-provider-kind/dr-delta-ray-jkl",
+                source_id="dr-delta-ray-jkl",
+            )
+            grant_contact(alternate_healthgrades_id)
+            alternate_healthgrades_resume = await client.post(
+                f"/candidates/{alternate_healthgrades_id}/professional-profile-resume",
+                json={
+                    **healthgrades_body,
+                    "source_url": "https://www.healthgrades.com/new-provider-kind/dr-delta-ray-jkl",
+                    "npi": "",
+                },
+            )
+            assert alternate_healthgrades_resume.status_code == 200, alternate_healthgrades_resume.text
+
+            wrong_healthgrades_url = await client.post(
+                f"/candidates/{healthgrades_id}/professional-profile-resume",
+                json={**healthgrades_body, "source_url": "https://example.com/physician/dr-susan-hundley"},
+            )
+            assert wrong_healthgrades_url.status_code == 400
+
             wrong_sharecare_url = await client.post(
                 f"/candidates/{sharecare_id}/professional-profile-resume",
                 json={**sharecare_body, "source_url": "https://sharecare.com/doctor/dr-raja-flores"},

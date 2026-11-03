@@ -2136,6 +2136,20 @@ def build_professional_profile_resume(cid: int, body: ProfessionalProfileResumeI
             and bool(re.match(r"^/doctor/[^/]+-overview/?$", path, re.IGNORECASE)),
             "WebMD",
         ),
+        "healthgrades": (
+            lambda host, path: (
+                host == "healthgrades.com" or host.endswith(".healthgrades.com")
+            ) and bool(re.match(
+                r"^/(?:(?:physician|doctor|provider|dentist|nurse-practitioner|"
+                r"physician-assistant|psychologist|chiropractor|physical-therapist|"
+                r"occupational-therapist|optometrist|podiatrist|pharmacist|social-worker|"
+                r"counselor|dietitian|midwife|audiologist|speech-language-pathologist)/[^/]+|"
+                r"[^/]+/dr-[^/]+)/?$",
+                path,
+                re.IGNORECASE,
+            )),
+            "Healthgrades",
+        ),
     }
     rule = source_rules.get(candidate_source)
     if not rule:
