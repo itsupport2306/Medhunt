@@ -3761,6 +3761,34 @@ def test_api_workflow_and_extension_cors(monkeypatch):
     asyncio.run(exercise_api())
 
 
+def test_profile_reimport_persists_npi_when_existing_notes_are_longer():
+    store.reset()
+    existing_notes = "Verified contact evidence: " + ("detail " * 300)
+    candidate_id = store.add_candidate(
+        "Susan Hundley", "Boydton, VA", notes=existing_notes,
+        source="healthgrades",
+        source_url="https://www.healthgrades.com/physician/dr-susan-hundley-xtlg9",
+        source_id="dr-susan-hundley-xtlg9",
+    )
+
+    result = api_module._import_profile(api_module.ProfileImportIn(
+        name="Susan Hundley, MD",
+        location="Boydton, VA",
+        headline="Family Medicine",
+        specialties=["Family Medicine"],
+        source="healthgrades",
+        source_url="https://www.healthgrades.com/physician/dr-susan-hundley-xtlg9",
+        source_id="dr-susan-hundley-xtlg9",
+        npi="1811979529",
+    ))
+
+    assert result["id"] == candidate_id
+    saved = store.get_candidate(candidate_id)
+    assert "NPI: 1811979529" in saved["notes"]
+    assert existing_notes.strip() in saved["notes"]
+    assert "NPI: 1811979529" in result["candidate"]["notes"]
+
+
 def test_usnews_professional_profile_resume_is_generated_stored_and_deduplicated(monkeypatch):
     from pypdf import PdfReader
 

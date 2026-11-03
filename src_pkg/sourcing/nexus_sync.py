@@ -784,6 +784,25 @@ def _candidate_role(candidate: Mapping[str, Any], accepted: Mapping[str, Any]) -
     return ""
 
 
+def _candidate_npi(candidate: Mapping[str, Any], accepted: Mapping[str, Any]) -> str:
+    """Return only an explicit or source-backed 10 digit provider NPI."""
+    for value in (candidate.get("npi"), accepted.get("npi")):
+        digits = re.sub(r"\D", "", str(value or ""))
+        if re.fullmatch(r"\d{10}", digits):
+            return digits
+    for raw_line in str(candidate.get("notes") or "").splitlines():
+        match = re.match(r"^\s*NPI(?:\s+Number)?\s*:\s*(\d{10})\s*$", raw_line, re.I)
+        if match:
+            return match.group(1)
+    if str(candidate.get("source") or "").casefold() in {
+        "npino", "npiprofile", "usnews", "commonspirit", "sharecare", "webmd", "healthgrades",
+    }:
+        source_id = str(candidate.get("source_id") or "").strip()
+        if re.fullmatch(r"\d{10}", source_id):
+            return source_id
+    return ""
+
+
 def _specialty_master_labels(values: Sequence[str]) -> list[str]:
     """Return source labels followed by approved Nexus label equivalents."""
     expanded: list[str] = []
@@ -928,6 +947,7 @@ def _trusted_identity(payload: Mapping[str, Any]) -> dict[str, Any]:
         "state": state,
         "country": country,
         "role": _candidate_role(candidate, accepted),
+        "npi": _candidate_npi(candidate, accepted),
         "source_specialties": source_specialties,
         "resume_specialties": resume_specialties,
         "specialties": _text_values([*source_specialties, *resume_specialties]),
@@ -1251,6 +1271,8 @@ def _build_profile(
         profile["middleName"] = identity["middleName"]
     if identity.get("city"):
         profile["city"] = identity["city"]
+    if identity.get("npi"):
+        profile["npi"] = int(identity["npi"])
 
     if not profile["firstName"] or not profile["lastName"]:
         raise NexusPermanentError(
