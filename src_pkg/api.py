@@ -1118,7 +1118,9 @@ def _profile_row(body: ProfileImportIn, default_job_id: int | None = None):
     for value in source_values(body.specialties, limit=20):
         add_evidence_line(evidence_lines, "Specialty", value)
     npi = re.sub(r"\D", "", body.npi or "")
-    if len(npi) == 10:
+    if npi and not re.fullmatch(r"\d{10}", npi):
+        raise HTTPException(400, "NPI must contain exactly 10 digits.")
+    if npi:
         add_evidence_line(evidence_lines, "NPI", npi)
     for value in source_values(body.alternate_names, limit=8, max_chars=160):
         alternate = person_name.normalize_person_name(value)
@@ -1162,12 +1164,35 @@ def _profile_row(body: ProfileImportIn, default_job_id: int | None = None):
     }
 
 
+def _persist_candidate_npi(candidate_id: int, value: str):
+    """Keep an explicit provider NPI even when richer existing notes are longer."""
+    npi = re.sub(r"\D", "", str(value or ""))
+    if not re.fullmatch(r"\d{10}", npi):
+        return
+    candidate = store.get_candidate(candidate_id)
+    if not candidate:
+        return
+    notes = str(candidate.get("notes") or "").strip()
+    expected = f"NPI: {npi}"
+    if any(
+        " ".join(line.split()).casefold() == expected.casefold()
+        for line in notes.splitlines()
+    ):
+        return
+    store.update_candidate(
+        candidate_id,
+        notes="\n".join(filter(None, (expected, notes)))[:20000],
+    )
+
+
 def _import_profile(body: ProfileImportIn, actor: dict | None = None):
     row = _profile_row(body)
     if row["job_id"] is not None and not store.get_job(row["job_id"]):
         raise HTTPException(404, "job not found")
     result = store.upsert_candidate_profiles([row])[0]
-    return {**result, "candidate": _public_candidate(result["candidate"], actor)}
+    _persist_candidate_npi(result["id"], body.npi)
+    candidate = store.get_candidate(result["id"]) or result["candidate"]
+    return {**result, "candidate": _public_candidate(candidate, actor)}
 
 
 @app.post("/candidates/import")
@@ -1188,13 +1213,17 @@ def import_candidate_batch(body: ProfileBatchImportIn, request: Request):
 
     rows = [_profile_row(profile, default_job_id=body.job_id) for profile in body.profiles]
     upserted = store.upsert_candidate_profiles(rows, default_job_id=body.job_id)
+    for profile, result in zip(body.profiles, upserted):
+        _persist_candidate_npi(result["id"], profile.npi)
     imported = sum(int(result["imported"]) for result in upserted)
     existing = len(upserted) - imported
     results = [
         {
             "id": result["id"],
             "imported": result["imported"],
-            "candidate": _public_candidate(result["candidate"], actor),
+            "candidate": _public_candidate(
+                store.get_candidate(result["id"]) or result["candidate"], actor
+            ),
         }
         for result in upserted
     ]
@@ -2348,6 +2377,8 @@ def build_professional_profile_resume(cid: int, body: ProfessionalProfileResumeI
     actor = _request_user(request)
     user_id = str(actor.get("sub") or "local")
     ats_routing.set_candidate_target(cid, ats_routing.destination_for(actor), user_id)
+    _persist_candidate_npi(cid, body.npi)
+    candidate = store.get_candidate(cid) or candidate
     candidate_source = str(candidate.get("source") or "").strip().casefold()
     source_rules = {
         "usnews": (
