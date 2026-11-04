@@ -386,6 +386,8 @@ def test_unlinked_candidate_is_created_with_whitelisted_trusted_fields():
 
 
 def test_source_npi_is_forwarded_in_nexus_profile_data():
+    npi_updates = []
+
     def handler(request):
         if request.url.path.endswith("/candidates/search"):
             return httpx.Response(200, json={"records": []})
@@ -393,6 +395,11 @@ def test_source_npi_is_forwarded_in_nexus_profile_data():
             content = request.content.decode("latin-1")
             assert '"npi":1811979529' in content
             return httpx.Response(201, json={"id": 704})
+        if request.method == "GET" and request.url.path.endswith("/candidates/704"):
+            return httpx.Response(200, json={"candidateId": 704, "npi": None})
+        if request.method == "PATCH" and request.url.path.endswith("/candidates/704"):
+            npi_updates.append(json.loads(request.content))
+            return httpx.Response(200, json={"id": 704})
         raise AssertionError(request.url)
 
     settings = _settings()
@@ -407,6 +414,7 @@ def test_source_npi_is_forwarded_in_nexus_profile_data():
         client=_client(settings, handler),
     )
     assert result["nexus_candidate_id"] == 704
+    assert npi_updates == [{"npi": 1811979529}]
 
 
 def test_unrelated_numeric_source_id_is_not_treated_as_npi():
