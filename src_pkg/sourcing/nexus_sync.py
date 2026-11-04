@@ -1550,6 +1550,40 @@ def _resolve_duplicate(
     return (next(iter(ids)) if ids else None), matched_by
 
 
+def _update_missing_candidate_npi(
+    client: NexusClient,
+    candidate_id: str,
+    npi_value: Any,
+    before_write: Callable[[str], None] | None = None,
+) -> bool:
+    """Fill an absent Nexus NPI from explicit, validated source evidence.
+
+    Existing non-empty NPIs are preserved, including when they differ from the
+    incoming value. Nexus candidate search can find a person by email or phone,
+    so this is needed on duplicate and stored-link deliveries as well as create.
+    """
+    npi = re.sub(r"\D", "", str(npi_value or ""))
+    if not re.fullmatch(r"\d{10}", npi):
+        return False
+    path = f"/api/api-integration/v1/candidates/{quote(str(candidate_id), safe='')}"
+    remote = client.request("GET", path, operation="NPI candidate lookup").json()
+    if not isinstance(remote, Mapping):
+        raise NexusRetryableError(
+            "Nexus NPI candidate lookup returned an unreadable record.",
+            operation="NPI candidate lookup",
+        )
+    current_npi = re.sub(r"\D", "", str(remote.get("npi") or ""))
+    if current_npi:
+        return False
+    if before_write:
+        before_write("candidate_npi_update")
+    client.request(
+        "PATCH", path, operation="candidate NPI update", write=True,
+        json={"npi": int(npi)},
+    )
+    return True
+
+
 def _resume_metadata(payload: Mapping[str, Any]) -> Mapping[str, Any]:
     value = payload.get("resume") or payload.get("resume_metadata") or {}
     return value if isinstance(value, Mapping) else {}
@@ -1760,6 +1794,9 @@ def process_delivery(
                 operation="payload_validation",
                 code="nexus_candidate_id_invalid",
             )
+        _update_missing_candidate_npi(
+            client, linked_candidate_id, identity.get("npi"), before_write=before_write,
+        )
         classification_updated = _repair_linked_classification(
             client, linked_candidate_id, identity, settings.default_profile,
             before_write=before_write,
@@ -1804,6 +1841,9 @@ def process_delivery(
     )
 
     if candidate_id is not None:
+        _update_missing_candidate_npi(
+            client, candidate_id, identity.get("npi"), before_write=before_write,
+        )
         doc_type_id = _resume_doc_type_id(client)
         if before_write:
             before_write("resume_upload")
@@ -1838,6 +1878,19 @@ def process_delivery(
             operation="candidate creation",
             code="nexus_create_unbound",
         )
+    try:
+        _update_missing_candidate_npi(
+            client, remote_candidate_id, identity.get("npi"), before_write=before_write,
+        )
+    except NexusDeliveryError as exc:
+        # The webhook create already committed. Do not retry the create and
+        # risk a duplicate if the follow-up NPI read/update cannot be confirmed.
+        raise NexusIndeterminateError(
+            f"Nexus created candidate {remote_candidate_id}, but its NPI update "
+            "could not be confirmed; manual reconciliation is required.",
+            operation="candidate NPI update",
+            code="nexus_created_npi_update_pending",
+        ) from exc
     return {
         "status": "delivered",
         "action": "candidate_created",

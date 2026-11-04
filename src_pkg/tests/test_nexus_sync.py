@@ -115,6 +115,8 @@ def test_no_duplicate_creates_candidate_with_whitelisted_trusted_fields():
 
 
 def test_source_npi_is_forwarded_in_nexus_profile_data():
+    writes = []
+
     def handler(request):
         if request.url.path.endswith("/candidates/search"):
             return httpx.Response(200, json={"records": []})
@@ -122,6 +124,11 @@ def test_source_npi_is_forwarded_in_nexus_profile_data():
             content = request.content.decode("latin-1")
             assert '"npi":1811979529' in content
             return httpx.Response(201, json={"id": 704})
+        if request.method == "GET" and request.url.path.endswith("/candidates/704"):
+            return httpx.Response(200, json={"candidateId": 704, "npi": None})
+        if request.method == "PATCH" and request.url.path.endswith("/candidates/704"):
+            writes.append(json.loads(request.content))
+            return httpx.Response(200, json={"id": 704})
         raise AssertionError(request.url)
 
     settings = _settings()
@@ -136,6 +143,7 @@ def test_source_npi_is_forwarded_in_nexus_profile_data():
         client=_client(settings, handler),
     )
     assert result["nexus_candidate_id"] == 704
+    assert writes == [{"npi": 1811979529}]
 
 
 def test_unrelated_numeric_source_id_is_not_treated_as_npi():
@@ -642,6 +650,58 @@ def test_consistent_email_and_phone_duplicate_uploads_resume_only():
     assert result["action"] == "resume_uploaded"
     assert result["nexus_candidate_id"] == "88"
     assert result["matched_by"] == ["email", "phone"]
+
+
+def test_duplicate_candidate_gets_missing_npi_before_resume_upload():
+    writes = []
+
+    def handler(request):
+        if request.url.path.endswith("/candidates/search"):
+            return httpx.Response(200, json={"records": [{"candidateId": 88}]})
+        if request.method == "GET" and request.url.path.endswith("/candidates/88"):
+            return httpx.Response(200, json={"candidateId": 88, "npi": None})
+        if request.method == "PATCH" and request.url.path.endswith("/candidates/88"):
+            writes.append(("npi", json.loads(request.content)))
+            return httpx.Response(200, json={"id": 88})
+        if request.url.path.endswith("/candidates/88/upload/documents"):
+            writes.append(("resume", None))
+            return httpx.Response(204)
+        raise AssertionError((request.method, request.url))
+
+    settings = _settings()
+    result = nexus_sync.process_delivery(
+        _payload(source="healthgrades", notes="NPI: 1811979529"),
+        PDF, settings=settings, client=_client(settings, handler),
+    )
+
+    assert writes == [("npi", {"npi": 1811979529}), ("resume", None)]
+    assert result["action"] == "resume_uploaded"
+    assert result["nexus_candidate_id"] == "88"
+
+
+def test_duplicate_candidate_existing_npi_is_never_overwritten():
+    writes = []
+
+    def handler(request):
+        if request.url.path.endswith("/candidates/search"):
+            return httpx.Response(200, json={"records": [{"candidateId": 88}]})
+        if request.method == "GET" and request.url.path.endswith("/candidates/88"):
+            return httpx.Response(200, json={"candidateId": 88, "npi": 2222222222})
+        if request.method == "PATCH" and request.url.path.endswith("/candidates/88"):
+            writes.append(json.loads(request.content))
+            return httpx.Response(200, json={"id": 88})
+        if request.url.path.endswith("/candidates/88/upload/documents"):
+            return httpx.Response(204)
+        raise AssertionError((request.method, request.url))
+
+    settings = _settings()
+    result = nexus_sync.process_delivery(
+        _payload(source="healthgrades", notes="NPI: 1811979529"),
+        PDF, settings=settings, client=_client(settings, handler),
+    )
+
+    assert writes == []
+    assert result["nexus_candidate_id"] == "88"
 
 
 def test_two_hundred_response_with_failed_document_is_not_acknowledged():
