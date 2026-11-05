@@ -1891,8 +1891,17 @@ def _update_missing_candidate_npi(
         )
     remote_data = remote.get("data") if isinstance(remote.get("data"), Mapping) else remote
     current_npi = re.sub(r"\D", "", str(remote_data.get("npi") or ""))
-    if current_npi:
-        return False
+    if re.fullmatch(r"\d{10}", current_npi) and current_npi != npi:
+        raise NexusIndeterminateError(
+            "Nexus already contains a different valid NPI for this candidate; the source NPI was not applied.",
+            operation="candidate NPI update",
+            code="nexus_npi_conflict",
+        )
+    # Always PATCH even when the initial GET reports the desired value. This
+    # verifies the documented update route itself, since the candidate create
+    # endpoint can acknowledge NPI without making the Nexus UI field visible.
+    # Treat placeholders such as 0, truncated values, or other numeric junk as
+    # missing; only the exact 10-digit source value is acceptable.
     if before_write:
         before_write("candidate_npi_update")
     client.request(

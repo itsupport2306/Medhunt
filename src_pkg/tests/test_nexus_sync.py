@@ -447,6 +447,65 @@ def test_nexus_npi_patch_2xx_without_readback_is_not_treated_as_success():
     assert caught.value.code == "nexus_npi_not_confirmed"
 
 
+def test_existing_matching_npi_is_rewritten_and_read_back():
+    requests = []
+
+    def handler(request):
+        requests.append((request.method, request.url.path))
+        if request.method == "GET":
+            return httpx.Response(200, json={"candidateId": 704, "npi": 1811979529})
+        if request.method == "PATCH":
+            assert json.loads(request.content) == {"npi": 1811979529}
+            return httpx.Response(200, json={"id": 704})
+        raise AssertionError(request.url)
+
+    settings = _settings()
+    client = _client(settings, handler)
+    assert nexus_sync._update_missing_candidate_npi(
+        client, "704", "1811979529",
+    ) is True
+    assert [method for method, _ in requests] == ["GET", "PATCH", "GET"]
+
+
+def test_placeholder_npi_is_treated_as_missing_and_replaced():
+    remote_npi = "0"
+    patched = []
+
+    def handler(request):
+        nonlocal remote_npi
+        if request.method == "GET":
+            return httpx.Response(200, json={"candidateId": 704, "npi": remote_npi})
+        if request.method == "PATCH":
+            patch = json.loads(request.content)
+            patched.append(patch)
+            remote_npi = str(patch["npi"])
+            return httpx.Response(200, json={"id": 704})
+        raise AssertionError(request.url)
+
+    settings = _settings()
+    client = _client(settings, handler)
+    assert nexus_sync._update_missing_candidate_npi(
+        client, "704", "1811979529",
+    ) is True
+    assert patched == [{"npi": 1811979529}]
+    assert remote_npi == "1811979529"
+
+
+def test_different_valid_npi_is_not_silently_accepted():
+    def handler(request):
+        if request.method == "GET":
+            return httpx.Response(200, json={"candidateId": 704, "npi": 1801979529})
+        raise AssertionError("A conflicting NPI must not be overwritten automatically.")
+
+    settings = _settings()
+    client = _client(settings, handler)
+    with pytest.raises(nexus_sync.NexusIndeterminateError) as caught:
+        nexus_sync._update_missing_candidate_npi(
+            client, "704", "1811979529",
+        )
+    assert caught.value.code == "nexus_npi_conflict"
+
+
 def test_unrelated_numeric_source_id_is_not_treated_as_npi():
     identity = nexus_sync._trusted_identity(_payload(
         source="medifind", source_id="10650877", notes="Specialty: Thoracic Surgery",
