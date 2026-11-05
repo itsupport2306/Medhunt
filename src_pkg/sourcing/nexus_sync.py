@@ -1889,7 +1889,8 @@ def _update_missing_candidate_npi(
             "Nexus NPI candidate lookup returned an unreadable record.",
             operation="NPI candidate lookup",
         )
-    current_npi = re.sub(r"\D", "", str(remote.get("npi") or ""))
+    remote_data = remote.get("data") if isinstance(remote.get("data"), Mapping) else remote
+    current_npi = re.sub(r"\D", "", str(remote_data.get("npi") or ""))
     if current_npi:
         return False
     if before_write:
@@ -1898,6 +1899,26 @@ def _update_missing_candidate_npi(
         "PATCH", path, operation="candidate NPI update", write=True,
         json={"npi": int(npi)},
     )
+    # Nexus may return 2xx for a PATCH without persisting every field. Read
+    # back the candidate so an acknowledged-but-dropped NPI cannot be marked
+    # as a successful Medhunt delivery.
+    verified = client.request(
+        "GET", path, operation="candidate NPI verification",
+    ).json()
+    verified_data = (
+        verified.get("data") if isinstance(verified, Mapping)
+        and isinstance(verified.get("data"), Mapping) else verified
+    )
+    confirmed_npi = re.sub(
+        r"\D", "", str(verified_data.get("npi") or "")
+        if isinstance(verified_data, Mapping) else "",
+    )
+    if confirmed_npi != npi:
+        raise NexusIndeterminateError(
+            "Nexus acknowledged the NPI update but the candidate record did not confirm it.",
+            operation="candidate NPI update",
+            code="nexus_npi_not_confirmed",
+        )
     return True
 
 
@@ -2111,10 +2132,11 @@ def process_delivery(
     if (
         bool(identity.get("email")) != bool(identity.get("phone"))
         or profile.get("recruiterId") is not None
+        or bool(identity.get("npi"))
     ):
         # Nexus's resume webhook returns HTTP 400 for a missing contact
-        # channel and does not document recruiterId. The Candidate API accepts
-        # either contact channel and recruiterId at creation; attach the resume
+        # channel and does not document recruiterId or NPI. The documented
+        # Candidate API accepts these fields at creation; attach the resume
         # through its document endpoint after the candidate has an ID.
         doc_type_id = _resume_doc_type_id(client)
         candidate_profile = dict(profile)

@@ -385,21 +385,32 @@ def test_unlinked_candidate_is_created_with_whitelisted_trusted_fields():
     }
 
 
-def test_source_npi_is_forwarded_in_nexus_profile_data():
+def test_source_npi_uses_candidate_api_and_is_confirmed_after_patch():
     npi_updates = []
+    remote_npi = None
 
     def handler(request):
+        nonlocal remote_npi
         if request.url.path.endswith("/candidates/search"):
             return httpx.Response(200, json={"records": []})
-        if request.url.path.endswith("/candidate/webhook/create"):
-            content = request.content.decode("latin-1")
-            assert '"npi":1811979529' in content
+        if request.url.path.endswith("/master/documenttypes"):
+            return httpx.Response(200, json=[
+                {"id": 91, "name": "Candidate Resume", "active": True},
+            ])
+        if request.url.path == "/api/api-integration/v1/candidates" and request.method == "POST":
+            assert request.read()
+            profile = json.loads(request.content)
+            assert profile["npi"] == 1811979529
             return httpx.Response(201, json={"id": 704})
         if request.method == "GET" and request.url.path.endswith("/candidates/704"):
-            return httpx.Response(200, json={"candidateId": 704, "npi": None})
+            return httpx.Response(200, json={"candidateId": 704, "npi": remote_npi})
         if request.method == "PATCH" and request.url.path.endswith("/candidates/704"):
-            npi_updates.append(json.loads(request.content))
+            patch = json.loads(request.content)
+            npi_updates.append(patch)
+            remote_npi = str(patch["npi"])
             return httpx.Response(200, json={"id": 704})
+        if request.method == "POST" and request.url.path.endswith("/candidates/704/upload/documents"):
+            return httpx.Response(200, json={"id": 91})
         raise AssertionError(request.url)
 
     settings = _settings()
@@ -415,6 +426,25 @@ def test_source_npi_is_forwarded_in_nexus_profile_data():
     )
     assert result["nexus_candidate_id"] == 704
     assert npi_updates == [{"npi": 1811979529}]
+    assert remote_npi == "1811979529"
+
+
+def test_nexus_npi_patch_2xx_without_readback_is_not_treated_as_success():
+    def handler(request):
+        if request.method == "GET":
+            return httpx.Response(200, json={"candidateId": 704, "npi": None})
+        if request.method == "PATCH":
+            assert json.loads(request.content) == {"npi": 1811979529}
+            return httpx.Response(200, json={"id": 704})
+        raise AssertionError(request.url)
+
+    settings = _settings()
+    client = _client(settings, handler)
+    with pytest.raises(nexus_sync.NexusIndeterminateError) as caught:
+        nexus_sync._update_missing_candidate_npi(
+            client, "704", "1811979529",
+        )
+    assert caught.value.code == "nexus_npi_not_confirmed"
 
 
 def test_unrelated_numeric_source_id_is_not_treated_as_npi():
