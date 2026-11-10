@@ -19,7 +19,11 @@ _READY_JOBS: queue.Queue = queue.Queue(
     maxsize=config.CONTACT_LOOKUP_MAX_CONCURRENT,
 )
 _THREAD_LOCK = threading.Lock()
-_MAX_ATTEMPTS = 3
+# Quick Sourcer lookups can take up to 150 seconds. Do not replay a slow or
+# failed extension request from the backend; return its terminal failure so
+# the user can decide whether to retry it. Halo backfill retains its retries.
+_EXTENSION_MAX_ATTEMPTS = 1
+_HALO_BACKFILL_MAX_ATTEMPTS = 3
 
 
 def _terminal(job: dict, status: str, result: dict) -> dict:
@@ -58,7 +62,12 @@ def _terminal(job: dict, status: str, result: dict) -> dict:
 
 def _retry(job: dict, reason: str) -> dict:
     attempts = max(1, int(job.get("attempts") or 1))
-    if attempts >= _MAX_ATTEMPTS:
+    max_attempts = (
+        _HALO_BACKFILL_MAX_ATTEMPTS
+        if str(job.get("job_source") or "") == "halo_backfill"
+        else _EXTENSION_MAX_ATTEMPTS
+    )
+    if attempts >= max_attempts:
         result = {
             "status": "failed", "emails": [], "phones": [],
             "phone_contacts": [], "resume_required": False,
