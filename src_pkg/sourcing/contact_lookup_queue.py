@@ -60,7 +60,7 @@ def _terminal(job: dict, status: str, result: dict) -> dict:
     return {"status": status, "job_id": int(job["id"])}
 
 
-def _retry(job: dict, reason: str) -> dict:
+def _retry(job: dict, reason: str, result: dict | None = None) -> dict:
     attempts = max(1, int(job.get("attempts") or 1))
     max_attempts = (
         _HALO_BACKFILL_MAX_ATTEMPTS
@@ -68,11 +68,15 @@ def _retry(job: dict, reason: str) -> dict:
         else _EXTENSION_MAX_ATTEMPTS
     )
     if attempts >= max_attempts:
+        failure = dict(result or {})
         result = {
             "status": "failed", "emails": [], "phones": [],
             "phone_contacts": [], "resume_required": False,
             "location_match": None,
+            "error": str(failure.get("error") or reason),
         }
+        if failure.get("api_response") is not None:
+            result["api_response"] = failure["api_response"]
         if str(job.get("job_source") or "") == "halo_backfill":
             try:
                 healthboard_auth.report_halo_profile_backfill(
@@ -119,7 +123,7 @@ def _process_job(job: dict) -> dict:
             candidate_id, candidate=candidate,
         )
         if result.get("status") == "failed":
-            return _retry(job, "temporary_lookup_failure")
+            return _retry(job, "temporary_lookup_failure", result)
         if str(job.get("job_source") or "") == "halo_backfill":
             # Callback before making the queue item terminal. If Halo is
             # temporarily unavailable, retrying reuses the Quick Sourcer cache

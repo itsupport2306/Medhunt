@@ -792,16 +792,45 @@ def contact_lookup_queue_status(body: ContactLookupBatchIn, request: Request):
     ]}
 
 
+@app.get("/contact-lookup/queue/response/{candidate_id}")
+def contact_lookup_api_response(candidate_id: int, run_id: str, request: Request):
+    """Read the saved Quick Sourcer response for one completed, owned lookup."""
+    owner = str(_request_user(request).get("sub") or "local")
+    data = store.list_contact_lookup_jobs(
+        run_id, [candidate_id], requested_by=owner,
+    )
+    job = next(
+        (item for item in data["items"] if int(item["candidate_id"]) == candidate_id),
+        None,
+    )
+    if not job:
+        raise HTTPException(404, "Lookup result not found for this user and run.")
+    if job["status"] not in {"succeeded", "not_found", "blocked", "failed"}:
+        raise HTTPException(409, "This lookup is still in progress.")
+    result = job.get("result") or {}
+    response = result.get("api_response")
+    return {
+        "candidate_id": candidate_id,
+        "lookup_status": result.get("status") or job["status"],
+        "available": response is not None,
+        "api_response": response,
+        "message": "" if response is not None else "No raw Quick Sourcer response was saved for this lookup.",
+    }
+
+
 def _public_contact_lookup_job(item: dict) -> dict:
     request_id = "LQ-" + hashlib.sha256(
         str(item.get("job_key") or item.get("id") or "").encode()
     ).hexdigest()[:12].upper()
+    result = dict(item.get("result") or {})
+    result.pop("api_response", None)
     return {
         "request_id": request_id,
         **{
             key: item.get(key)
-            for key in ("candidate_id", "status", "attempts", "position", "result")
+            for key in ("candidate_id", "status", "attempts", "position")
         },
+        "result": result,
     }
 
 

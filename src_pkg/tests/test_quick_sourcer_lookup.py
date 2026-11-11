@@ -87,6 +87,7 @@ def test_lookup_stores_and_returns_every_delivered_contact(quick_sourcer_enabled
     assert calls[0][0] == "POST" and calls[0][1] == "/find"
     assert calls[0][2] == {"name": "Joseph Antario", "location": "Nazareth, Pennsylvania"}
     assert result["status"] == "found"
+    assert result["api_response"] == {"http_status": 200, "body": FOUND_PAYLOAD}
     # The usable email is kept; the site's own masked form is not a contact.
     assert result["emails"] == ["joseph@example.test"]
     # A landline is delivered by the API, so it is shown -- no mobile-only rule.
@@ -304,8 +305,33 @@ def test_a_miss_is_reported_as_a_miss(quick_sourcer_enabled, monkeypatch):
     assert result == {
         "status": "not_found", "emails": [], "phones": [], "phone_contacts": [],
         "resume_required": False, "location_match": None,
+        "api_response": {"http_status": 200, "body": {"found": False}},
     }
     assert store.get_candidate(candidate_id)["enrich_status"] == "no_match"
+
+
+def test_saved_lookup_response_is_raw_and_owner_scoped(quick_sourcer_enabled, monkeypatch):
+    payload = {"found": False, "provider_message": "No result on this search"}
+    _stub_api(monkeypatch, payload)
+    candidate_id = _candidate("Raw Response Nurse", "Columbus, Ohio")
+    result = quick_sourcer_client.lookup_candidate(candidate_id)
+    assert result["status"] == "not_found"
+    assert result["api_response"] == {"http_status": 200, "body": payload}
+
+    store.enqueue_contact_lookup_jobs("raw-run", [candidate_id], "recruiter-one")
+    job = store.claim_contact_lookup_job()
+    store.finish_contact_lookup_job(job["id"], "not_found", result)
+    saved = store.list_contact_lookup_jobs("raw-run", [candidate_id], "recruiter-one")["items"][0]
+    assert "api_response" not in api_module._public_contact_lookup_job(saved)["result"]
+
+    monkeypatch.setattr(api_module, "_request_user", lambda _request: {"sub": "recruiter-one"})
+    details = api_module.contact_lookup_api_response(candidate_id, "raw-run", None)
+    assert details["api_response"] == {"http_status": 200, "body": payload}
+
+    monkeypatch.setattr(api_module, "_request_user", lambda _request: {"sub": "other-recruiter"})
+    with pytest.raises(api_module.HTTPException) as error:
+        api_module.contact_lookup_api_response(candidate_id, "raw-run", None)
+    assert error.value.status_code == 404
 
 
 def test_a_transport_failure_is_reported_as_failed(quick_sourcer_enabled, monkeypatch):
@@ -319,6 +345,32 @@ def test_a_transport_failure_is_reported_as_failed(quick_sourcer_enabled, monkey
 
     assert result["status"] == "failed"
     assert store.get_candidate(candidate_id)["enrich_status"] == "error"
+
+
+def test_failed_http_response_body_survives_terminal_queue_result(
+    quick_sourcer_enabled, monkeypatch,
+):
+    request = httpx.Request("POST", "https://quick-sourcer.test/find")
+    response = httpx.Response(503, request=request, json={"error": "source busy"})
+
+    def fail_call(*_args):
+        raise httpx.HTTPStatusError("source busy", request=request, response=response)
+
+    monkeypatch.setattr(quick_sourcer_client, "_call", fail_call)
+    candidate_id = _candidate("Busy Source Nurse", "Columbus, Ohio")
+    result = quick_sourcer_client.lookup_candidate(candidate_id)
+    assert result["status"] == "failed"
+    assert result["api_response"] == {
+        "http_status": 503, "body": {"error": "source busy"},
+    }
+
+    store.enqueue_contact_lookup_jobs("failed-raw-run", [candidate_id], "recruiter-one")
+    job = store.claim_contact_lookup_job()
+    contact_lookup_queue._retry(job, "temporary_lookup_failure", result)
+    saved = store.list_contact_lookup_jobs(
+        "failed-raw-run", [candidate_id], "recruiter-one",
+    )["items"][0]
+    assert saved["result"]["api_response"] == result["api_response"]
 
 
 def test_gateway_failure_retries_once_inside_one_timeout_budget(

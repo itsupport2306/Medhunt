@@ -105,8 +105,8 @@ def _remember(request_key: str, candidate_id: int, result: dict) -> None:
         )
 
 
-def _empty(status_value: str, error: str = "") -> dict:
-    return {
+def _empty(status_value: str, error: str = "", *, api_response=None) -> dict:
+    result = {
         "status": status_value,
         "error": error,
         "cached": False,
@@ -127,6 +127,9 @@ def _empty(status_value: str, error: str = "") -> dict:
         "associates": [],
         "businesses": [],
     }
+    if api_response is not None:
+        result["api_response"] = api_response
+    return result
 
 
 def _phones(payload: dict, summary: dict) -> list[dict]:
@@ -391,8 +394,6 @@ def _call(method: str, path: str, payload: dict | None = None) -> dict:
 
         if response is None:
             raise httpx.TransportError("Quick Sourcer returned no response.")
-        if response.status_code in (401, 403):
-            raise PermissionError("Quick Sourcer rejected the configured API key.")
         response.raise_for_status()
         body = response.json()
         outcome = "completed"
@@ -408,20 +409,28 @@ def _failure(exc: Exception, *, dedicated_ip: bool = False) -> dict:
         return _empty(
             "error",
             "Quick Sourcer did not answer in time. A live search can take 30-90 seconds.",
+            api_response={"exception": type(exc).__name__, "message": str(exc)},
         )
     if isinstance(exc, httpx.HTTPStatusError):
-        if exc.response.status_code == 400 and dedicated_ip:
-            return _empty(
-                "error",
-                "Quick Sourcer dedicated search is unavailable. Mark at least one Hub Search Endpoint as Dedicated.",
-            )
-        # The status is the only actionable detail here: a 5xx is the Hub or a
-        # source site failing this one search, and it is worth retrying.
+        if exc.response.status_code in (401, 403):
+            message = "Quick Sourcer rejected the configured API key."
+        elif exc.response.status_code == 400 and dedicated_ip:
+            message = "Quick Sourcer dedicated search is unavailable. Mark at least one Hub Search Endpoint as Dedicated."
+        else:
+            message = f"Quick Sourcer returned HTTP {exc.response.status_code}. Try this candidate again."
+        try:
+            body = exc.response.json()
+        except ValueError:
+            body = exc.response.text
         return _empty(
             "error",
-            f"Quick Sourcer returned HTTP {exc.response.status_code}. Try this candidate again.",
+            message,
+            api_response={"http_status": exc.response.status_code, "body": body},
         )
-    return _empty("error", f"Quick Sourcer request failed ({type(exc).__name__}).")
+    return _empty(
+        "error", f"Quick Sourcer request failed ({type(exc).__name__}).",
+        api_response={"exception": type(exc).__name__, "message": str(exc)},
+    )
 
 
 def find(name: str, location: str = "", candidate_id: int = 0,
@@ -450,6 +459,7 @@ def find(name: str, location: str = "", candidate_id: int = 0,
     except Exception as exc:
         return _failure(exc, dedicated_ip=use_dedicated)
     result = normalize(payload)
+    result["api_response"] = {"http_status": 200, "body": payload}
     if result.get("status") != "found":
         return result
     _remember(request_key, candidate_id, result)
@@ -525,7 +535,7 @@ def public_lookup_result(result: dict | None) -> dict:
         has_usable_contact = bool(emails or phones)
     else:
         emails, phones, phone_contacts, has_usable_contact = [], [], [], False
-    return {
+    public = {
         # The upstream `found` field determines match status. Contact
         # suppression can remove a channel, but it must not rewrite a found
         # API record into a no-match result.
@@ -542,6 +552,9 @@ def public_lookup_result(result: dict | None) -> dict:
         "resume_required": bool(status == "found" and has_usable_contact),
         "location_match": None,
     }
+    if source.get("api_response") is not None:
+        public["api_response"] = source["api_response"]
+    return public
 
 
 def _stored_record(result: dict) -> dict:
