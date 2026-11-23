@@ -12,6 +12,7 @@ from . import (
     config,
     contact_access,
     healthboard_auth,
+    license_discovery,
     nexus_taxonomy,
     nexus_sync,
     phone_policy,
@@ -343,6 +344,9 @@ def process_once() -> dict | None:
                 error="nexus_already_present", expected_lease_until=lease_until,
             )
             return {"status": "already_in_nexus", "delivery_id": delivery_id}
+        if not nexus_sync._current_license_states(candidate):
+            # Discovery is bounded and runs in the background delivery worker.
+            payload["license_discovery"] = license_discovery.discover(candidate)
         try:
             resume_pdf, _ = resume_enrichment.refresh_contact_sheet(
                 _resume_bytes(resume), payload["candidate"],
