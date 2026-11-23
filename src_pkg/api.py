@@ -254,6 +254,7 @@ class ProfileImportIn(BaseModel):
     employers: list[str] = Field(default_factory=list, max_length=20)
     schools: list[str] = Field(default_factory=list, max_length=20)
     alternate_names: list[str] = Field(default_factory=list, max_length=10)
+    licenses: list[str] = Field(default_factory=list, max_length=75)
     notes: str = ""
     source: str = "indeed"
     source_url: str = ""
@@ -1030,6 +1031,9 @@ def _profile_row(body: ProfileImportIn, default_job_id: int | None = None):
         add_evidence_line(evidence_lines, "School", value)
     for value in source_values(body.specialties, limit=20):
         add_evidence_line(evidence_lines, "Specialty", value)
+    if source in {"doximity", "healthgrades", "usnews"}:
+        for value in source_values(body.licenses, limit=75, max_chars=240):
+            add_evidence_line(evidence_lines, "License", value)
     npi = re.sub(r"\D", "", body.npi or "")
     if npi and not re.fullmatch(r"\d{10}", npi):
         raise HTTPException(400, "NPI must contain exactly 10 digits.")
@@ -1098,12 +1102,31 @@ def _persist_candidate_npi(candidate_id: int, value: str):
     )
 
 
+def _preserve_public_license_evidence(candidate_id: int, row: dict) -> None:
+    """Keep source-visible license lines when longer existing notes win a merge."""
+    if row.get("source") not in {"doximity", "healthgrades", "usnews"}:
+        return
+    incoming = [line.strip() for line in str(row.get("notes") or "").splitlines()
+                if re.match(r"^\s*License:\s*.+", line, re.I)]
+    if not incoming:
+        return
+    candidate = store.get_candidate(candidate_id)
+    if not candidate:
+        return
+    current = str(candidate.get("notes") or "")
+    known = {line.strip().casefold() for line in current.splitlines()}
+    missing = [line for line in incoming if line.casefold() not in known]
+    if missing:
+        store.update_candidate(candidate_id, notes="\n".join([*missing, current])[:20000])
+
+
 def _import_profile(body: ProfileImportIn):
     row = _profile_row(body)
     if row["job_id"] is not None and not store.get_job(row["job_id"]):
         raise HTTPException(404, "job not found")
     result = store.upsert_candidate_profiles([row])[0]
     _persist_candidate_npi(result["id"], body.npi)
+    _preserve_public_license_evidence(result["id"], row)
     candidate = store.get_candidate(result["id"]) or result["candidate"]
     return {**result, "candidate": _public_candidate(candidate)}
 
@@ -1124,8 +1147,9 @@ def import_candidate_batch(body: ProfileBatchImportIn):
 
     rows = [_profile_row(profile, default_job_id=body.job_id) for profile in body.profiles]
     upserted = store.upsert_candidate_profiles(rows, default_job_id=body.job_id)
-    for profile, result in zip(body.profiles, upserted):
+    for profile, row, result in zip(body.profiles, rows, upserted):
         _persist_candidate_npi(result["id"], profile.npi)
+        _preserve_public_license_evidence(result["id"], row)
     imported = sum(int(result["imported"]) for result in upserted)
     existing = len(upserted) - imported
     results = [
@@ -2149,6 +2173,11 @@ def build_professional_profile_resume(cid: int, body: ProfessionalProfileResumeI
                 re.IGNORECASE,
             )),
             "Healthgrades",
+        ),
+        "doximity": (
+            lambda host, path: host in {"www.doximity.com", "doximity.com"}
+            and bool(re.match(r"^/pub/[^/]+/?$", path, re.IGNORECASE)),
+            "Doximity",
         ),
     }
     rule = source_rules.get(candidate_source)

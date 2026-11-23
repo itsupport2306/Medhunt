@@ -9,6 +9,7 @@ import time
 from . import (
     config,
     contact_access,
+    license_discovery,
     nexus_sync,
     phone_policy,
     resume_enrichment,
@@ -204,6 +205,9 @@ def process_once() -> dict | None:
                 int(resume["id"]), int(candidate["id"]), extraction,
             )
         payload = _payload(delivery, candidate, resume)
+        if not nexus_sync._current_license_states(candidate):
+            # Discovery is bounded and runs in the background delivery worker.
+            payload["license_discovery"] = license_discovery.discover(candidate)
         try:
             resume_pdf, _ = resume_enrichment.refresh_contact_sheet(
                 source_pdf, payload["candidate"],

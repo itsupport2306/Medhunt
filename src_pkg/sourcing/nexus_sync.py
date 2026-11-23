@@ -22,6 +22,7 @@ import json
 import re
 import threading
 import time
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import quote
@@ -29,7 +30,7 @@ from urllib.parse import quote
 import httpx
 
 from .person_name import identity_signature, is_name_suffix, normalize_person_name
-from . import legacy_taxonomy
+from . import legacy_taxonomy, resume_extraction
 
 
 _SURNAME_PARTICLES = {"da", "de", "del", "della", "der", "di", "du", "la", "le", "van", "von"}
@@ -803,6 +804,42 @@ def _candidate_npi(candidate: Mapping[str, Any], accepted: Mapping[str, Any]) ->
     return ""
 
 
+def _current_license_states(candidate: Mapping[str, Any], *, current_year: int | None = None) -> list[str]:
+    """Read current dated state licenses from the three public profile sources."""
+    if str(candidate.get("source") or "").casefold() not in {"doximity", "healthgrades", "usnews"}:
+        return []
+    year = current_year or datetime.now(timezone.utc).year
+    names = resume_extraction._US_STATES
+    state_pattern = "|".join(re.escape(name) for name in sorted(names, key=len, reverse=True))
+    found: list[str] = []
+    for line in str(candidate.get("notes") or "").splitlines():
+        match = re.match(r"^\s*License:\s*(.+?)\s*$", line, re.I)
+        if not match:
+            continue
+        value = match.group(1)
+        if re.search(r"\b(?:expired|inactive|suspended|revoked|lapsed)\b", value, re.I):
+            continue
+        state = re.search(
+            rf"\b({state_pattern}|[A-Z]{{2}})\s+State\s+(?:Medical\s+)?Licen[cs]e\b", value, re.I,
+        )
+        if not state:
+            continue
+        expiry = re.search(
+            r"\bActive\s+through\s+(20\d{2})\b|"
+            r"\b(?:19|20)\d{2}\s*[-–]\s*(20\d{2})\b|"
+            r"\bExpires?\s+(?:\w+\s+\d{1,2},?\s+)?(20\d{2})\b", value, re.I,
+        )
+        if not expiry or int(next(part for part in expiry.groups() if part)) < year:
+            continue
+        span = re.search(r"\b((?:19|20)\d{2})\s*[-–]\s*((?:19|20)\d{2})\b", value)
+        if span and int(span.group(1)) > year:
+            continue
+        code = names.get(state.group(1).casefold(), state.group(1).upper())
+        if code in names.values() and code not in found:
+            found.append(code)
+    return found
+
+
 def _specialty_master_labels(values: Sequence[str]) -> list[str]:
     """Return source labels followed by approved Nexus label equivalents."""
     expanded: list[str] = []
@@ -937,6 +974,14 @@ def _trusted_identity(payload: Mapping[str, Any]) -> dict[str, Any]:
                     value for value in resume_specialties
                     if value.casefold() not in {"or", "er"}
                 ]
+    discovered = payload.get("license_discovery")
+    discovered_states = (
+        [code for code in discovered.get("states", [])
+         if isinstance(code, str) and code in resume_extraction._US_STATES.values()]
+        if isinstance(discovered, Mapping)
+        and discovered.get("source") in {"doximity", "healthgrades", "usnews"}
+        else []
+    )
     return {
         "firstName": first_name,
         "middleName": middle_name,
@@ -948,6 +993,7 @@ def _trusted_identity(payload: Mapping[str, Any]) -> dict[str, Any]:
         "country": country,
         "role": _candidate_role(candidate, accepted),
         "npi": _candidate_npi(candidate, accepted),
+        "current_license_states": _current_license_states(candidate) or discovered_states,
         "source_specialties": source_specialties,
         "resume_specialties": resume_specialties,
         "specialties": _text_values([*source_specialties, *resume_specialties]),
@@ -1313,6 +1359,20 @@ def _build_profile(
             "Candidate state is required for Nexus creation.",
             operation="payload_validation",
         )
+
+    preferred_ids = {
+        int(value) for value in (profile.get("preferredStateIds") or [])
+        if str(value).isdigit()
+    }
+    for code in identity.get("current_license_states") or []:
+        try:
+            preferred_ids.add(_exact_master_id(
+                client, "states", (code,), description="licensed state",
+            ))
+        except NexusPermanentError:
+            continue
+    if preferred_ids:
+        profile["preferredStateIds"] = sorted(preferred_ids)
 
     if not _default_id(profile, "countryId"):
         country = str(identity.get("country") or country_name or "United States")
@@ -1726,6 +1786,55 @@ def _repair_linked_classification(
     return True
 
 
+def _update_preferred_license_states(
+    client: NexusClient,
+    candidate_id: str,
+    identity: Mapping[str, Any],
+    before_write: Callable[[str], None] | None = None,
+) -> bool:
+    """Merge evidenced license states into an existing Nexus preference list."""
+    codes = identity.get("current_license_states") or []
+    if not codes:
+        return False
+    state_ids: set[int] = set()
+    for code in codes:
+        try:
+            state_ids.add(_exact_master_id(
+                client, "states", (code,), description="licensed state",
+            ))
+        except NexusPermanentError:
+            continue
+    if not state_ids:
+        return False
+    path = f"/api/api-integration/v1/candidates/{quote(str(candidate_id), safe='')}"
+    remote = client.request("GET", path, operation="preferred state lookup").json()
+    if not isinstance(remote, Mapping):
+        raise NexusRetryableError(
+            "Nexus preferred states could not be read.", operation="preferred state lookup",
+        )
+    existing = {
+        int(value) for value in (remote.get("preferredStateIds") or [])
+        if str(value).isdigit()
+    }
+    combined = sorted(existing | state_ids)
+    if set(combined) == existing:
+        return False
+    if before_write:
+        before_write("preferred_state_update")
+    client.request("PATCH", path, operation="preferred state update", write=True,
+                   json={"preferredStateIds": combined})
+    verified = client.request("GET", path, operation="preferred state verification").json()
+    if not isinstance(verified, Mapping) or not set(combined).issubset({
+        int(value) for value in (verified.get("preferredStateIds") or [])
+        if str(value).isdigit()
+    }):
+        raise NexusIndeterminateError(
+            "Nexus did not retain the licensed state preferences.",
+            operation="preferred state update",
+        )
+    return True
+
+
 _CLIENT_LOCK = threading.Lock()
 _SHARED_CLIENT: NexusClient | None = None
 
@@ -1801,6 +1910,9 @@ def process_delivery(
             client, linked_candidate_id, identity, settings.default_profile,
             before_write=before_write,
         )
+        _update_preferred_license_states(
+            client, linked_candidate_id, identity, before_write=before_write,
+        )
         doc_type_id = _resume_doc_type_id(client)
         if before_write and not classification_updated:
             before_write("resume_upload")
@@ -1843,6 +1955,9 @@ def process_delivery(
     if candidate_id is not None:
         _update_missing_candidate_npi(
             client, candidate_id, identity.get("npi"), before_write=before_write,
+        )
+        _update_preferred_license_states(
+            client, candidate_id, identity, before_write=before_write,
         )
         doc_type_id = _resume_doc_type_id(client)
         if before_write:
