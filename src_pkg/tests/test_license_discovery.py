@@ -5,7 +5,7 @@ import sys
 import httpx
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from sourcing import license_discovery, nexus_sync
+from sourcing import config, license_discovery, nexus_sync, store
 import api as api_module
 
 
@@ -34,6 +34,74 @@ def test_uses_first_exact_location_matched_current_license():
     assert result["source"] == "doximity"
     assert result["states"] == ["VA"]
     assert len(requested) == 2
+
+
+def test_checks_later_profile_and_records_blocked_sources():
+    def respond(request):
+        path = request.url.path
+        if path == "/find_web/public_search/users":
+            return httpx.Response(200, text="".join(
+                f'<a href="/pub/person-{index}">Profile</a>' for index in range(1, 5)
+            ))
+        if path.startswith("/pub/person-"):
+            city = "Reston" if path.endswith("4") else "Arlington"
+            return httpx.Response(200, text=(
+                f"<title>Dr. Michelle Susco, MD - {city}, VA | Pediatrics</title>"
+                "<li>VA State Medical License Active through 2028</li>"
+            ))
+        raise AssertionError(request.url)
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        evidence, diagnostics = license_discovery.discover_with_diagnostics(
+            {"name": "Michelle Susco", "location": "Reston, VA"}, client=client,
+        )
+    assert evidence["states"] == ["VA"]
+    assert diagnostics["sources"][0] == {
+        "source": "doximity", "status": "verified", "profiles_checked": 4,
+    }
+
+
+def test_same_npi_allows_changed_practice_city():
+    page = license_discovery._page(
+        "<title>Dr. Michelle Susco, MD - Arlington, VA | Pediatrics</title>"
+        "<div>NPI number: 1760443691</div>"
+    )
+    assert license_discovery._profile_matches(page, {
+        "name": "Michelle Susco", "location": "Reston, VA",
+        "source": "npino", "source_id": "1760443691",
+    })
+
+
+def test_blocked_sites_are_reported_without_claiming_license():
+    def respond(request):
+        return httpx.Response(403)
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        evidence, diagnostics = license_discovery.discover_with_diagnostics(
+            {"name": "Michelle Susco", "location": "Reston, VA"}, client=client,
+        )
+    assert evidence == {}
+    assert [item["http_status"] for item in diagnostics["sources"]] == [403, 403, 403]
+
+
+def test_delivery_records_lookup_outcome(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "DATABASE_URL", "")
+    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "medhunt.sqlite"))
+    with store._conn() as connection:
+        connection.execute(
+            """INSERT INTO nexus_deliveries
+               (candidate_id,resume_id,identity_key,status,lease_until,created,updated)
+               VALUES (1,1,'person-1','processing',123,1,1)"""
+        )
+    assert store.save_nexus_license_discovery(
+        1, {"sources": [{"source": "healthgrades", "status": "search_http_error", "http_status": 403}]},
+        expected_lease_until=123,
+    )
+    with store._conn() as connection:
+        saved = connection.execute(
+            "SELECT license_discovery FROM nexus_deliveries WHERE id=1"
+        ).fetchone()
+    assert json.loads(saved["license_discovery"])["sources"][0]["http_status"] == 403
 
 
 def test_rejects_same_name_in_different_location_then_checks_healthgrades():

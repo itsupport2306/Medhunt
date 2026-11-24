@@ -95,6 +95,12 @@ def _profile_matches(page: _Page, candidate: dict) -> bool:
     title = unescape(page.title)
     if not expected_name or _name(title) != expected_name:
         return False
+    npi = str(candidate.get("source_id") or "").strip()
+    if str(candidate.get("source") or "").casefold() in {
+        "npino", "npiprofile", "usnews", "sharecare", "healthgrades"
+    } and re.fullmatch(r"\d{10}", npi):
+        if re.search(rf"\bNPI\s*(?:number\s*)?(?:#|:)?\s*{re.escape(npi)}\b", " ".join(page.text), re.I):
+            return True
     state = _candidate_state(str(candidate.get("location") or ""))
     if not state:
         return False
@@ -128,33 +134,43 @@ def _states(page: _Page) -> list[str]:
     return found
 
 
-def discover(candidate: dict, *, client: httpx.Client | None = None) -> dict:
-    """Return first verified source's states; do not mix uncertain profiles."""
+def discover_with_diagnostics(candidate: dict, *, client: httpx.Client | None = None) -> tuple[dict, dict]:
+    """Return verified evidence and bounded per-source outcomes."""
+    diagnostics = {"sources": []}
     if not _name(str(candidate.get("name") or "")) or not _candidate_state(
         str(candidate.get("location") or "")
     ):
-        return {}
+        diagnostics["reason"] = "missing_name_or_location"
+        return {}, diagnostics
     owned = client is None
     if owned:
         client = httpx.Client(timeout=httpx.Timeout(3.0), follow_redirects=False,
                               headers={"User-Agent": "Medhunt license verification/1.0"})
     assert client is not None
-    deadline = time.monotonic() + 12.0
+    deadline = time.monotonic() + 18.0
     try:
         for source, host, prefix, search_url, query_key in _SITES:
             if time.monotonic() >= deadline:
+                diagnostics["reason"] = "deadline_reached"
                 break
+            outcome = {"source": source, "status": "no_matching_profile", "profiles_checked": 0}
+            diagnostics["sources"].append(outcome)
             params = {query_key: str(candidate["name"])}
             if source == "healthgrades":
                 params["where"] = str(candidate["location"])
             try:
                 search = client.get(search_url, params=params)
-                if search.status_code != 200 or len(search.content) > 750_000:
+                if search.status_code != 200:
+                    outcome["status"] = "search_http_error"
+                    outcome["http_status"] = search.status_code
+                    continue
+                if len(search.content) > 750_000:
+                    outcome["status"] = "search_too_large"
                     continue
                 links = _page(search.text).links
                 profiles_checked = 0
                 for href in links[:150]:
-                    if time.monotonic() >= deadline or profiles_checked >= 2:
+                    if time.monotonic() >= deadline or profiles_checked >= 6:
                         break
                     try:
                         url = urljoin(search_url, unescape(href))
@@ -167,19 +183,32 @@ def discover(candidate: dict, *, client: httpx.Client | None = None) -> dict:
                             or parts.path in {"/doctors/search", "/doctors/"}):
                         continue
                     profiles_checked += 1
+                    outcome["profiles_checked"] = profiles_checked
                     profile = client.get(url)
                     if profile.status_code != 200 or len(profile.content) > 750_000:
+                        outcome["status"] = "profile_unavailable"
                         continue
                     page = _page(profile.text)
                     if not _profile_matches(page, candidate):
+                        if outcome["status"] != "no_current_dated_license":
+                            outcome["status"] = "identity_mismatch"
                         continue
                     states = _states(page)
                     if states:
-                        return {"source": source, "source_url": url, "states": states}
-                    break
-            except httpx.HTTPError:
+                        outcome["status"] = "verified"
+                        return {"source": source, "source_url": url, "states": states}, diagnostics
+                    outcome["status"] = "no_current_dated_license"
+            except httpx.HTTPError as exc:
+                outcome["status"] = "network_error"
+                outcome["error_type"] = type(exc).__name__
                 continue
     finally:
         if owned:
             client.close()
-    return {}
+    return {}, diagnostics
+
+
+def discover(candidate: dict, *, client: httpx.Client | None = None) -> dict:
+    """Return first verified source's states; do not mix uncertain profiles."""
+    evidence, _ = discover_with_diagnostics(candidate, client=client)
+    return evidence

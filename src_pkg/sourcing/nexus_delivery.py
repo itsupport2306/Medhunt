@@ -346,7 +346,16 @@ def process_once() -> dict | None:
             return {"status": "already_in_nexus", "delivery_id": delivery_id}
         if not nexus_sync._current_license_states(candidate):
             # Discovery is bounded and runs in the background delivery worker.
-            payload["license_discovery"] = license_discovery.discover(candidate)
+            evidence, diagnostics = license_discovery.discover_with_diagnostics(candidate)
+            payload["license_discovery"] = evidence
+            store.save_nexus_license_discovery(
+                delivery_id, diagnostics, expected_lease_until=lease_until,
+            )
+        else:
+            store.save_nexus_license_discovery(
+                delivery_id, {"reason": "source_profile_license"},
+                expected_lease_until=lease_until,
+            )
         try:
             resume_pdf, _ = resume_enrichment.refresh_contact_sheet(
                 _resume_bytes(resume), payload["candidate"],

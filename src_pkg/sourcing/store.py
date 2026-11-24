@@ -155,6 +155,7 @@ CREATE TABLE IF NOT EXISTS nexus_deliveries(
   attempts INTEGER DEFAULT 0, next_attempt_at REAL DEFAULT 0,
   lease_until REAL DEFAULT 0, nexus_candidate_id TEXT DEFAULT '',
   operation TEXT DEFAULT '', last_error TEXT DEFAULT '',
+  license_discovery TEXT DEFAULT '',
   created REAL, updated REAL);
 CREATE TABLE IF NOT EXISTS ceipal_resume_deliveries(
   id INTEGER PRIMARY KEY AUTOINCREMENT, candidate_id INTEGER NOT NULL,
@@ -317,7 +318,7 @@ _POSTGRES_SCHEMA = (
          attempts INTEGER DEFAULT 0, next_attempt_at DOUBLE PRECISION DEFAULT 0,
          lease_until DOUBLE PRECISION DEFAULT 0,
          nexus_candidate_id TEXT DEFAULT '', operation TEXT DEFAULT '',
-         last_error TEXT DEFAULT '', created DOUBLE PRECISION,
+         last_error TEXT DEFAULT '', license_discovery TEXT DEFAULT '', created DOUBLE PRECISION,
           updated DOUBLE PRECISION
         )""",
     """CREATE TABLE IF NOT EXISTS ceipal_resume_deliveries(
@@ -422,6 +423,7 @@ _POSTGRES_SCHEMA = (
     "ALTER TABLE resume_capture_locks ADD COLUMN IF NOT EXISTS candidate_id BIGINT",
     "ALTER TABLE nexus_deliveries ADD COLUMN IF NOT EXISTS candidate_id BIGINT",
     "ALTER TABLE nexus_deliveries ADD COLUMN IF NOT EXISTS requested_by TEXT DEFAULT ''",
+    "ALTER TABLE nexus_deliveries ADD COLUMN IF NOT EXISTS license_discovery TEXT DEFAULT ''",
     "ALTER TABLE contact_lookup_queue ADD COLUMN IF NOT EXISTS delivery_target TEXT DEFAULT 'nexus'",
     "ALTER TABLE contact_lookup_queue ADD COLUMN IF NOT EXISTS job_source TEXT DEFAULT 'extension'",
     "ALTER TABLE contact_lookup_queue ADD COLUMN IF NOT EXISTS priority INTEGER DEFAULT 100",
@@ -537,7 +539,7 @@ _POSTGRES_REQUIRED_COLUMNS = {
     "nexus_candidate_links": ("candidate_id",),
     "contact_lookup_queue": ("delivery_target", "job_source", "priority", "external_ref"),
     "resume_capture_locks": ("candidate_id",),
-    "nexus_deliveries": ("candidate_id",),
+    "nexus_deliveries": ("candidate_id", "license_discovery"),
     "sms_conversations": ("zoom_sender_user_id",),
     "sms_messages": ("sender_user_id", "sender_name", "sender_number", "zoom_user_id"),
 }
@@ -794,6 +796,8 @@ def _conn():
         }
         if "requested_by" not in nexus_delivery_columns:
             raw.execute("ALTER TABLE nexus_deliveries ADD COLUMN requested_by TEXT DEFAULT ''")
+        if "license_discovery" not in nexus_delivery_columns:
+            raw.execute("ALTER TABLE nexus_deliveries ADD COLUMN license_discovery TEXT DEFAULT ''")
         yield connection
         raw.commit()
     except Exception:
@@ -2627,6 +2631,18 @@ def mark_nexus_delivery_writing(delivery_id, *, expected_lease_until, operation)
         return updated.rowcount == 1
 
 
+def save_nexus_license_discovery(delivery_id, diagnostics, *, expected_lease_until):
+    """Record why public license discovery did or did not yield evidence."""
+    with _conn() as connection:
+        updated = connection.execute(
+            """UPDATE nexus_deliveries SET license_discovery=?,updated=?
+               WHERE id=? AND status='processing' AND lease_until=?""",
+            (json.dumps(diagnostics, separators=(",", ":"))[:4000], time.time(),
+             int(delivery_id), float(expected_lease_until)),
+        )
+        return updated.rowcount == 1
+
+
 def finish_nexus_delivery(
     delivery_id, status, *, nexus_candidate_id="", operation="", error="",
     retry_at=0, expected_lease_until=None,
@@ -2835,6 +2851,7 @@ def nexus_delivery_summary(candidate_ids, *, waiting_resume_ids=(), waiting_clas
             "status": reason if group == "already_in_nexus" else (status or reason),
             "reason": reason,
             "resume_saved": bool(resumes.get(candidate_id)),
+            "license_discovery": json.loads(delivery.get("license_discovery") or "{}") if delivery else {},
         })
     return {
         "selected": len(ordered_ids),
