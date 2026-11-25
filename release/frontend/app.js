@@ -1585,6 +1585,7 @@ function professionalProfileImportPayload(profile) {
     roles: list(profile.roles, 20),
     employers: list(profile.employers, 20),
     schools: list(profile.schools, 20),
+    licenses: list(profile.licenses, 75),
     specialties,
     alternate_names: list([...(profile.alternate_names || []), ...(profile.aliases || [])], 10, 160),
     notes: bounded(profile.notes, 20000),

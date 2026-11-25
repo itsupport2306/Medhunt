@@ -1,0 +1,66 @@
+﻿{
+    "manifest_version":  3,
+    "name":  "Medhunt",
+    "description":  "Capture authorized candidate profiles, find verified contact details, and manage recruiting workflows.",
+    "version":  "3.37.49",
+    "icons":  {
+                  "16":  "icons/medhunt-16.png",
+                  "32":  "icons/medhunt-32.png",
+                  "48":  "icons/medhunt-48.png",
+                  "128":  "icons/medhunt-128.png"
+              },
+    "permissions":  [
+                        "sidePanel",
+                        "storage",
+                        "downloads",
+                        "debugger",
+                        "tabs",
+                        "activeTab",
+                        "scripting"
+                    ],
+    "host_permissions":  [
+                             "*://*.indeed.com/*",
+                             "*://*.vivian.com/*",
+                             "*://*.ziprecruiter.com/*",
+                             "*://*.linkedin.com/*",
+                             "*://*.facebook.com/*",
+                             "*://facebook.com/*",
+                             "*://npino.com/*",
+                             "*://*.npino.com/*",
+                             "https://eservices.nysed.gov/*",
+                             "*://npiprofile.com/*",
+                             "*://*.npiprofile.com/*",
+                             "https://health.usnews.com/doctors/*",
+                             "https://health.usnews.com/nurse-practitioners/*",
+                             "https://health.usnews.com/physician-assistants/*",
+                             "https://health.usnews.com/dentists/*",
+                             "https://doctor.webmd.com/*",
+                             "*://medifind.com/*",
+                             "*://*.medifind.com/*",
+                             "*://commonspirit.org/*",
+                             "*://*.commonspirit.org/*",
+                             "https://providers.sharecare.com/find-a-doctor/*",
+                             "https://providers.sharecare.com/doctor/*",
+                             "*://healthgrades.com/*",
+                             "*://*.healthgrades.com/*",
+                             "https://www.doximity.com/*",
+                             "https://doximity.com/*",
+                             "https://medhunt2.onrender.com/*"
+                         ],
+    "background":  {
+                       "service_worker":  "background.js"
+                   },
+    "action":  {
+                   "default_title":  "Open Medhunt",
+                   "default_icon":  {
+                                        "16":  "icons/medhunt-16.png",
+                                        "32":  "icons/medhunt-32.png"
+                                    }
+               },
+    "side_panel":  {
+                       "default_path":  "index.html"
+                   },
+    "content_scripts":  [
+
+                        ]
+}

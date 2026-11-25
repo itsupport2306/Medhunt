@@ -345,12 +345,23 @@ def process_once() -> dict | None:
             )
             return {"status": "already_in_nexus", "delivery_id": delivery_id}
         if not nexus_sync._current_license_states(candidate):
-            # Discovery is bounded and runs in the background delivery worker.
-            evidence, diagnostics = license_discovery.discover_with_diagnostics(candidate)
-            payload["license_discovery"] = evidence
-            store.save_nexus_license_discovery(
-                delivery_id, diagnostics, expected_lease_until=lease_until,
-            )
+            if str(candidate.get("source") or "").casefold() == "usnews":
+                # U.S. News profile imports already capture the profile's own
+                # Certifications & Licensure section as License: evidence in
+                # candidate.notes. Do not search Doximity (or other sites) if
+                # those source-visible licenses are missing or not current.
+                store.save_nexus_license_discovery(
+                    delivery_id,
+                    {"reason": "usnews_profile_is_authoritative", "source": "usnews"},
+                    expected_lease_until=lease_until,
+                )
+            else:
+                # Discovery is bounded and runs in the background delivery worker.
+                evidence, diagnostics = license_discovery.discover_with_diagnostics(candidate)
+                payload["license_discovery"] = evidence
+                store.save_nexus_license_discovery(
+                    delivery_id, diagnostics, expected_lease_until=lease_until,
+                )
         else:
             store.save_nexus_license_discovery(
                 delivery_id, {"reason": "source_profile_license"},

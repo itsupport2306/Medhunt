@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Medhunt</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app">
+    <aside class="side">
+      <div class="brand">
+        <img class="brand-logo-full" src="icons/medhunt-logo.png" alt="Med Hunt">
+      </div>
+      <nav class="nav" id="nav" aria-label="Main navigation">
+        <button type="button" class="nav-link active" data-view="candidates">
+          <span aria-hidden="true">◉</span><span>Candidates</span>
+        </button>
+        <button type="button" class="nav-link" data-view="indeed">
+          <span aria-hidden="true">▤</span><span>Source Profiles</span>
+        </button>
+        <button type="button" class="nav-link" data-view="add">
+          <span aria-hidden="true">＋</span><span>Add Candidates</span>
+        </button>
+        <button type="button" class="nav-link" data-view="pipeline">
+          <span aria-hidden="true">◇</span><span>Pipeline</span>
+        </button>
+        <button type="button" class="nav-link" data-view="messages">
+          <span aria-hidden="true">SMS</span><span>Messages</span>
+        </button>
+        <button type="button" class="nav-link" data-view="analytics">
+          <span aria-hidden="true">A</span><span>Analytics</span>
+        </button>
+        <button type="button" class="nav-link" data-view="dnc">
+          <span aria-hidden="true">⊘</span><span>Do-Not-Contact</span>
+        </button>
+        <button type="button" class="nav-link" data-view="settings">
+          <span aria-hidden="true">⚙</span><span>Settings</span>
+        </button>
+      </nav>
+      <div class="side-foot">v3.26.4</div>
+    </aside>
+
+    <main class="main">
+      <header class="top">
+        <div>
+          <h1 id="title">Candidates</h1>
+          <span class="connection" id="connection">Checking backend…</span>
+        </div>
+        <div class="top-right">
+          <span class="pill" id="mode">offline</span>
+          <div class="user-avatar" id="userAvatar" aria-label="Medhunt local workspace">MT</div>
+          <button type="button" class="text-button auth-button" id="authButton" data-action="" aria-label="Account"></button>
+        </div>
+      </header>
+      <div class="wrap" id="content"></div>
+    </main>
+  </div>
+
+  <div id="modalRoot"></div>
+  <div class="toast hidden" id="toast" role="status" aria-live="polite"></div>
+  <script src="profile-quality.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

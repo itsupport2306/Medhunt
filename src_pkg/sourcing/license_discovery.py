@@ -95,7 +95,7 @@ def _profile_matches(page: _Page, candidate: dict) -> bool:
     title = unescape(page.title)
     if not expected_name or _name(title) != expected_name:
         return False
-    npi = str(candidate.get("source_id") or "").strip()
+    npi = str(candidate.get("npi") or candidate.get("source_id") or "").strip()
     if str(candidate.get("source") or "").casefold() in {
         "npino", "npiprofile", "usnews", "sharecare", "healthgrades"
     } and re.fullmatch(r"\d{10}", npi):
@@ -137,10 +137,17 @@ def _states(page: _Page) -> list[str]:
 def discover_with_diagnostics(candidate: dict, *, client: httpx.Client | None = None) -> tuple[dict, dict]:
     """Return verified evidence and bounded per-source outcomes."""
     diagnostics = {"sources": []}
-    if not _name(str(candidate.get("name") or "")) or not _candidate_state(
-        str(candidate.get("location") or "")
-    ):
-        diagnostics["reason"] = "missing_name_or_location"
+    source = str(candidate.get("source") or "").casefold()
+    candidate_npi = str(candidate.get("npi") or candidate.get("source_id") or "").strip()
+    npi_can_verify = (
+        source in {"npino", "npiprofile", "usnews", "sharecare", "healthgrades"}
+        and re.fullmatch(r"\d{10}", candidate_npi) is not None
+    )
+    if not _name(str(candidate.get("name") or "")):
+        diagnostics["reason"] = "missing_name"
+        return {}, diagnostics
+    if not _candidate_state(str(candidate.get("location") or "")) and not npi_can_verify:
+        diagnostics["reason"] = "missing_location_and_verified_npi"
         return {}, diagnostics
     owned = client is None
     if owned:
@@ -156,7 +163,7 @@ def discover_with_diagnostics(candidate: dict, *, client: httpx.Client | None = 
             outcome = {"source": source, "status": "no_matching_profile", "profiles_checked": 0}
             diagnostics["sources"].append(outcome)
             params = {query_key: str(candidate["name"])}
-            if source == "healthgrades":
+            if source == "healthgrades" and str(candidate.get("location") or "").strip():
                 params["where"] = str(candidate["location"])
             try:
                 search = client.get(search_url, params=params)

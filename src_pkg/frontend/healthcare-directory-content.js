@@ -1030,9 +1030,18 @@
       "Certifications & Licensure",
     );
     const education = unique(medicalTraining.map(({ term, detail }) => `${term} — ${detail}`));
-    const licenses = unique(credentialsAndLicenses
+    const licenseState = "(?:AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY|DC|Alabama|Alaska|Arizona|Arkansas|California|Colorado|Connecticut|Delaware|Florida|Georgia|Hawaii|Idaho|Illinois|Indiana|Iowa|Kansas|Kentucky|Louisiana|Maine|Maryland|Massachusetts|Michigan|Minnesota|Mississippi|Missouri|Montana|Nebraska|Nevada|New Hampshire|New Jersey|New Mexico|New York|North Carolina|North Dakota|Ohio|Oklahoma|Oregon|Pennsylvania|Rhode Island|South Carolina|South Dakota|Tennessee|Texas|Utah|Vermont|Virginia|Washington|West Virginia|Wisconsin|Wyoming)";
+    const licenseRows = [...visibleText(document.querySelector("#experience") || document).matchAll(
+      new RegExp(
+        `\\b(${licenseState})\\s+State\\s+Medical\\s+License\\s*(?:[—–-]\\s*)?`
+          + `((?:Active\\s+through\\s+20\\d{2})|(?:(?:19|20)\\d{2}\\s*[-–]\\s*(?:19|20)\\d{2})|`
+          + `(?:Expires?\\s+(?:\\w+\\s+\\d{1,2},?\\s+)?20\\d{2}))`,
+        "gi",
+      ),
+    )].map((match) => `${match[1]} State Medical License — ${match[2]}`);
+    const licenses = unique([...credentialsAndLicenses
       .filter(({ term, detail }) => /\bstate medical license\b/i.test(`${term} ${detail}`))
-      .map(({ term, detail }) => `${term} — ${detail}`));
+      .map(({ term, detail }) => `${term} — ${detail}`), ...licenseRows]);
     const certifications = unique(credentialsAndLicenses
       .filter(({ term, detail }) => !/\bstate medical license\b/i.test(`${term} ${detail}`))
       .map(({ term, detail }) => `${term} — ${detail}`));
