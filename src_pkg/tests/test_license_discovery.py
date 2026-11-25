@@ -61,6 +61,19 @@ def test_checks_later_profile_and_records_blocked_sources():
     }
 
 
+def test_npi_source_matches_doximity_title_with_middle_initial_and_unicode_dash():
+    page = license_discovery._page(
+        "<title>Dr. Farnaz M. Gazoni, MD \u2013 Charlottesville, VA | Anesthesiology</title>"
+        "<li>VA State Medical License 2004 - 2026</li>"
+    )
+    candidate = {
+        "name": "Farnaz Gazoni", "location": "Charlottesville, VA",
+        "source": "npino", "source_id": "1003038118",
+    }
+    assert license_discovery._profile_matches(page, candidate)
+    assert license_discovery._states(page) == ["VA"]
+
+
 def test_same_npi_allows_changed_practice_city():
     page = license_discovery._page(
         "<title>Dr. Michelle Susco, MD - Arlington, VA | Pediatrics</title>"

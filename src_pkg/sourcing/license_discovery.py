@@ -33,7 +33,7 @@ _STATE_NAMES = "|".join(
 _LICENSE = re.compile(
     rf"\b([A-Z]{{2}}|{_STATE_NAMES})\s+State\s+(?:Medical\s+)?Licen[cs]e\b"
     r".{0,90}?(?:Active\s+through\s+(20\d{2})|"
-    r"(?:19|20)\d{2}\s*[-–]\s*(20\d{2})|"
+    r"(?:19|20)\d{2}\s*[-\u2013\u2014]\s*(20\d{2})|"
     r"Expires?\s+(?:\w+\s+\d{1,2},?\s+)?(20\d{2}))",
     re.I,
 )
@@ -74,9 +74,16 @@ def _page(markup: str) -> _Page:
 
 
 def _name(value: str) -> str:
+    # Directory profile titles append credentials, location, and specialty.
+    # Split on Unicode or ASCII dashes before normalizing the name.
+    value = re.split(r"\s*(?:\||\u2013|\u2014|\s+-\s+)\s*", value, maxsplit=1)[0]
     value = re.sub(r"\bDr\.?\s+", "", value, flags=re.I)
     value = _NAME_SUFFIX.sub("", value)
-    return re.sub(r"[^a-z]", "", re.split(r"[|–—-]", value)[0].casefold())
+    parts = re.findall(r"[a-z]+", value.casefold())
+    # Candidate sources may omit a middle initial shown in the profile title.
+    parts = [part for index, part in enumerate(parts)
+             if not (0 < index < len(parts) - 1 and len(part) == 1)]
+    return "".join(parts)
 
 
 def _candidate_state(location: str) -> str:

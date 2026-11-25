@@ -801,12 +801,12 @@ def _current_license_states(candidate: Mapping[str, Any], *, current_year: int |
             continue
         expiry = re.search(
             r"\bActive\s+through\s+(20\d{2})\b|"
-            r"\b(?:19|20)\d{2}\s*[-–]\s*(20\d{2})\b|"
+            r"\b(?:19|20)\d{2}\s*[-\u2013\u2014]\s*(20\d{2})\b|"
             r"\bExpires?\s+(?:\w+\s+\d{1,2},?\s+)?(20\d{2})\b", value, re.I,
         )
         if not expiry or int(next(part for part in expiry.groups() if part)) < year:
             continue
-        span = re.search(r"\b((?:19|20)\d{2})\s*[-–]\s*((?:19|20)\d{2})\b", value)
+        span = re.search(r"\b((?:19|20)\d{2})\s*[-\u2013\u2014]\s*((?:19|20)\d{2})\b", value)
         if span and int(span.group(1)) > year:
             continue
         code = names.get(state.group(1).casefold(), state.group(1).upper())
